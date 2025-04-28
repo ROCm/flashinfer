@@ -23,9 +23,9 @@ from . import cubin_loader
 from . import env as env
 from .activation import gen_act_and_mul_module as gen_act_and_mul_module
 from .activation import get_act_and_mul_cu_str as get_act_and_mul_cu_str
-from .attention import cudnn_fmha_gen_module as cudnn_fmha_gen_module
-from .attention import gen_batch_attention_module as gen_batch_attention_module
-from .attention import gen_batch_decode_mla_module as gen_batch_decode_mla_module
+from .attention import (
+    gen_batch_decode_mla_module as gen_batch_decode_mla_module,
+)
 from .attention import gen_batch_decode_module as gen_batch_decode_module
 from .attention import gen_batch_mla_module as gen_batch_mla_module
 from .attention import gen_batch_mla_tvm_binding as gen_batch_mla_tvm_binding
@@ -84,3 +84,32 @@ cuda_lib_path = os.environ.get(
 )
 if os.path.exists(f"{cuda_lib_path}/libcudart.so.12"):
     ctypes.CDLL(f"{cuda_lib_path}/libcudart.so.12", mode=ctypes.RTLD_GLOBAL)
+
+
+try:
+    # Only try to import SM90 kernels if they were enabled during build
+    from .. import flashinfer_kernels  # noqa: F401
+    from .. import __config__
+
+    if __config__.aot_torch_exts_cuda and 90 in __config__.aot_torch_exts_cuda_archs:
+        try:
+            from .. import flashinfer_kernels_sm90  # noqa: F401
+        except ImportError:
+            from .core import logger
+
+            logger.warning(
+                "SM90 kernels were enabled in build but couldn't be imported"
+            )
+
+    from .aot_config import prebuilt_ops_uri as prebuilt_ops_uri
+
+    has_prebuilt_ops = True
+except ImportError as e:
+    if "undefined symbol" in str(e):
+        raise ImportError("Loading prebuilt ops failed.") from e
+
+    from .core import logger
+
+    logger.info("Prebuilt kernels not found, using JIT backend")
+    prebuilt_ops_uri = {}
+    has_prebuilt_ops = False

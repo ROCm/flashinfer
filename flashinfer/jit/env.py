@@ -25,14 +25,7 @@ import warnings
 
 from torch.utils.cpp_extension import _get_cuda_arch_flags
 
-FLASHINFER_BASE_DIR = pathlib.Path(
-    os.getenv("FLASHINFER_WORKSPACE_BASE", pathlib.Path.home().as_posix())
-)
-
-FLASHINFER_CACHE_DIR = FLASHINFER_BASE_DIR / ".cache" / "flashinfer"
-FLASHINFER_CUBIN_DIR = pathlib.Path(
-    os.getenv("FLASHINFER_CUBIN_DIR", (FLASHINFER_CACHE_DIR / "cubins").as_posix())
-)
+from ..get_include_paths import get_csrc_dir, get_include, get_tvm_binding_dir
 
 
 def _get_workspace_dir_name() -> pathlib.Path:
@@ -54,37 +47,6 @@ def _get_workspace_dir_name() -> pathlib.Path:
 FLASHINFER_WORKSPACE_DIR = _get_workspace_dir_name()
 FLASHINFER_JIT_DIR = FLASHINFER_WORKSPACE_DIR / "cached_ops"
 FLASHINFER_GEN_SRC_DIR = FLASHINFER_WORKSPACE_DIR / "generated"
-_package_root = pathlib.Path(__file__).resolve().parents[1]
-FLASHINFER_DATA = _package_root / "data"
-FLASHINFER_INCLUDE_DIR = _package_root / "data" / "include"
-FLASHINFER_CSRC_DIR = _package_root / "data" / "csrc"
-# FLASHINFER_SRC_DIR = _package_root / "data" / "src"
-FLASHINFER_TVM_BINDING_DIR = _package_root / "data" / "tvm_binding"
-FLASHINFER_AOT_DIR = _package_root / "data" / "aot"
-CUTLASS_INCLUDE_DIRS = [
-    _package_root / "data" / "cutlass" / "include",
-    _package_root / "data" / "cutlass" / "tools" / "util" / "include",
-]
-SPDLOG_INCLUDE_DIR = _package_root / "data" / "spdlog" / "include"
-
-
-def get_nvshmem_include_dirs():
-    paths = os.environ.get("NVSHMEM_INCLUDE_PATH")
-    if paths is not None:
-        return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
-
-    import nvidia.nvshmem
-
-    path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "include"
-    return [path]
-
-
-def get_nvshmem_lib_dirs():
-    paths = os.environ.get("NVSHMEM_LIBRARY_PATH")
-    if paths is not None:
-        return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
-
-    import nvidia.nvshmem
-
-    path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "lib"
-    return [path]
+FLASHINFER_INCLUDE_DIR = pathlib.Path(get_include())
+FLASHINFER_CSRC_DIR = pathlib.Path(get_csrc_dir())
+FLASHINFER_TVM_BINDING_DIR = pathlib.Path(get_tvm_binding_dir())

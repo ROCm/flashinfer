@@ -11,9 +11,11 @@ import torch
 import torch.utils.cpp_extension as torch_cpp_ext
 from filelock import FileLock
 
-from . import env as jit_env
-from .cpp_ext import generate_ninja_build_for_op, run_ninja
-from .utils import write_if_different
+from .env import FLASHINFER_CSRC_DIR as FLASHINFER_CSRC_DIR
+from .env import FLASHINFER_GEN_SRC_DIR as FLASHINFER_GEN_SRC_DIR
+from .env import FLASHINFER_INCLUDE_DIR as FLASHINFER_INCLUDE_DIR
+from .env import FLASHINFER_JIT_DIR as FLASHINFER_JIT_DIR
+from .env import FLASHINFER_WORKSPACE_DIR as FLASHINFER_WORKSPACE_DIR
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
 os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
@@ -190,78 +192,33 @@ def gen_jit_spec(
         # non debug mode
         cuda_cflags += ["-DNDEBUG"]
 
-    if extra_cflags is not None:
-        cflags += extra_cflags
-    if extra_cuda_cflags is not None:
-        cuda_cflags += extra_cuda_cflags
-
-    spec = JitSpec(
-        name=name,
-        sources=[Path(x) for x in sources],
-        extra_cflags=cflags,
-        extra_cuda_cflags=cuda_cflags,
-        extra_ldflags=extra_ldflags,
-        extra_include_dirs=(
-            [Path(x) for x in extra_include_paths]
-            if extra_include_paths is not None
-            else None
-        ),
-        needs_device_linking=needs_device_linking,
-    )
-    spec.write_ninja()
-    return spec
-
-
-def get_tmpdir() -> Path:
-    # TODO(lequn): Try /dev/shm first. This should help Lock on NFS.
-    tmpdir = jit_env.FLASHINFER_JIT_DIR / "tmp"
-    if not tmpdir.exists():
-        tmpdir.mkdir(parents=True, exist_ok=True)
-    return tmpdir
-
-
-def build_jit_specs(
-    specs: List[JitSpec],
-    verbose: bool = False,
-    skip_prebuilt: bool = True,
-) -> None:
-    lines: List[str] = []
-    for spec in specs:
-        if skip_prebuilt and spec.aot_path.exists():
-            continue
-        lines.append(f"subninja {spec.ninja_path}")
-    if not lines:
-        return
-
-    lines = ["ninja_required_version = 1.3"] + lines + [""]
-
-    tmpdir = get_tmpdir()
-    with FileLock(tmpdir / "flashinfer_jit.lock", thread_local=False):
-        ninja_path = tmpdir / "flashinfer_jit.ninja"
-        write_if_different(ninja_path, "\n".join(lines))
-        run_ninja(jit_env.FLASHINFER_JIT_DIR, ninja_path, verbose)
-
-
-def load_cuda_ops(
-    name: str,
-    sources: List[Union[str, Path]],
-    extra_cflags: Optional[List[str]] = None,
-    extra_cuda_cflags: Optional[List[str]] = None,
-    extra_ldflags=None,
-    extra_include_paths=None,
-):
-    # TODO(lequn): Remove this function and use JitSpec directly.
-    warnings.warn(
-        "load_cuda_ops is deprecated. Use JitSpec directly.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    spec = gen_jit_spec(
-        name=name,
-        sources=sources,
-        extra_cflags=extra_cflags,
-        extra_cuda_cflags=extra_cuda_cflags,
-        extra_ldflags=extra_ldflags,
-        extra_include_paths=extra_include_paths,
-    )
-    return spec.build_and_load()
+    cflags += extra_cflags
+    cuda_cflags += extra_cuda_cflags
+    logger.info(f"Loading JIT ops: {name}")
+    check_cuda_arch()
+    build_directory = FLASHINFER_JIT_DIR / name
+    os.makedirs(build_directory, exist_ok=True)
+    if extra_include_paths is None:
+        extra_include_paths = []
+    extra_include_paths += [
+        FLASHINFER_INCLUDE_DIR,
+        FLASHINFER_CSRC_DIR,
+    ]
+    lock = FileLock(FLASHINFER_JIT_DIR / f"{name}.lock", thread_local=False)
+    with lock:
+        torch_cpp_ext.load(
+            name,
+            list(map(lambda _: str(_), sources)),
+            extra_cflags=cflags,
+            extra_cuda_cflags=cuda_cflags,
+            extra_ldflags=extra_ldflags,
+            extra_include_paths=list(map(lambda _: str(_), extra_include_paths)),
+            build_directory=build_directory,
+            verbose=verbose,
+            with_cuda=True,
+            # We switched to torch.library, so will be loaded into torch.ops
+            # instead of into a separate module.
+            is_python_module=False,
+        )
+    logger.info(f"Finished loading JIT ops: {name}")
+    return getattr(torch.ops, name)

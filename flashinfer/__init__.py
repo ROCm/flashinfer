@@ -14,12 +14,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-try:
-    from ._build_meta import __version__ as __version__
-except ModuleNotFoundError:
-    __version__ = "0.0.0+unknown"
+"""
+FlashInfer: Fast Attention Algorithms for LLM Inference
+"""
+import os
+from pathlib import Path
 
-from . import jit as jit
+try:
+    from .__config__ import __version__, get_info, show
+except ImportError:
+    __version__ = "0.0.0+dev"
+
+    def get_info(name=None):
+        info = {"version": __version__}
+        if name is None:
+            return info
+        return info.get(name)
+
+    def show():
+        print("FlashInfer development configuration")
+        print(f"version: {__version__}")
+
+
 from .activation import gelu_and_mul as gelu_and_mul
 from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
 from .activation import silu_and_mul as silu_and_mul
@@ -74,7 +90,7 @@ from .fused_moe import (
 )
 from .gemm import SegmentGEMMWrapper as SegmentGEMMWrapper
 from .gemm import bmm_fp8 as bmm_fp8
-from .gemm import mm_fp4 as mm_fp4
+from .get_include_paths import get_csrc_dir, get_include, get_tvm_binding_dir
 from .mla import BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper
 from .norm import fused_add_rmsnorm as fused_add_rmsnorm
 from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
@@ -91,7 +107,9 @@ from .prefill import (
 from .prefill import (
     BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
 )
-from .prefill import single_prefill_with_kv_cache as single_prefill_with_kv_cache
+from .prefill import (
+    single_prefill_with_kv_cache as single_prefill_with_kv_cache,
+)
 from .prefill import (
     single_prefill_with_kv_cache_return_lse as single_prefill_with_kv_cache_return_lse,
 )
@@ -122,12 +140,17 @@ from .sampling import top_k_sampling_from_probs as top_k_sampling_from_probs
 from .sampling import (
     top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
 )
-from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
+from .sampling import (
+    top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs,
+)
 from .sampling import top_p_renorm_probs as top_p_renorm_probs
 from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
 from .sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
-from .sparse import (
-    VariableBlockSparseAttentionWrapper as VariableBlockSparseAttentionWrapper,
-)
-from .utils import next_positive_power_of_2 as next_positive_power_of_2
-from .xqa import xqa as xqa
+
+__all__ = [
+    "get_csrc_dir",
+    "get_include",
+    "get_info",
+    "get_tvm_binding_dir",
+    "show",
+]
