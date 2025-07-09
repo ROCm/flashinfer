@@ -26,6 +26,7 @@ from ..core import JitSpec, gen_jit_spec, logger, sm90a_nvcc_flags, sm100a_nvcc_
 from ...jit.cubin_loader import get_cubin
 from ..utils import (
     dtype_map,
+    dtype_map_hip,
     filename_safe_dtype_map,
     mask_mode_literal,
     pos_encoding_mode_literal,
@@ -1021,9 +1022,15 @@ def gen_customize_single_decode_module(
         "additional_params_setter": additional_params_setter,
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": dtype_map[dtype_q],
-        "dtype_kv": dtype_map[dtype_kv],
-        "dtype_o": dtype_map[dtype_o],
+        "dtype_q": (
+            dtype_map_hip[dtype_q] if check_hip_availability() else dtype_map[dtype_q]
+        ),
+        "dtype_kv": (
+            dtype_map_hip[dtype_kv] if check_hip_availability() else dtype_map[dtype_kv]
+        ),
+        "dtype_o": (
+            dtype_map_hip[dtype_o] if check_hip_availability() else dtype_map[dtype_o]
+        ),
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -1045,10 +1052,13 @@ def gen_customize_single_decode_module(
         **kwargs,
     )
     write_if_different(dest_path, source)
-
     for filename in [
-        "single_decode.cu",
-        "single_decode_jit_pybind.cu",
+        "single_decode_hip.cu" if check_hip_availability() else "single_decode.cu",
+        (
+            "single_decode_jit_pybind_hip.cu"
+            if check_hip_availability()
+            else "single_decode_jit_pybind.cu"
+        ),
     ]:
         src_path = jit_env.FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
@@ -1057,7 +1067,11 @@ def gen_customize_single_decode_module(
             source = f.read()
         write_if_different(dest_path, source)
 
-    generated_config_path = gen_directory / "single_decode_config.inc"
+    generated_config_path = (
+        gen_directory / "single_decode_config_hip.inc"
+        if check_hip_availability()
+        else gen_directory / "single_decode_config.inc"
+    )
     write_if_different(generated_config_path, generated_inc_str)
 
     return gen_jit_spec(uri, source_paths)
@@ -1261,10 +1275,18 @@ def gen_customize_batch_decode_module(
         "additional_params_setter": additional_params_setter,
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": dtype_map[dtype_q],
-        "dtype_kv": dtype_map[dtype_kv],
-        "dtype_o": dtype_map[dtype_o],
-        "idtype": dtype_map[idtype],
+        "dtype_q": (
+            dtype_map_hip[dtype_q] if check_hip_availability() else dtype_map[dtype_q]
+        ),
+        "dtype_kv": (
+            dtype_map_hip[dtype_kv] if check_hip_availability() else dtype_map[dtype_kv]
+        ),
+        "dtype_o": (
+            dtype_map_hip[dtype_o] if check_hip_availability() else dtype_map[dtype_o]
+        ),
+        "idtype": (
+            dtype_map_hip[idtype] if check_hip_availability() else dtype_map[idtype]
+        ),
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -1292,8 +1314,12 @@ def gen_customize_batch_decode_module(
     write_if_different(dest_path, source)
 
     for filename in [
-        "batch_decode.cu",
-        "batch_decode_jit_pybind.cu",
+        "batch_decode_hip.cu" if check_hip_availability() else "batch_decode.cu",
+        (
+            "batch_decode_jit_pybind_hip.cu"
+            if check_hip_availability()
+            else "batch_decode_jit_pybind.cu"
+        ),
     ]:
         src_path = jit_env.FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
