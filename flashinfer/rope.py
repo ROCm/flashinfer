@@ -37,7 +37,29 @@ def gen_rope_module() -> JitSpec:
 
 @functools.cache
 def get_rope_module():
-    return gen_rope_module().build_and_load()
+    global _rope_module
+    if _rope_module is None:
+        if has_prebuilt_ops:
+            _kernels = torch.ops.flashinfer_hip_kernels
+
+            _rope_module = _kernels
+        else:
+            _rope_module = load_cuda_ops(
+                "rope",
+                [
+                    FLASHINFER_CSRC_DIR / "rope.cu",
+                    FLASHINFER_CSRC_DIR / "flashinfer_rope_ops.cu",
+                ],
+            )
+    return _rope_module
+
+
+@cache
+def get_module_attr(attr: str) -> Any:
+    global _rope_module
+    if _rope_module is None:
+        get_rope_module()
+    return getattr(_rope_module, attr).default
 
 
 @register_custom_op("flashinfer::apply_rope", mutates_args=("q_rope", "k_rope"))
