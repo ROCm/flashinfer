@@ -21,15 +21,9 @@ endif()
 
 # === Test Dependencies ===
 if(FLASHINFER_UNITTESTS)
-  include(FetchContent)
-
-  # Google Test for unit testing
-  FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5 # release-1.16.0
-    FIND_PACKAGE_ARGS NAMES GTest)
-  FetchContent_MakeAvailable(googletest)
+  find_package(GTest REQUIRED)
+  include(GoogleTest)
+  message(STATUS "Found GoogleTest: ${GTEST_INCLUDE_DIRS}")
 endif()
 
 # === Benchmark Dependencies ===

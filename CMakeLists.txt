@@ -232,6 +232,10 @@ if(FLASHINFER_ENABLE_HIP)
 
 endif()
 
+if(FLASHINFER_UNITTESTS)
+  enable_testing()
+endif()
+
 # Add library subdirectories
 add_subdirectory(libflashinfer)
 
