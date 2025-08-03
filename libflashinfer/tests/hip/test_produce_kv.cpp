@@ -7,6 +7,8 @@
 // Constants
 constexpr uint32_t WARP_SIZE_NV = 32;
 constexpr uint32_t WARP_SIZE_AMD = 64;
+constexpr uint32_t WARP_STEP_SIZE = 16;  // 16 threads per warp row for AMD
+constexpr uint32_t WARP_THREAD_ROWS = 4; // 4 rows of threads in a warp for AMD
 
 // SwizzleMode enum to match the original code
 enum class SwizzleMode
@@ -35,160 +37,117 @@ uint32_t advance_offset_by_row_linear(uint32_t offset)
     return offset + step_size * row_stride;
 }
 
-// CPU-based simulation of produce_kv for different SwizzleMode values
-template <uint32_t HEAD_DIM,
-          uint32_t NUM_MMA_KV = 1,
-          SwizzleMode SWIZZLE_MODE = SwizzleMode::kLinear>
-void SimulateProduceKV(std::vector<int> &thread_ids_at_offsets,
-                       uint32_t warp_size = WARP_SIZE_AMD)
+// CPU-based simulation of produce_kv for AMD MI300 with linear offset
+// addressing
+template <uint32_t HEAD_DIM, uint32_t NUM_MMA_KV = 1>
+void SimulateProduceKV(std::vector<int> &thread_ids_at_offsets)
 {
-    // Constants derived from HEAD_DIM and SwizzleMode
-    constexpr uint32_t ELEMS_PER_THREAD = 4;
+    // Constants for MI300 (64-thread warp, 4×16 thread layout)
+    constexpr uint32_t WARP_SIZE = 64;
+    constexpr uint32_t WARP_THREAD_ROWS = 4; // 4 rows of threads
+    constexpr uint32_t WARP_STEP_SIZE = 16;  // 16 threads per row
+    constexpr uint32_t ELEMS_PER_THREAD =
+        4; // Each thread loads 4 fp16 elements
+
+    // Derived constants
     constexpr uint32_t UPCAST_STRIDE = HEAD_DIM / ELEMS_PER_THREAD;
     constexpr uint32_t NUM_MMA_D = HEAD_DIM / 16;
-    constexpr uint32_t grid_width =
-        HEAD_DIM / ELEMS_PER_THREAD; // 16 for 64, 32 for 128
-    constexpr uint32_t grid_height =
-        16 * NUM_MMA_KV; // 16 for NUM_MMA_KV=1, 32 for NUM_MMA_KV=2
-
-    // Thread layout constants based on SwizzleMode
-    constexpr uint32_t KV_THR_LAYOUT_ROW =
-        SWIZZLE_MODE == SwizzleMode::k128B  ? 4
-        : SWIZZLE_MODE == SwizzleMode::k64B ? 8
-                                            : 4; // 4 for kLinear (AMD)
-
-    constexpr uint32_t KV_THR_LAYOUT_COL =
-        SWIZZLE_MODE == SwizzleMode::k128B  ? 8
-        : SWIZZLE_MODE == SwizzleMode::k64B ? 4
-                                            : 16; // 16 for kLinear (AMD)
-
+    constexpr uint32_t grid_width = HEAD_DIM / ELEMS_PER_THREAD;
+    constexpr uint32_t grid_height = 16 * NUM_MMA_KV;
     constexpr uint32_t NUM_WARPS = 1;
     constexpr uint32_t NUM_WARPS_Q = 1;
+    constexpr uint32_t COLUMN_RESET_OFFSET = (NUM_MMA_D / 4) * WARP_STEP_SIZE;
+    //(NUM_MMA_D / (4 / sizeof(uint16_t))) * WARP_STEP_SIZE;
 
     // Initialize with -1 (unwritten)
     thread_ids_at_offsets.assign(grid_height * grid_width, -1);
 
     // Simulate each thread's write pattern
-    for (uint32_t tid = 0; tid < warp_size; tid++) {
-        uint32_t warp_idx = tid / warp_size; // Always 0 for single warp
+    for (uint32_t tid = 0; tid < WARP_SIZE; tid++) {
+        uint32_t warp_idx = 0; // Always 0 for single warp
         uint32_t lane_idx = tid;
 
-        // Calculate the initial shared memory offset and global memory index
+        // Calculate thread's row and column
+        uint32_t row = lane_idx / WARP_STEP_SIZE;
+        uint32_t col = lane_idx % WARP_STEP_SIZE;
+
+        // Calculate initial offset
         uint32_t kv_smem_offset_w = get_permuted_offset_linear<UPCAST_STRIDE>(
-            warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL,
-            lane_idx % KV_THR_LAYOUT_COL);
+            warp_idx * WARP_THREAD_ROWS + row, col);
 
-        if constexpr (SWIZZLE_MODE == SwizzleMode::k128B) {
-            // k128B mode (original pseudo-128B mode)
-            uint32_t kv_idx = warp_idx * 4 + lane_idx / 8;
+        // Initial kv_idx points to the first row this thread handles
+        uint32_t kv_idx = warp_idx * WARP_THREAD_ROWS + row;
 
-            static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
-            for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
-                for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(uint16_t));
-                     ++j)
-                {
-                    // Record which thread writes to this offset
-                    if (kv_smem_offset_w < grid_height * grid_width &&
-                        kv_idx < grid_height)
-                    {
-                        thread_ids_at_offsets[kv_smem_offset_w] = tid;
-                    }
-
-                    // Advance to next column within same row
-                    kv_smem_offset_w =
-                        advance_offset_by_column_linear<8>(kv_smem_offset_w, j);
-                }
-
-                kv_idx += NUM_WARPS * 4;
-                kv_smem_offset_w =
-                    advance_offset_by_row_linear<NUM_WARPS * 4, UPCAST_STRIDE>(
-                        kv_smem_offset_w) -
-                    sizeof(uint16_t) * NUM_MMA_D;
-            }
-        }
-        else if constexpr (SWIZZLE_MODE == SwizzleMode::k64B) {
-            // k64B mode (original NVIDIA mode)
-            uint32_t kv_idx = warp_idx * 8 + lane_idx / 4;
-
-            static_assert(NUM_MMA_KV * 2 % NUM_WARPS_Q == 0);
-            for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
+        // Handle all blocks of rows
+        for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
+            // Process columns within a row (each thread loads 4 elements per
+            // iteration)
+            // for (uint32_t j = 0; j < NUM_MMA_D / (4 / sizeof(uint16_t)); ++j)
+            // {
+            for (uint32_t j = 0; j < NUM_MMA_D / 4; ++j) {
                 // Record which thread writes to this offset
+                // if(tid == 0) {
+                //     std::cout << "tid : " << tid << " kv_smem_offset_w at
+                //     start " << kv_smem_offset_w << '\n';
+                // }
                 if (kv_smem_offset_w < grid_height * grid_width &&
                     kv_idx < grid_height)
                 {
                     thread_ids_at_offsets[kv_smem_offset_w] = tid;
                 }
-
-                kv_smem_offset_w =
-                    advance_offset_by_row_linear<NUM_WARPS * 8, UPCAST_STRIDE>(
-                        kv_smem_offset_w);
-                kv_idx += NUM_WARPS * 8;
-            }
-        }
-        else if constexpr (SWIZZLE_MODE == SwizzleMode::kLinear) {
-            // kLinear mode (AMD-specific, using all 64 threads)
-            uint32_t kv_idx = warp_idx * 4 + lane_idx / 16;
-
-            // For AMD's 64-thread warp, we need to process 4 rows with 16
-            // threads per row
-            for (uint32_t i = 0; i < NUM_MMA_KV; ++i) {
-                for (uint32_t j = 0; j < NUM_MMA_D; ++j) {
-                    // Record which thread writes to this offset
-                    if (kv_smem_offset_w < grid_height * grid_width &&
-                        kv_idx < grid_height)
-                    {
-                        thread_ids_at_offsets[kv_smem_offset_w] = tid;
-                    }
-
-                    // Advance to next column within same row
-                    kv_smem_offset_w =
-                        advance_offset_by_column_linear<ELEMS_PER_THREAD>(
-                            kv_smem_offset_w, j);
+                else {
+                    std::cerr << "ERROR: Out of bound offset ("
+                              << kv_smem_offset_w << ") at " << tid << '\n';
                 }
 
-                kv_idx += 4; // Advance by 4 rows
+                // Advance to next column by 16 (number of threads per row)
                 kv_smem_offset_w =
-                    advance_offset_by_row_linear<4, UPCAST_STRIDE>(
-                        kv_smem_offset_w) -
-                    NUM_MMA_D * ELEMS_PER_THREAD;
+                    advance_offset_by_column_linear<WARP_STEP_SIZE>(
+                        kv_smem_offset_w, j);
+                // if(tid == 0) {
+                //     std::cout << "tid : " << tid << " kv_smem_offset_w after
+                //     column inc: " << kv_smem_offset_w << '\n';
+                // }
             }
+
+            // Move to next set of rows
+            kv_idx += WARP_THREAD_ROWS;
+
+            // if(tid == 0) {
+            //     std::cout << "tid : " << tid << " kv_smem_offset_w before row
+            //     inc " << kv_smem_offset_w << '\n';
+            // }
+            // Reset column position and advance rows
+            kv_smem_offset_w =
+                advance_offset_by_row_linear<NUM_WARPS * WARP_THREAD_ROWS,
+                                             UPCAST_STRIDE>(kv_smem_offset_w) -
+                COLUMN_RESET_OFFSET;
+
+            // if(tid == 0) {
+            //     std::cout << "tid : " << tid << " kv_smem_offset_w after row
+            //     inc " << kv_smem_offset_w << '\n';
+            // }
         }
+        // FIXME: Verify with original in prefill.cuh
+        kv_smem_offset_w -= 16 * NUM_MMA_KV * UPCAST_STRIDE;
     }
 }
 
-// Helper function to run the test for different SwizzleModes
-template <uint32_t HEAD_DIM,
-          uint32_t NUM_MMA_KV = 1,
-          SwizzleMode SWIZZLE_MODE = SwizzleMode::kLinear>
-void RunProduceKVTest(uint32_t warp_size = WARP_SIZE_AMD)
+// Helper function to run the test
+template <uint32_t HEAD_DIM, uint32_t NUM_MMA_KV = 1> void RunProduceKVTest()
 {
     constexpr uint32_t grid_width = HEAD_DIM / 4; // 16 for 64, 32 for 128
     constexpr uint32_t grid_height =
         16 * NUM_MMA_KV; // 16 for NUM_MMA_KV=1, 32 for NUM_MMA_KV=2
 
-    std::string swizzle_mode_str;
-    switch (SWIZZLE_MODE) {
-    case SwizzleMode::k64B:
-        swizzle_mode_str = "k64B (NVIDIA)";
-        break;
-    case SwizzleMode::k128B:
-        swizzle_mode_str = "k128B (NVIDIA pseudo-128B)";
-        break;
-    case SwizzleMode::kLinear:
-        swizzle_mode_str = "kLinear (AMD)";
-        break;
-    }
-
-    printf("\n=== Testing produce_kv with HEAD_DIM = %u, NUM_MMA_KV = %u, "
-           "SwizzleMode = %s ===\n",
-           HEAD_DIM, NUM_MMA_KV, swizzle_mode_str.c_str());
+    printf("\n=== Testing produce_kv with HEAD_DIM = %u, NUM_MMA_KV = %u ===\n",
+           HEAD_DIM, NUM_MMA_KV);
 
     // Host array to store thread IDs at each offset
     std::vector<int> thread_ids(grid_height * grid_width, -1);
 
     // Run CPU simulation of produce_kv
-    SimulateProduceKV<HEAD_DIM, NUM_MMA_KV, SWIZZLE_MODE>(thread_ids,
-                                                          warp_size);
+    SimulateProduceKV<HEAD_DIM, NUM_MMA_KV>(thread_ids);
 
     // Print the grid of thread IDs
     printf("Thread IDs writing to each offset (%dx%d grid):\n", grid_height,
@@ -256,23 +215,14 @@ void RunProduceKVTest(uint32_t warp_size = WARP_SIZE_AMD)
            100.0f * unwritten / (grid_height * grid_width));
 }
 
-// Tests for different SwizzleModes
-// TEST(KVCacheWritePatternTest, HeadDim64_NVIDIA_k64B) {
-//     RunProduceKVTest<64, 1, SwizzleMode::k64B>(WARP_SIZE_NV);
-// }
-
-// TEST(KVCacheWritePatternTest, HeadDim64_NVIDIA_k128B) {
-//     RunProduceKVTest<64, 1, SwizzleMode::k128B>(WARP_SIZE_NV);
-// }
-
 TEST(KVCacheWritePatternTest, HeadDim64_AMD_kLinear)
 {
-    RunProduceKVTest<64, 1, SwizzleMode::kLinear>(WARP_SIZE_AMD);
+    RunProduceKVTest<64, 1>();
 }
 
 TEST(KVCacheWritePatternTest, HeadDim128_AMD_kLinear)
 {
-    RunProduceKVTest<128, 1, SwizzleMode::kLinear>(WARP_SIZE_AMD);
+    RunProduceKVTest<128, 1>();
 }
 
 int main(int argc, char **argv)
