@@ -9,8 +9,9 @@
 #include "gpu_iface/fastdiv.cuh"
 #include "gpu_iface/math_ops.hpp"
 #include "gpu_iface/memory_ops.hpp"
-#include "gpu_iface/mma_ops.hpp"
+// #include "gpu_iface/mma_ops.hpp"
 #include "gpu_iface/platform.hpp"
+#include "gpu_iface/utils.cuh"
 
 #ifdef FP16_QK_REDUCTION_SUPPORTED
 #include "../../fp16.h"
@@ -22,7 +23,6 @@
 #include "page.cuh"
 #include "permuted_smem.cuh"
 #include "pos_enc.cuh"
-#include "utils.cuh"
 #include "variants.cuh"
 
 namespace flashinfer
@@ -33,10 +33,10 @@ DEFINE_HAS_MEMBER(maybe_k_rope_offset)
 
 namespace cg = flashinfer::gpu_iface::cg;
 namespace memory = flashinfer::gpu_iface::memory;
-namespace mma = gpu_iface::mma;
+// namespace mma = gpu_iface::mma;
 
 using gpu_iface::vec_dtypes::vec_cast;
-using mma::MMAMode;
+// using mma::MMAMode;
 
 constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
 #if defined(PLATFORM_HIP_DEVICE)
@@ -856,6 +856,8 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
                 if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum,
                                              float>)
                 {
+#warning "TODO: mma_sync_m16n16k16_row_col_f16f16f32 ...."
+#if 0
                     if (mma_d == 0) {
                         mma::mma_sync_m16n16k16_row_col_f16f16f32<
                             typename KTraits::DTypeQ, MMAMode::kInit>(
@@ -866,8 +868,11 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
                             typename KTraits::DTypeQ>(s_frag[mma_q][mma_kv],
                                                       a_frag[mma_q], b_frag);
                     }
+#endif
                 }
                 else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
+#warning "Not yet implemented"
+#if 0
                     if (mma_d == 0) {
                         mma::mma_sync_m16n16k16_row_col_f16f16f16<
                             MMAMode::kInit>((uint32_t *)s_frag[mma_q][mma_kv],
@@ -878,6 +883,7 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
                             (uint32_t *)s_frag[mma_q][mma_kv], a_frag[mma_q],
                             b_frag);
                     }
+#endif
                 }
             }
         }
@@ -1195,6 +1201,8 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
             for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
+#warning "TODO: m16k16_rowsum_f16f16f32 ..........."
+#if 0
                 if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum,
                                              float>)
                 {
@@ -1205,6 +1213,7 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
                     mma::m16k16_rowsum_f16f16f32(d[mma_q],
                                                  s_frag[mma_q][mma_kv]);
                 }
+#endif
             }
         }
     }
@@ -1215,6 +1224,8 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
         for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
             uint32_t b_frag[4];
             if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
+#warning "Not yet implemented......"
+#if 0
                 uint32_t b_frag_f8[2];
                 if (mma_d % 2 == 0) {
                     v_smem->ldmatrix_m8n8x4_trans_left_half(*v_smem_offset_r,
@@ -1232,12 +1243,16 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
                     cast<8>((typename KTraits::DTypeQ *)b_frag,
                             (typename KTraits::DTypeKV *)b_frag_f8);
                 swap(b_frag[1], b_frag[2]);
+#endif
             }
             else {
-                v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
+#warning "TODO ldmatrix_m8n8x4_trans ............"
+                // v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
             }
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
+#warning "TODO mma_sync_m16n16k16_row_col_f16f16f32 ............"
+#if 0
                 if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum,
                                              float>)
                 {
@@ -1252,6 +1267,7 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
                         o_frag[mma_q][mma_d], (uint32_t *)s_frag[mma_q][mma_kv],
                         b_frag);
                 }
+#endif
             }
             if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
                 if (mma_d % 2 == 1) {

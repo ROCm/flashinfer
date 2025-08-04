@@ -21,9 +21,11 @@
 
 // Basic type mappings
 #if defined(PLATFORM_CUDA_DEVICE)
+#define gpuEvent_t cudaEvent_t
 #define gpuError_t cudaError_t
 #define gpuStream_t cudaStream_t
 #elif defined(PLATFORM_HIP_DEVICE)
+#define gpuEvent_t hipEvent_t
 #define gpuError_t hipError_t
 #define gpuStream_t hipStream_t
 #endif
@@ -85,6 +87,30 @@
     hipDeviceAttributeMaxSharedMemPerMultiprocessor
 #define gpuOccupancyMaxActiveBlocksPerMultiprocessor                           \
     hipOccupancyMaxActiveBlocksPerMultiprocessor
+#endif
+
+// Event iface
+#if defined(PLATFORM_CUDA_DEVICE)
+#define gpuEventCreate cudaEventCreate
+#define gpuEventDestroy cudaEventDestroy
+#define gpuEventRecord cudaEventRecord
+#define gpuEventSynchronize cudaEventSynchronize
+#define gpuEventElapsedTime cudaEventElapsedTime
+#elif defined(PLATFORM_HIP_DEVICE)
+#define gpuEventCreate hipEventCreate
+#define gpuEventDestroy hipEventDestroy
+#define gpuEventRecord hipEventRecord
+#define gpuEventSynchronize hipEventSynchronize
+#define gpuEventElapsedTime hipEventElapsedTime
+#endif
+
+// Stream iface
+#if defined(PLATFORM_CUDA_DEVICE)
+#define gpuStreamCreate cudaStreamCreate
+#define gpuStreamDestroy cudaStreamDestroy
+#elif defined(PLATFORM_HIP_DEVICE)
+#define gpuStreamCreate hipStreamCreate
+#define gpuStreamDestroy hipStreamDestroy
 #endif
 
 // Error handling (for FI_GPU_CALL)

@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "enums.hpp"
+#include "gpu_iface/enums.hpp"
 #include "gpu_iface/exception.h"
 
 #define DISPATCH_USE_FP16_QK_REDUCTION(use_fp16_qk_reduction,                  \
