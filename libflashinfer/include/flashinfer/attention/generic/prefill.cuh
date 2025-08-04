@@ -374,8 +374,8 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
         for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
 #pragma unroll
             for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
-                smem.load_128b_async<fill_mode>(*smem_offset, *gptr,
-                                                kv_idx < kv_len);
+                smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
+                                                         kv_idx < kv_len);
                 *smem_offset =
                     smem.template advance_offset_by_column<WARP_STEP_SIZE>(
                         *smem_offset, j);
@@ -402,8 +402,8 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
         static_assert(NUM_MMA_KV * 2 % NUM_WARPS_Q == 0);
 #pragma unroll
         for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
-            smem.load_128b_async<fill_mode>(*smem_offset, *gptr,
-                                            kv_idx < kv_len);
+            smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
+                                                     kv_idx < kv_len);
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 8,
                                                                UPCAST_STRIDE>(
                 *smem_offset);
@@ -451,8 +451,8 @@ page_produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
                                     : paged_kv.k_data + thr_local_kv_offset[i];
 #pragma unroll
             for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DType)); ++j) {
-                smem.load_128b_async<fill_mode>(*smem_offset, gptr,
-                                                kv_idx < kv_len);
+                smem.template load_128b_async<fill_mode>(*smem_offset, gptr,
+                                                         kv_idx < kv_len);
                 *smem_offset =
                     smem.template advance_offset_by_column<8>(*smem_offset, j);
                 gptr += 8 * upcast_size<DType>();
@@ -474,8 +474,8 @@ page_produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
         for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
             DType *gptr = produce_v ? paged_kv.v_data + thr_local_kv_offset[i]
                                     : paged_kv.k_data + thr_local_kv_offset[i];
-            smem.load_128b_async<fill_mode>(*smem_offset, gptr,
-                                            kv_idx < kv_len);
+            smem.template load_128b_async<fill_mode>(*smem_offset, gptr,
+                                                     kv_idx < kv_len);
             kv_idx += NUM_WARPS * 8;
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 8,
                                                                UPCAST_STRIDE>(
@@ -561,7 +561,7 @@ load_q_global_smem(uint32_t packed_offset,
                        lane_idx / WARP_STEP_SIZE;
         uint32_t col = lane_idx % WARP_STEP_SIZE;
         uint32_t q_smem_offset_w =
-            q_smem->get_permuted_offset<UPCAST_STRIDE_Q>(row, col);
+            q_smem->template get_permuted_offset<UPCAST_STRIDE_Q>(row, col);
 
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
@@ -580,8 +580,9 @@ load_q_global_smem(uint32_t packed_offset,
                      ++mma_do)
                 {
                     // load q fragment from gmem to smem
-                    q_smem->load_128b_async<SharedMemFillMode::kNoFill>(
-                        q_smem_offset_w, q_ptr, q_idx < qo_upper_bound);
+                    q_smem
+                        ->template load_128b_async<SharedMemFillMode::kNoFill>(
+                            q_smem_offset_w, q_ptr, q_idx < qo_upper_bound);
                     q_smem_offset_w =
                         q_smem
                             ->template advance_offset_by_column<WARP_STEP_SIZE>(
@@ -841,8 +842,8 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
                 b_frag_f8[0] = frag_layout_swizzle_16b_to_8b(b_frag_f8[0]);
                 b_frag_f8[1] = frag_layout_swizzle_16b_to_8b(b_frag_f8[1]);
                 vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::
-                    cast<8>((typename KTraits::DTypeQ *)b_frag,
-                            (typename KTraits::DTypeKV *)b_frag_f8);
+                    template cast<8>((typename KTraits::DTypeQ *)b_frag,
+                                     (typename KTraits::DTypeKV *)b_frag_f8);
             }
             else {
                 k_smem->ldmatrix_m8n8x4(*k_smem_offset_r, b_frag);
@@ -1113,6 +1114,8 @@ __device__ __forceinline__ void update_mdo_states(
             }
         }
         else if constexpr (std::is_same_v<DTypeQKAccum, half>) {
+#warning "Not implemented yet ...."
+#if 0
             const half2 sm_scale = __float2half2_rn(variant.sm_scale_log2);
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
@@ -1169,6 +1172,7 @@ __device__ __forceinline__ void update_mdo_states(
                     }
                 }
             }
+#endif
         }
     }
 }
@@ -1190,7 +1194,7 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
             for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-                vec_cast<typename KTraits::DTypeQ, float>::cast<8>(
+                vec_cast<typename KTraits::DTypeQ, float>::template cast<8>(
                     s_frag_f16[mma_q][mma_kv], s_frag[mma_q][mma_kv]);
             }
         }
@@ -1239,7 +1243,7 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
                     frag_layout_swizzle_16b_to_8b_trans(b_frag_f8[0]);
                 b_frag_f8[1] =
                     frag_layout_swizzle_16b_to_8b_trans(b_frag_f8[1]);
-                vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::
+                vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::template
                     cast<8>((typename KTraits::DTypeQ *)b_frag,
                             (typename KTraits::DTypeKV *)b_frag_f8);
                 swap(b_frag[1], b_frag[2]);
@@ -1552,19 +1556,19 @@ write_o_reg_gmem(float (*o_frag)[KTraits::NUM_MMA_D_VO][8],
                 for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d)
                 {
                     uint32_t o_frag_f16[8 / 2];
-                    vec_cast<DTypeO, float>::cast<8>((DTypeO *)o_frag_f16,
-                                                     o_frag[mma_q][mma_d]);
+                    vec_cast<DTypeO, float>::template cast<8>(
+                        (DTypeO *)o_frag_f16, o_frag[mma_q][mma_d]);
 
 #ifdef FLASHINFER_STMATRIX_M8N8X4_ENABLED
                     uint32_t o_smem_offset_w =
-                        o_smem->get_permuted_offset<UPCAST_STRIDE_O>(
+                        o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
                             (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 +
                                 lane_idx % 16,
                             mma_d * 2 + lane_idx / 16);
                     o_smem->stmatrix_m8n8x4(o_smem_offset_w, o_frag_f16);
 #else
                     uint32_t o_smem_offset_w =
-                        o_smem->get_permuted_offset<UPCAST_STRIDE_O>(
+                        o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
                             (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 +
                                 lane_idx / 4,
                             mma_d * 2);
@@ -1585,7 +1589,7 @@ write_o_reg_gmem(float (*o_frag)[KTraits::NUM_MMA_D_VO][8],
             }
 
             uint32_t o_smem_offset_w =
-                o_smem->get_permuted_offset<UPCAST_STRIDE_O>(
+                o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
                     warp_idx_x * KTraits::NUM_MMA_Q * 16 + lane_idx / 8,
                     lane_idx % 8);
 
@@ -1763,9 +1767,10 @@ SinglePrefillWithKVCacheDevice(const Params params,
                                        (kv_head_idx * group_size) * o_stride_h
                                  : o + (kv_head_idx * group_size) * o_stride_h;
 
-        uint32_t q_smem_offset_r = qo_smem.get_permuted_offset<UPCAST_STRIDE_Q>(
-            get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16 + lane_idx % 16,
-            lane_idx / 16);
+        uint32_t q_smem_offset_r =
+            qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
+                get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16 + lane_idx % 16,
+                lane_idx / 16);
 
         load_q_global_smem<KTraits>(qo_packed_idx_base, qo_len, q_ptr_base,
                                     q_stride_n, q_stride_h, group_size,
@@ -2023,10 +2028,7 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params,
 
         int dev_id = 0;
         FI_GPU_CALL(gpuGetDevice(&dev_id));
-        int max_smem_per_sm = 0;
-        FI_GPU_CALL(gpuDeviceGetAttribute(
-            &max_smem_per_sm, gpuDevAttrMaxSharedMemoryPerMultiProcessor,
-            dev_id));
+        int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
         // we expect each sm execute two threadblocks
         const int num_ctas_per_sm =
             max_smem_per_sm >= 2 * (CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ) +
@@ -2281,9 +2283,10 @@ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKVCacheKernel
                 : o + o_indptr[request_idx] * o_stride_n +
                       (kv_head_idx * group_size) * o_stride_h;
 
-        uint32_t q_smem_offset_r = qo_smem.get_permuted_offset<UPCAST_STRIDE_Q>(
-            get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16 + lane_idx % 16,
-            lane_idx / 16);
+        uint32_t q_smem_offset_r =
+            qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
+                get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16 + lane_idx % 16,
+                lane_idx / 16);
 
         load_q_global_smem<KTraits>(qo_packed_idx_base, qo_upper_bound,
                                     q_ptr_base, q_stride_n, q_stride_h,
@@ -2642,9 +2645,10 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
                       (kv_head_idx * group_size) * o_stride_h
                 : o + o_indptr[request_idx] * o_stride_n +
                       (kv_head_idx * group_size) * o_stride_h;
-        uint32_t q_smem_offset_r = qo_smem.get_permuted_offset<UPCAST_STRIDE_Q>(
-            get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16 + lane_idx % 16,
-            lane_idx / 16);
+        uint32_t q_smem_offset_r =
+            qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
+                get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16 + lane_idx % 16,
+                lane_idx / 16);
 
         load_q_global_smem<KTraits>(qo_packed_idx_base, qo_upper_bound,
                                     q_ptr_base, q_stride_n, q_stride_h,
@@ -2952,9 +2956,7 @@ BatchPrefillWithRaggedKVCacheDispatched(Params params,
 
     int dev_id = 0;
     FI_GPU_CALL(gpuGetDevice(&dev_id));
-    int max_smem_per_sm = 0;
-    FI_GPU_CALL(gpuDeviceGetAttribute(
-        &max_smem_per_sm, gpuDevAttrMaxSharedMemoryPerMultiProcessor, dev_id));
+    int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
     // we expect each sm execute two threadblocks
     const int num_ctas_per_sm =
         max_smem_per_sm >= 2 * (CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ) +
@@ -3083,9 +3085,7 @@ BatchPrefillWithPagedKVCacheDispatched(Params params,
 
     int dev_id = 0;
     FI_GPU_CALL(gpuGetDevice(&dev_id));
-    int max_smem_per_sm = 0;
-    FI_GPU_CALL(gpuDeviceGetAttribute(
-        &max_smem_per_sm, gpuDevAttrMaxSharedMemoryPerMultiProcessor, dev_id));
+    int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
     // we expect each sm execute two threadblocks
     const int num_ctas_per_sm =
         max_smem_per_sm >= 2 * (CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ) +

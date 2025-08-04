@@ -26,6 +26,7 @@ namespace detail_t = flashinfer::gpu_iface::vec_dtypes::detail::hip;
 
 // Re-export types and functions from the appropriate backend
 // This allows code to use flashinfer::gpu_iface::vec_dtypes::vec_t<float, 4>
+using detail_t::vec_cast;
 using detail_t::vec_t;
 
 } // namespace vec_dtypes

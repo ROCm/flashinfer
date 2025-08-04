@@ -40,7 +40,8 @@
 #elif defined(PLATFORM_HIP_DEVICE)
 #define gpuGetDevice hipGetDevice
 #define gpuLaunchKernel hipLaunchKernel
-#define gpuFuncSetAttribute hipFuncSetAttribute
+#define gpuFuncSetAttribute(func, attr, val)                                   \
+    hipFuncSetAttribute(reinterpret_cast<const void *>(func), attr, val)
 #define gpuDeviceGetAttribute hipDeviceGetAttribute
 #define gpuDeviceSynchronize hipDeviceSynchronize
 #endif
@@ -48,6 +49,7 @@
 #if defined(PLATFORM_CUDA_DEVICE)
 #define gpuMemcpy cudaMemcpy
 #define gpuMalloc cudaMalloc
+#define gpuMemset cudaMemset
 #define gpFree cudaFree
 #define gpuMemCpyAsync cudaMemcpyAsync
 #define gpuMemcpyHostToDevice cudaMemcpyHostToDevice
@@ -55,6 +57,7 @@
 #elif defined(PLATFORM_HIP_DEVICE)
 #define gpuMemcpy hipMemcpy
 #define gpuMalloc hipMalloc
+#define gpuMemset hipMemset
 #define gpuFree hipFree
 #define gpuMemcpyAsync hipMemcpyAsync
 #define gpuMemcpyHostToDevice hipMemcpyHostToDevice
@@ -129,6 +132,7 @@
 #define gpuLaunchConfig_t hipLaunchConfig_t
 #define gpuLaunchAttribute hipLaunchAttribute
 #endif
+
 // CUDA error checking macro (replaces FLASHINFER_CUDA_CALL)
 #define FI_GPU_CALL(call)                                                      \
     do {                                                                       \
@@ -140,3 +144,18 @@
             throw std::runtime_error(err_msg.str());                           \
         }                                                                      \
     } while (0)
+
+inline int getMaxSharedMemPerMultiprocessor(int dev_id)
+{
+    int max_smem_per_sm = 0;
+#if defined(PLATFORM_CUDA_DEVICE)
+    FI_GPU_CALL(gpuDeviceGetAttribute(
+        &max_smem_per_sm, gpuDevAttrMaxSharedMemoryPerMultiProcessor, dev_id));
+#elif defined(PLATFORM_HIP_DEVICE)
+    hipDeviceProp_t deviceProp;
+    FI_GPU_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
+    max_smem_per_sm = deviceProp.sharedMemPerMultiprocessor;
+#endif
+
+    return max_smem_per_sm;
+}
