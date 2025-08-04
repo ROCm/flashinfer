@@ -1,26 +1,24 @@
-#include <thrust/device_vector.h>
-#include <thrust/host_vector.h>
-#include <thrust/random.h>
-#include <thrust/transform.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <optional>
+#include <random>
+#include <string>
+#include <vector>
+
+// GPU interface headers
 #include <flashinfer/attention/generic/pos_enc.cuh>
 #include <flashinfer/attention/generic/prefill.cuh>
 #include <flashinfer/attention/generic/variant_helper.cuh>
 #include <flashinfer/attention/generic/variants.cuh>
-#include <flashinfer/gpu_iface/enums.hpp>
-#include <flashinfer/gpu_iface/fastdiv.cuh>
-#include <flashinfer/gpu_iface/layout.cuh>
-#include <flashinfer/gpu_iface/math_ops.hpp>
-#include <flashinfer/gpu_iface/utils.cuh>
-#include <iomanip>
-#include <iostream>
-#include <optional>
-#include <string>
-#include <vector>
+#include <gpu_iface/fastdiv.cuh>
+#include <gpu_iface/layout.cuh>
+#include <gpu_iface/math_ops.hpp>
+#include <gpu_iface/platform.hpp>
+#include <gpu_iface/utils.cuh>
 
 namespace flashinfer
 {
@@ -199,24 +197,49 @@ std::vector<T> single_mha(const std::vector<T> &q,
 
 } // namespace reference
 
-// Function to validate GPU results against CPU reference
-bool validate_results(const thrust::host_vector<half> &gpu_output,
+// Helper function to generate random data (without Thrust)
+void generate_random_data(half *data,
+                          size_t size,
+                          float min_val = -1.0f,
+                          float max_val = 1.0f)
+{
+    std::vector<half> host_data(size);
+    std::mt19937 rng(42); // Fixed seed for reproducibility
+    std::uniform_real_distribution<float> dist(min_val, max_val);
+
+    for (size_t i = 0; i < size; ++i) {
+        host_data[i] = static_cast<half>(dist(rng));
+    }
+
+    // Copy to device
+    FI_GPU_CALL(gpuMemcpy(data, host_data.data(), size * sizeof(half),
+                          gpuMemcpyHostToDevice));
+}
+
+// Function to validate GPU results against CPU reference (simplified)
+bool validate_results(const half *gpu_output,
+                      size_t gpu_size,
                       const std::vector<half> &cpu_output,
                       float rtol = 1e-3f,
                       float atol = 1e-3f)
 {
-    if (gpu_output.size() != cpu_output.size()) {
-        std::cerr << "Size mismatch: GPU=" << gpu_output.size()
+    if (gpu_size != cpu_output.size()) {
+        std::cerr << "Size mismatch: GPU=" << gpu_size
                   << " vs CPU=" << cpu_output.size() << std::endl;
         return false;
     }
+
+    // Copy GPU data to host for comparison
+    std::vector<half> host_output(gpu_size);
+    FI_GPU_CALL(gpuMemcpy(host_output.data(), gpu_output,
+                          gpu_size * sizeof(half), gpuMemcpyDeviceToHost));
 
     int errors = 0;
     float max_diff = 0.0f;
     float max_rel_diff = 0.0f;
 
-    for (size_t i = 0; i < gpu_output.size(); ++i) {
-        float gpu_val = static_cast<float>(gpu_output[i]);
+    for (size_t i = 0; i < gpu_size; ++i) {
+        float gpu_val = static_cast<float>(host_output[i]);
         float cpu_val = static_cast<float>(cpu_output[i]);
         float abs_diff = std::abs(gpu_val - cpu_val);
         float rel_diff =
@@ -236,17 +259,16 @@ bool validate_results(const thrust::host_vector<half> &gpu_output,
         }
     }
 
-    float error_rate = static_cast<float>(errors) / gpu_output.size();
+    float error_rate = static_cast<float>(errors) / gpu_size;
     std::cout << "\nValidation Results:" << std::endl;
     std::cout << "  Max absolute difference: " << max_diff << std::endl;
     std::cout << "  Max relative difference: " << max_rel_diff << std::endl;
     std::cout << "  Error rate: " << (error_rate * 100) << "% (" << errors
-              << " / " << gpu_output.size() << " elements)" << std::endl;
+              << " / " << gpu_size << " elements)" << std::endl;
     std::cout << "  Status: " << (error_rate < 0.05 ? "PASSED" : "FAILED")
               << std::endl;
 
-    // Allow up to 5% error rate (similar to the threshold used in the unit
-    // tests)
+    // Allow up to 5% error rate
     return error_rate < 0.05;
 }
 
@@ -299,23 +321,6 @@ public:
         return QKVLayout::kNHD;
     }
 };
-
-// Helper function to generate random data on device
-void generate_random_data(thrust::device_vector<half> &data,
-                          float min_val = -1.0f,
-                          float max_val = 1.0f)
-{
-    thrust::host_vector<half> host_data(data.size());
-
-    thrust::default_random_engine rng(42); // Fixed seed for reproducibility
-    thrust::uniform_real_distribution<float> dist(min_val, max_val);
-
-    for (size_t i = 0; i < host_data.size(); ++i) {
-        host_data[i] = static_cast<half>(dist(rng));
-    }
-
-    data = host_data;
-}
 
 // Dispatch function for half precision
 gpuError_t dispatch_single_prefill(half *q_ptr,
@@ -499,18 +504,26 @@ void print_usage(const char *program_name)
            "(default: 0)\n";
 }
 
+// Main function with simplified memory management
 int main(int argc, char *argv[])
 {
-    // Default parameter values
+    if (argc > 1 &&
+        (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h"))
+    {
+        print_usage(argv[0]);
+        return 0;
+    }
+
+    // Process parameter pairs (--param value)
     uint32_t qo_len = 512;
     uint32_t kv_len = 512;
     uint32_t num_qo_heads = 32;
     uint32_t num_kv_heads = 32;
     uint32_t head_dim = 128;
-    bool causal = true;
-    bool use_fp16_qk_reduction = false;
     QKVLayout kv_layout = QKVLayout::kNHD;
     PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone;
+    bool causal = true;
+    bool use_fp16_qk_reduction = false;
     int32_t window_left = -1;
     float rope_scale = 1.0f;
     float rope_theta = 10000.0f;
@@ -518,102 +531,131 @@ int main(int argc, char *argv[])
     int warmup = 5;
     bool validate = false;
 
-    // Parse command-line arguments
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i += 2) {
         std::string arg = argv[i];
-        if (arg == "--qo_len" && i + 1 < argc)
-            qo_len = std::atoi(argv[++i]);
-        else if (arg == "--kv_len" && i + 1 < argc)
-            kv_len = std::atoi(argv[++i]);
-        else if (arg == "--num_qo_heads" && i + 1 < argc)
-            num_qo_heads = std::atoi(argv[++i]);
-        else if (arg == "--num_kv_heads" && i + 1 < argc)
-            num_kv_heads = std::atoi(argv[++i]);
-        else if (arg == "--head_dim" && i + 1 < argc)
-            head_dim = std::atoi(argv[++i]);
-        else if (arg == "--causal" && i + 1 < argc)
-            causal = ArgParser::get_bool(argv[++i], true);
-        else if (arg == "--use_fp16_qk" && i + 1 < argc)
-            use_fp16_qk_reduction = ArgParser::get_bool(argv[++i], false);
-        else if (arg == "--layout" && i + 1 < argc)
-            kv_layout = ArgParser::get_layout(argv[++i]);
-        else if (arg == "--pos_encoding" && i + 1 < argc)
-            pos_encoding_mode = ArgParser::get_pos_encoding_mode(argv[++i]);
-        else if (arg == "--window_left" && i + 1 < argc)
-            window_left = std::atoi(argv[++i]);
-        else if (arg == "--rope_scale" && i + 1 < argc)
-            rope_scale = std::atof(argv[++i]);
-        else if (arg == "--rope_theta" && i + 1 < argc)
-            rope_theta = std::atof(argv[++i]);
-        else if (arg == "--iterations" && i + 1 < argc)
-            iterations = std::atoi(argv[++i]);
-        else if (arg == "--warmup" && i + 1 < argc)
-            warmup = std::atoi(argv[++i]);
-        else if (arg == "--validate" && i + 1 < argc)
-            validate = ArgParser::get_bool(argv[++i], false);
-        else if (arg == "--help") {
+        if (i + 1 >= argc && arg != "--help" && arg != "-h") {
+            std::cerr << "Missing value for parameter " << arg << std::endl;
             print_usage(argv[0]);
-            return 0;
+            return 1;
+        }
+
+        if (arg == "--qo_len") {
+            qo_len = ArgParser::get_int(argv[i + 1], 512);
+        }
+        else if (arg == "--kv_len") {
+            kv_len = ArgParser::get_int(argv[i + 1], 512);
+        }
+        else if (arg == "--num_qo_heads") {
+            num_qo_heads = ArgParser::get_int(argv[i + 1], 32);
+        }
+        else if (arg == "--num_kv_heads") {
+            num_kv_heads = ArgParser::get_int(argv[i + 1], 32);
+        }
+        else if (arg == "--head_dim") {
+            head_dim = ArgParser::get_int(argv[i + 1], 128);
+        }
+        else if (arg == "--layout") {
+            kv_layout = ArgParser::get_layout(argv[i + 1]);
+        }
+        else if (arg == "--pos_encoding") {
+            pos_encoding_mode = ArgParser::get_pos_encoding_mode(argv[i + 1]);
+        }
+        else if (arg == "--causal") {
+            causal = ArgParser::get_bool(argv[i + 1], true);
+        }
+        else if (arg == "--use_fp16_qk") {
+            use_fp16_qk_reduction = ArgParser::get_bool(argv[i + 1], false);
+        }
+        else if (arg == "--window_left") {
+            window_left = ArgParser::get_int(argv[i + 1], -1);
+        }
+        else if (arg == "--rope_scale") {
+            rope_scale = ArgParser::get_float(argv[i + 1], 1.0f);
+        }
+        else if (arg == "--rope_theta") {
+            rope_theta = ArgParser::get_float(argv[i + 1], 10000.0f);
+        }
+        else if (arg == "--iterations") {
+            iterations = ArgParser::get_int(argv[i + 1], 10);
+        }
+        else if (arg == "--warmup") {
+            warmup = ArgParser::get_int(argv[i + 1], 5);
+        }
+        else if (arg == "--validate") {
+            validate = ArgParser::get_bool(argv[i + 1], false);
+        }
+        else {
+            std::cerr << "Unknown parameter: " << arg << std::endl;
+            print_usage(argv[0]);
+            return 1;
         }
     }
 
-    // Verify that num_qo_heads is divisible by num_kv_heads
-    if (num_qo_heads % num_kv_heads != 0) {
-        std::cerr << "Error: num_qo_heads must be divisible by num_kv_heads"
-                  << std::endl;
-        return 1;
-    }
+    // Print configuration
+    std::cout << "Configuration:" << std::endl
+              << "  QO Length: " << qo_len << std::endl
+              << "  KV Length: " << kv_len << std::endl
+              << "  QO Heads: " << num_qo_heads << std::endl
+              << "  KV Heads: " << num_kv_heads << std::endl
+              << "  Head Dimension: " << head_dim << std::endl
+              << "  KV Layout: "
+              << (kv_layout == QKVLayout::kNHD ? "NHD" : "HND") << std::endl
+              << "  Position Encoding: "
+              << (pos_encoding_mode == PosEncodingMode::kNone        ? "None"
+                  : pos_encoding_mode == PosEncodingMode::kRoPELlama ? "RoPE"
+                                                                     : "ALiBi")
+              << std::endl
+              << "  Causal: " << (causal ? "Yes" : "No") << std::endl
+              << "  Use FP16 QK Reduction: "
+              << (use_fp16_qk_reduction ? "Yes" : "No") << std::endl
+              << "  Window Left: " << window_left << std::endl
+              << "  RoPE Scale: " << rope_scale << std::endl
+              << "  RoPE Theta: " << rope_theta << std::endl
+              << "  Iterations: " << iterations << std::endl
+              << "  Warmup: " << warmup << std::endl
+              << "  Validation: " << (validate ? "Yes" : "No") << std::endl;
 
-    // Display configuration
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  qo_len = " << qo_len << std::endl;
-    std::cout << "  kv_len = " << kv_len << std::endl;
-    std::cout << "  num_qo_heads = " << num_qo_heads << std::endl;
-    std::cout << "  num_kv_heads = " << num_kv_heads << std::endl;
-    std::cout << "  head_dim = " << head_dim << std::endl;
-    std::cout << "  kv_layout = "
-              << (kv_layout == QKVLayout::kNHD ? "NHD" : "HND") << std::endl;
-    std::cout << "  causal = " << (causal ? "true" : "false") << std::endl;
-    std::cout << "  data_type = half" << std::endl;
-    std::cout << "  use_fp16_qk_reduction = "
-              << (use_fp16_qk_reduction ? "true" : "false") << std::endl;
-    std::cout << "  validate = " << (validate ? "true" : "false") << std::endl;
-
-    // Initialize and create stream
+    // Create stream
     gpuStream_t stream;
-    gpuStreamCreate(&stream);
+    FI_GPU_CALL(gpuStreamCreate(&stream));
 
-    // Allocate device memory using Thrust - only for half precision
-    thrust::device_vector<half> q(qo_len * num_qo_heads * head_dim);
-    thrust::device_vector<half> k(kv_len * num_kv_heads * head_dim);
-    thrust::device_vector<half> v(kv_len * num_kv_heads * head_dim);
-    thrust::device_vector<half> o(qo_len * num_qo_heads * head_dim);
-    thrust::device_vector<half> tmp(qo_len * num_qo_heads * head_dim);
-    thrust::device_vector<float> lse(qo_len * num_qo_heads);
+    // Allocate device memory using gpuMalloc instead of Thrust
+    half *q_dev, *k_dev, *v_dev, *o_dev, *tmp_dev;
+    float *lse_dev;
 
-    // Generate random data
-    generate_random_data(q);
-    generate_random_data(k);
-    generate_random_data(v);
-    thrust::fill(o.begin(), o.end(), half(0.0f));
-    thrust::fill(tmp.begin(), tmp.end(), half(0.0f));
-    thrust::fill(lse.begin(), lse.end(), 0.0f);
+    size_t q_size = qo_len * num_qo_heads * head_dim;
+    size_t k_size = kv_len * num_kv_heads * head_dim;
+    size_t v_size = kv_len * num_kv_heads * head_dim;
+    size_t o_size = qo_len * num_qo_heads * head_dim;
+    size_t lse_size = qo_len * num_qo_heads;
 
-    // Calculate SM scale if not provided
+    FI_GPU_CALL(gpuMalloc(&q_dev, q_size * sizeof(half)));
+    FI_GPU_CALL(gpuMalloc(&k_dev, k_size * sizeof(half)));
+    FI_GPU_CALL(gpuMalloc(&v_dev, v_size * sizeof(half)));
+    FI_GPU_CALL(gpuMalloc(&o_dev, o_size * sizeof(half)));
+    FI_GPU_CALL(gpuMalloc(&tmp_dev, o_size * sizeof(half)));
+    FI_GPU_CALL(gpuMalloc(&lse_dev, lse_size * sizeof(float)));
+
+    // Initialize data
+    generate_random_data(q_dev, q_size);
+    generate_random_data(k_dev, k_size);
+    generate_random_data(v_dev, v_size);
+
+    // Zero out output arrays
+    FI_GPU_CALL(gpuMemset(o_dev, 0, o_size * sizeof(half)));
+    FI_GPU_CALL(gpuMemset(tmp_dev, 0, o_size * sizeof(half)));
+    FI_GPU_CALL(gpuMemset(lse_dev, 0, lse_size * sizeof(float)));
+
+    // Calculate SM scale
     float sm_scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
-    // Warm-up runs
+    // Warmup runs
     for (int i = 0; i < warmup; ++i) {
         gpuError_t status = dispatch_single_prefill(
-            thrust::raw_pointer_cast(q.data()),
-            thrust::raw_pointer_cast(k.data()),
-            thrust::raw_pointer_cast(v.data()),
-            thrust::raw_pointer_cast(o.data()),
-            thrust::raw_pointer_cast(tmp.data()),
-            thrust::raw_pointer_cast(lse.data()), num_qo_heads, num_kv_heads,
-            qo_len, kv_len, head_dim, kv_layout, pos_encoding_mode, causal,
-            use_fp16_qk_reduction, sm_scale, window_left, rope_scale,
-            rope_theta, stream);
+            q_dev, k_dev, v_dev, o_dev, tmp_dev, lse_dev, num_qo_heads,
+            num_kv_heads, qo_len, kv_len, head_dim, kv_layout,
+            pos_encoding_mode, causal, use_fp16_qk_reduction, sm_scale,
+            window_left, rope_scale, rope_theta, stream);
 
         if (status != gpuSuccess) {
             std::cerr << "Error during warmup: " << gpuGetErrorString(status)
@@ -624,22 +666,17 @@ int main(int argc, char *argv[])
 
     // Timing runs
     gpuEvent_t start, stop;
-    gpuEventCreate(&start);
-    gpuEventCreate(&stop);
+    FI_GPU_CALL(gpuEventCreate(&start));
+    FI_GPU_CALL(gpuEventCreate(&stop));
 
-    gpuEventRecord(start, stream);
+    FI_GPU_CALL(gpuEventRecord(start, stream));
 
     for (int i = 0; i < iterations; ++i) {
         gpuError_t status = dispatch_single_prefill(
-            thrust::raw_pointer_cast(q.data()),
-            thrust::raw_pointer_cast(k.data()),
-            thrust::raw_pointer_cast(v.data()),
-            thrust::raw_pointer_cast(o.data()),
-            thrust::raw_pointer_cast(tmp.data()),
-            thrust::raw_pointer_cast(lse.data()), num_qo_heads, num_kv_heads,
-            qo_len, kv_len, head_dim, kv_layout, pos_encoding_mode, causal,
-            use_fp16_qk_reduction, sm_scale, window_left, rope_scale,
-            rope_theta, stream);
+            q_dev, k_dev, v_dev, o_dev, tmp_dev, lse_dev, num_qo_heads,
+            num_kv_heads, qo_len, kv_len, head_dim, kv_layout,
+            pos_encoding_mode, causal, use_fp16_qk_reduction, sm_scale,
+            window_left, rope_scale, rope_theta, stream);
 
         if (status != gpuSuccess) {
             std::cerr << "Error during benchmark: " << gpuGetErrorString(status)
@@ -648,14 +685,14 @@ int main(int argc, char *argv[])
         }
     }
 
-    gpuEventRecord(stop, stream);
-    gpuEventSynchronize(stop);
+    FI_GPU_CALL(gpuEventRecord(stop, stream));
+    FI_GPU_CALL(gpuEventSynchronize(stop));
 
     float elapsed_ms;
-    gpuEventElapsedTime(&elapsed_ms, start, stop);
+    FI_GPU_CALL(gpuEventElapsedTime(&elapsed_ms, start, stop));
     float avg_ms = elapsed_ms / iterations;
 
-    // Calculate FLOPS
+    // Calculate and report performance
     double flops =
         calculate_flops(qo_len, kv_len, num_qo_heads, head_dim, causal);
     double tflops = flops / (avg_ms * 1e-3) / 1e12;
@@ -670,13 +707,14 @@ int main(int argc, char *argv[])
     if (validate) {
         std::cout << "\nRunning validation..." << std::endl;
 
-        // Copy output from GPU to host for validation
-        thrust::host_vector<half> h_output = o;
-
-        // Create input data on host for CPU reference
-        std::vector<half> h_q(q.begin(), q.end());
-        std::vector<half> h_k(k.begin(), k.end());
-        std::vector<half> h_v(v.begin(), v.end());
+        // Copy input data to host for CPU reference
+        std::vector<half> h_q(q_size), h_k(k_size), h_v(v_size);
+        FI_GPU_CALL(gpuMemcpy(h_q.data(), q_dev, q_size * sizeof(half),
+                              gpuMemcpyHostToDevice));
+        FI_GPU_CALL(gpuMemcpy(h_k.data(), k_dev, k_size * sizeof(half),
+                              gpuMemcpyHostToDevice));
+        FI_GPU_CALL(gpuMemcpy(h_v.data(), v_dev, v_size * sizeof(half),
+                              gpuMemcpyHostToDevice));
 
         // Compute reference output on CPU
         std::vector<half> ref_output = reference::single_mha(
@@ -684,16 +722,23 @@ int main(int argc, char *argv[])
             causal, kv_layout, pos_encoding_mode, rope_scale, rope_theta);
 
         // Validate results
-        bool validation_passed = validate_results(h_output, ref_output);
+        bool validation_passed = validate_results(o_dev, o_size, ref_output);
 
         // Report validation status
         std::cout << "Validation " << (validation_passed ? "PASSED" : "FAILED")
                   << std::endl;
     }
 
-    gpuEventDestroy(start);
-    gpuEventDestroy(stop);
-    gpuStreamDestroy(stream);
+    // Cleanup
+    FI_GPU_CALL(gpuEventDestroy(start));
+    FI_GPU_CALL(gpuEventDestroy(stop));
+    FI_GPU_CALL(gpuStreamDestroy(stream));
+    FI_GPU_CALL(gpuFree(q_dev));
+    FI_GPU_CALL(gpuFree(k_dev));
+    FI_GPU_CALL(gpuFree(v_dev));
+    FI_GPU_CALL(gpuFree(o_dev));
+    FI_GPU_CALL(gpuFree(tmp_dev));
+    FI_GPU_CALL(gpuFree(lse_dev));
 
     return 0;
 }
