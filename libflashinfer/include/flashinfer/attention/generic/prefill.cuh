@@ -40,17 +40,6 @@ using gpu_iface::vec_dtypes::vec_cast;
 
 constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
 
-// Defines thread layouts that are specific to AMD CDNA3 or Nvidia warp sizes.
-#if defined(PLATFORM_HIP_DEVICE)
-constexpr uint32_t WARP_THREAD_COLS = 16;
-constexpr uint32_t WARP_THREAD_ROWS = 4;
-constexpr uint32_t HP_QUERY_ELEMS_PER_THREAD = 4;
-#else
-constexpr uint32_t WARP_THREAD_COLS = 8;
-constexpr uint32_t WARP_THREAD_ROWS = 4;
-constexpr uint32_t HP_QUERY_ELEMS_PER_THREAD = 8;
-#endif
-
 constexpr uint32_t get_num_warps_q(const uint32_t cta_tile_q)
 {
     if (cta_tile_q > 16) {
@@ -133,37 +122,61 @@ struct KernelTraits
     static constexpr uint32_t NUM_MMA_D_VO = NUM_MMA_D_VO_;
     static constexpr uint32_t NUM_WARPS_Q = NUM_WARPS_Q_;
     static constexpr uint32_t NUM_WARPS_KV = NUM_WARPS_KV_;
-    static constexpr uint32_t NUM_THREADS =
-        NUM_WARPS_Q * NUM_WARPS_KV * WARP_SIZE;
     static constexpr uint32_t NUM_WARPS = NUM_WARPS_Q * NUM_WARPS_KV;
     static constexpr uint32_t HEAD_DIM_QK = NUM_MMA_D_QK * 16;
     static constexpr uint32_t HEAD_DIM_VO = NUM_MMA_D_VO * 16;
-    static constexpr uint32_t UPCAST_STRIDE_Q =
-        HEAD_DIM_QK / upcast_size<DTypeQ_>();
-    static constexpr uint32_t UPCAST_STRIDE_K =
-        HEAD_DIM_QK / upcast_size<DTypeKV_>();
-    static constexpr uint32_t UPCAST_STRIDE_V =
-        HEAD_DIM_VO / upcast_size<DTypeKV_>();
-    static constexpr uint32_t UPCAST_STRIDE_O =
-        HEAD_DIM_VO / upcast_size<DTypeO_>();
     static constexpr uint32_t CTA_TILE_Q = CTA_TILE_Q_;
     static constexpr uint32_t CTA_TILE_KV = NUM_MMA_KV * NUM_WARPS_KV * 16;
-
-    static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B;
-    static constexpr SwizzleMode SWIZZLE_MODE_KV =
-        (sizeof(DTypeKV_) == 1 && HEAD_DIM_VO == 64) ? SwizzleMode::k64B
-                                                     : SwizzleMode::k128B;
-    static constexpr uint32_t KV_THR_LAYOUT_ROW =
-        SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 8;
-    static constexpr uint32_t KV_THR_LAYOUT_COL =
-        SWIZZLE_MODE_KV == SwizzleMode::k128B ? 8 : 4;
     static constexpr PosEncodingMode POS_ENCODING_MODE = POS_ENCODING_MODE_;
+
     using DTypeQ = DTypeQ_;
     using DTypeKV = DTypeKV_;
     using DTypeO = DTypeO_;
     using DTypeQKAccum = DTypeQKAccum_;
     using IdType = IdType_;
     using AttentionVariant = AttentionVariant_;
+
+#if defined(PLATFORM_HIP_DEVICE)
+    static_assert(
+        sizeof(DTypeKV_) != 1,
+        "8-bit types not supported for CDNA3") static constexpr uint32_t
+        NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 64;
+    constexpr uint32_t WARP_THREAD_COLS = 16;
+    constexpr uint32_t WARP_THREAD_ROWS = 4;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = 4;
+    constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
+    // FIXME: Update with a proper swizzle pattern. Linear is used primarily
+    // for intial testing.
+    static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::kLinear;
+    static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::kLinear;
+    // Presently we use 16x4 thread layout for all cases.
+    static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
+    static constexpr uint32_t KV_THR_LAYOUT_COL = WARP_THREAD_COLS;
+#else
+    static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 32;
+    constexpr uint32_t WARP_THREAD_COLS = 8;
+    constexpr uint32_t WARP_THREAD_ROWS = 4;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = 8;
+    constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
+
+    static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B;
+    static constexpr SwizzleMode SWIZZLE_MODE_KV =
+        (sizeof(DTypeKV_) == 1 && HEAD_DIM_VO == 64) ? SwizzleMode::k64B
+                                                     : SwizzleMode::k128B;
+    static constexpr uint32_t KV_THR_LAYOUT_ROW =
+        SWIZZLE_MODE_KV == SwizzleMode::k128B ? WARP_THREAD_ROWS
+                                              : WARP_THREAD_COLS;
+    static constexpr uint32_t KV_THR_LAYOUT_COL =
+        SWIZZLE_MODE_KV == SwizzleMode::k128B ? 8 : 4;
+#endif
+    static constexpr uint32_t UPCAST_STRIDE_Q =
+        HEAD_DIM_QK / upcast_size<DTypeQ_, VECTOR_BIT_WIDTH>();
+    static constexpr uint32_t UPCAST_STRIDE_K =
+        HEAD_DIM_QK / upcast_size<DTypeKV_, VECTOR_BIT_WIDTH>();
+    static constexpr uint32_t UPCAST_STRIDE_V =
+        HEAD_DIM_VO / upcast_size<DTypeKV_, VECTOR_BIT_WIDTH>();
+    static constexpr uint32_t UPCAST_STRIDE_O =
+        HEAD_DIM_VO / upcast_size<DTypeO_, VECTOR_BIT_WIDTH>();
 
     static constexpr bool IsInvalid()
     {
@@ -340,19 +353,18 @@ __device__ __forceinline__ void produce_kv_helper_(uint32_t warp_idx,
                                                    uint32_t lane_idx)
 {
     using DTypeKV = typename KTraits::DTypeKV;
+    constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
+    constexpr uint32_t WARP_THREAD_ROWS = KTraits::WARP_THREAD_ROWS;
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
     constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
     constexpr uint32_t NUM_MMA_D =
         produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
-
-#if defined(PLATFORM_HIP_DEVICE)
-    constexpr uint32_t HEAD_DIM =
-        produce_v ? KTraits::HEAD_DIM_QK : KTraits::HEAD_DIM_VO;
-    constexpr uint32_t UPCAST_STRIDE = HEAD_DIM / HP_QUERY_ELEMS_PER_THREAD;
-    constexpr uint32_t COLUMN_RESET_OFFSET = (NUM_MMA_D / 4) * WARP_THREAD_COLS;
-#else
     constexpr uint32_t UPCAST_STRIDE =
         produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
+
+#if defined(PLATFORM_HIP_DEVICE)
+    constexpr uint32_t COLUMN_RESET_OFFSET = (NUM_MMA_D / 4) * WARP_THREAD_COLS;
+#else
     constexpr uint32_t COLUMN_RESET_OFFSET = sizeof(DTypeKV) * NUM_MMA_D;
 #endif
 
@@ -589,13 +601,14 @@ load_q_global_smem(uint32_t packed_offset,
                    const dim3 tid = threadIdx)
 {
     using DTypeQ = typename KTraits::DTypeQ;
+    constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
+    constexpr uint32_t WARP_THREAD_ROWS = KTraits::WARP_THREAD_ROWS;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+
 #if defined(PLATFORM_HIP_DEVICE)
-    constexpr uint32_t UPCAST_STRIDE_Q =
-        KTraits::HEAD_DIM_QK / HP_QUERY_ELEMS_PER_THREAD;
     constexpr uint32_t COLUMN_RESET_OFFSET =
         (NUM_MMA_D_QK / 4) * WARP_THREAD_COLS;
 #else
-    constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
     constexpr uint32_t COLUMN_RESET_OFFSET = 2 * KTraits::NUM_MMA_D_QK;
 #endif
 
@@ -634,7 +647,7 @@ load_q_global_smem(uint32_t packed_offset,
 #endif
                     q_smem_offset_w = q_smem->template advance_offset_by_column<
                         WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
-                    q_ptr += HP_QUERY_ELEMS_PER_THREAD * upcast_size<DTypeQ>();
+                    q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ>();
                 }
                 q_smem_offset_w =
                     q_smem->template advance_offset_by_row<WARP_THREAD_ROWS,
