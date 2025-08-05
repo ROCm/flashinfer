@@ -144,11 +144,13 @@ struct KernelTraits
     constexpr uint32_t WARP_THREAD_COLS = 16;
     constexpr uint32_t WARP_THREAD_ROWS = 4;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = 4;
+    constexpr uint32_t INT32_ELEMS_PER_THREAD = 2;
     constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
     // FIXME: Update with a proper swizzle pattern. Linear is used primarily
     // for intial testing.
     static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::kLinear;
     static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::kLinear;
+    static constexpr SmemBasePtrTy = uint2;
     // Presently we use 16x4 thread layout for all cases.
     static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
     static constexpr uint32_t KV_THR_LAYOUT_COL = WARP_THREAD_COLS;
@@ -157,12 +159,14 @@ struct KernelTraits
     constexpr uint32_t WARP_THREAD_COLS = 8;
     constexpr uint32_t WARP_THREAD_ROWS = 4;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = 8;
+    constexpr uint32_t INT32_ELEMS_PER_THREAD = 4;
     constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
 
     static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B;
     static constexpr SwizzleMode SWIZZLE_MODE_KV =
         (sizeof(DTypeKV_) == 1 && HEAD_DIM_VO == 64) ? SwizzleMode::k64B
                                                      : SwizzleMode::k128B;
+    static constexpr SmemBasePtrTy = uint4;
     static constexpr uint32_t KV_THR_LAYOUT_ROW =
         SWIZZLE_MODE_KV == SwizzleMode::k128B ? WARP_THREAD_ROWS
                                               : WARP_THREAD_COLS;
@@ -310,7 +314,11 @@ q_frag_apply_llama_rope(T *x_first_half,
         // 0 1 | 4 5
         // ---------
         // 2 3 | 6 7
+#if defined(PLATFORM_HIP_DEVICE)
+        uint32_t i = reg_id / 2, j = reg_id % 2;
+#else
         uint32_t i = ((reg_id % 4) / 2), j = (reg_id / 4);
+#endif
         __sincosf(float((qo_packed_offset + 8 * i) / group_size) *
                       rope_freq[2 * j + reg_id % 2],
                   &sin, &cos);
@@ -543,6 +551,17 @@ init_rope_freq(float (*rope_freq)[4],
 {
     constexpr uint32_t HEAD_DIM = KTraits::NUM_MMA_D_QK * 16;
     const uint32_t lane_idx = tid_x;
+
+#if defined(PLATFORM_HIP_DEVICE)
+    // MI300: 8 threads handle 8 elements (1 element per thread)
+    constexpr uint32_t THREADS_PER_ROW = 8;
+    constexpr uint32_t ELEMS_PER_THREAD = 1;
+#else
+    // NVIDIA: 4 threads handle 8 elements (2 elements per thread)
+    constexpr uint32_t THREADS_PER_ROW = 4;
+    constexpr uint32_t ELEMS_PER_THREAD = 2;
+#endif
+
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO / 2; ++mma_d) {
 #pragma unroll
@@ -550,27 +569,31 @@ init_rope_freq(float (*rope_freq)[4],
             rope_freq[mma_d][j] =
                 rope_rcp_scale *
                 __powf(rope_rcp_theta,
-                       float(2 * ((mma_d * 16 + (j / 2) * 8 +
-                                   (lane_idx % 4) * 2 + (j % 2)) %
-                                  (HEAD_DIM / 2))) /
+                       float(2 *
+                             ((mma_d * 16 + (j / 2) * 8 +
+                               (lane_idx % THREADS_PER_ROW) * ELEMS_PER_THREAD +
+                               (j % 2)) %
+                              (HEAD_DIM / 2))) /
                            float(HEAD_DIM));
         }
     }
 }
 
 template <typename KTraits>
-__device__ __forceinline__ void
-init_states(typename KTraits::AttentionVariant variant,
-            float (*o_frag)[KTraits::NUM_MMA_D_VO][8],
-            typename KTraits::DTypeQKAccum (*m)[2],
-            float (*d)[2])
+__device__ __forceinline__ void init_states(
+    typename KTraits::AttentionVariant variant,
+    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
+    typename KTraits::DTypeQKAccum (*m)[2],
+    float (*d)[2])
 {
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
         for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
 #pragma unroll
-            for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+            for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD;
+                 ++reg_id)
+            {
                 o_frag[mma_q][mma_d][reg_id] = 0.f;
             }
         }
@@ -660,22 +683,31 @@ load_q_global_smem(uint32_t packed_offset,
 }
 
 template <typename KTraits>
-__device__ __forceinline__ void
-q_smem_inplace_apply_rotary(const uint32_t q_packed_idx,
-                            const uint32_t qo_len,
-                            const uint32_t kv_len,
-                            const uint_fastdiv group_size,
-                            smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
-                            uint32_t *q_smem_offset_r,
-                            float (*rope_freq)[4],
-                            const dim3 tid = threadIdx)
+__device__ __forceinline__ void q_smem_inplace_apply_rotary(
+    const uint32_t q_packed_idx,
+    const uint32_t qo_len,
+    const uint32_t kv_len,
+    const uint_fastdiv group_size,
+    smem_t<KTraits::SWIZZLE_MODE_Q, KTraits::SmemBasePtrTy = uint4> *q_smem,
+    uint32_t *q_smem_offset_r,
+    float (*rope_freq)[4],
+    const dim3 tid = threadIdx)
 {
     if (get_warp_idx_kv<KTraits>(tid.z) == 0) {
         constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
         const uint32_t lane_idx = tid.x;
-        uint32_t q_frag_local[2][4];
+        uint32_t q_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
         static_assert(KTraits::NUM_MMA_D_QK % 4 == 0,
                       "NUM_MMA_D_QK must be a multiple of 4");
+
+#if defined(PLATFORM_HIP_DEVICE)
+        // MI300: 8 threads handle a row of 8 elements
+        const uint32_t pos_group_idx = lane_idx / 8;
+#else
+        // NVIDIA: 4 threads handle a row of 8 elements
+        const uint32_t pos_group_idx = lane_idx / 4;
+#endif
+
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
             uint32_t q_smem_offset_r_first_half = *q_smem_offset_r;
@@ -683,24 +715,24 @@ q_smem_inplace_apply_rotary(const uint32_t q_packed_idx,
             for (uint32_t mma_di = 0; mma_di < KTraits::NUM_MMA_D_QK / 2;
                  ++mma_di)
             {
-                q_smem->ldmatrix_m8n8x4(q_smem_offset_r_first_half,
-                                        q_frag_local[0]);
+                q_smem->template load_fragment(q_smem_offset_r_first_half,
+                                               q_frag_local[0]);
                 uint32_t q_smem_offset_r_last_half =
                     q_smem->template advance_offset_by_column<
                         KTraits::NUM_MMA_D_QK>(q_smem_offset_r_first_half, 0);
-                q_smem->ldmatrix_m8n8x4(q_smem_offset_r_last_half,
-                                        q_frag_local[1]);
+                q_smem->template load_fragment(q_smem_offset_r_last_half,
+                                               q_frag_local[1]);
                 q_frag_apply_llama_rope<typename KTraits::DTypeQ>(
                     (typename KTraits::DTypeQ *)q_frag_local[0],
                     (typename KTraits::DTypeQ *)q_frag_local[1],
                     rope_freq[mma_di],
                     q_packed_idx + kv_len * group_size - qo_len * group_size +
-                        mma_q * 16 + lane_idx / 4,
+                        mma_q * 16 + pos_group_idx,
                     group_size);
-                q_smem->stmatrix_m8n8x4(q_smem_offset_r_last_half,
-                                        q_frag_local[1]);
-                q_smem->stmatrix_m8n8x4(q_smem_offset_r_first_half,
-                                        q_frag_local[0]);
+                q_smem->template store_fragment(q_smem_offset_r_last_half,
+                                                q_frag_local[1]);
+                q_smem->template store_fragment(q_smem_offset_r_first_half,
+                                                q_frag_local[0]);
                 q_smem_offset_r_first_half =
                     q_smem->template advance_offset_by_column<2>(
                         q_smem_offset_r_first_half, mma_di);
@@ -1760,11 +1792,14 @@ SinglePrefillWithKVCacheDevice(const Params params,
             KTraits::SWIZZLE_MODE_Q;
         [[maybe_unused]] constexpr SwizzleMode SWIZZLE_MODE_KV =
             KTraits::SWIZZLE_MODE_KV;
+        [[maybe_unused]] constexpr SmemBasePtrTy = KTraits::SmemBasePtrTy;
         [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_ROW =
             KTraits::KV_THR_LAYOUT_ROW;
         [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_COL =
             KTraits::KV_THR_LAYOUT_COL;
         [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
+        [[maybe_unused]] constexpr HALF_ELEMS_PER_THREAD =
+            KTraits::HALF_ELEMS_PER_THREAD;
 
         DTypeQ *q = params.q;
         DTypeKV *k = params.k;
@@ -1801,8 +1836,9 @@ SinglePrefillWithKVCacheDevice(const Params params,
         AttentionVariant variant(params, /*batch_idx=*/0, smem);
         const uint32_t window_left = variant.window_left;
 
-        DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][8];
-        alignas(16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][8];
+        DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][HALF_ELEMS_PER_THREAD];
+        alignas(
+            16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
         DTypeQKAccum m[NUM_MMA_Q][2];
         float d[NUM_MMA_Q][2];
         float rope_freq[NUM_MMA_D_QK / 2][4];
@@ -1819,7 +1855,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
         const uint32_t qo_packed_idx_base =
             (bx * NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) * NUM_MMA_Q *
             16;
-        smem_t<SWIZZLE_MODE_Q> qo_smem(smem_storage.q_smem);
+        smem_t<SWIZZLE_MODE_Q, SmemBasePtrTy> qo_smem(smem_storage.q_smem);
         const uint32_t o_stride_n = num_qo_heads * HEAD_DIM_VO,
                        o_stride_h = HEAD_DIM_VO;
         DTypeQ *q_ptr_base = q + (kv_head_idx * group_size) * q_stride_h;
@@ -1848,7 +1884,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
             block.sync();
         }
 
-        smem_t<SWIZZLE_MODE_KV> k_smem(smem_storage.k_smem),
+        smem_t<SWIZZLE_MODE_KV, SmemBasePtrTy> k_smem(smem_storage.k_smem),
             v_smem(smem_storage.v_smem);
 
         const uint32_t num_iterations = ceil_div(

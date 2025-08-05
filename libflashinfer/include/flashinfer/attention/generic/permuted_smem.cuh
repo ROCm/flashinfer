@@ -151,6 +151,35 @@ template <SwizzleMode swizzle_mode, typename BasePtrTy = b128_t> struct smem_t
         }
     }
 
+    template <typename T = uint32_t>
+    __device__ __forceinline__ void load_fragment(uint32_t offset, T *frag)
+    {
+#if defined(PLATFORM_HIP_DEVICE)
+        static_assert(sizeof(T) == 4, "Only 32-bit fragment loading supported");
+        reinterpret_cast<uint2 *>(frag)[0] =
+            *reinterpret_cast<const uint2 *>(base + offset);
+        reinterpret_cast<uint2 *>(&frag[2])[0] =
+            *reinterpret_cast<const uint2 *>(base + (offset ^ 0x1));
+#else
+        ldmatrix_m8n8x4(offset, frag);
+#endif
+    }
+
+    template <typename T = uint32_t>
+    __device__ __forceinline__ void store_fragment(uint32_t offset,
+                                                   const T *frag)
+    {
+#if defined(PLATFORM_HIP_DEVICE)
+        static_assert(sizeof(T) == 4, "Only 32-bit fragment storing supported");
+        *reinterpret_cast<uint2 *>(base + offset) =
+            reinterpret_cast<const uint2 *>(frag)[0];
+        *reinterpret_cast<uint2 *>(base + (offset ^ 0x1)) =
+            reinterpret_cast<const uint2 *>(&frag[2])[0];
+#else
+        stmatrix_m8n8x4(offset, frag);
+#endif
+    }
+
     __device__ __forceinline__ void ldmatrix_m8n8x4(uint32_t offset,
                                                     uint32_t *R)
     {
