@@ -335,6 +335,59 @@ q_frag_apply_llama_rope_with_pos(T *x_first_half,
     }
 }
 
+template <bool produce_v, SharedMemFillMode fill_mode, typename KTraits>
+__device__ __forceinline__ void produce_kv_helper_(uint32_t warp_idx,
+                                                   uint32_t lane_idx)
+{
+    using DTypeKV = typename KTraits::DTypeKV;
+    constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
+    constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
+    constexpr uint32_t NUM_MMA_D =
+        produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
+
+#if defined(PLATFORM_HIP_DEVICE)
+    constexpr uint32_t HEAD_DIM =
+        produce_v ? KTraits::HEAD_DIM_QK : KTraits::HEAD_DIM_VO;
+    constexpr uint32_t UPCAST_STRIDE = HEAD_DIM / HP_QUERY_ELEMS_PER_THREAD;
+    constexpr uint32_t COLUMN_RESET_OFFSET = (NUM_MMA_D / 4) * WARP_THREAD_COLS;
+#else
+    constexpr uint32_t UPCAST_STRIDE =
+        produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
+    constexpr uint32_t COLUMN_RESET_OFFSET = sizeof(DTypeKV) * NUM_MMA_D;
+#endif
+
+    uint32_t row = lane_idx / WARP_THREAD_COLS;
+    uint32_t col = lane_idx % WARP_THREAD_COLS;
+    uint32_t kv_idx = kv_idx_base + warp_idx * WARP_THREAD_ROWS + row;
+    // NOTE: NUM_MMA_KV*4/NUM_WARPS_Q = NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
+    static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
+#pragma unroll
+    for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
+#pragma unroll
+        for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
+#if defined(PLATFORM_HIP_DEVICE)
+            smem.template load_64b_async<fill_mode>(*smem_offset, *gptr,
+                                                    kv_idx < kv_len);
+#else
+            smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
+                                                     kv_idx < kv_len);
+#endif
+            *smem_offset =
+                smem.template advance_offset_by_column<WARP_THREAD_COLS>(
+                    *smem_offset, j);
+            *gptr += 8 * upcast_size<DTypeKV>();
+        }
+        kv_idx += NUM_WARPS * WARP_THREAD_ROWS;
+        *smem_offset =
+            smem.template advance_offset_by_row<NUM_WARPS * WARP_THREAD_ROWS,
+                                                UPCAST_STRIDE>(*smem_offset) -
+            COLUMN_RESET_OFFSET;
+        *gptr += NUM_WARPS * WARP_THREAD_ROWS * stride_n -
+                 sizeof(DTypeKV) * NUM_MMA_D * upcast_size<DTypeKV>();
+    }
+    *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
+}
+
 /*!
  * \brief Produce k/v fragments from global memory to shared memory.
  * \tparam fill_mode The fill mode of the shared memory.
@@ -371,30 +424,15 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
                    lane_idx = tid.x;
 
     if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
-        uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / 8;
-        // NOTE: NUM_MMA_KV * 4 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 4 /
-        // num_warps
-        static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
-#pragma unroll
-        for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
-#pragma unroll
-            for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
-                smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
-                                                         kv_idx < kv_len);
-                *smem_offset =
-                    smem.template advance_offset_by_column<8>(*smem_offset, j);
-                *gptr += 8 * upcast_size<DTypeKV>();
-            }
-            kv_idx += NUM_WARPS * 4;
-            *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4,
-                                                               UPCAST_STRIDE>(
-                               *smem_offset) -
-                           sizeof(DTypeKV) * NUM_MMA_D;
-            *gptr += NUM_WARPS * 4 * stride_n -
-                     sizeof(DTypeKV) * NUM_MMA_D * upcast_size<DTypeKV>();
-        }
-        *smem_offset -= CTA_TILE_KV * UPCAST_STRIDE;
+        produce_kv_helper_<produce_kv, fill_mode, KTraits>(uint32_t warp_idx,
+                                                           uint32_t lane_idx)
     }
+#if defined(PLATFORM_HIP_DEVICE)
+    else if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::kLinear) {
+        produce_kv_helper_<produce_kv, fill_mode, KTraits>(uint32_t warp_idx,
+                                                           uint32_t lane_idx)
+    }
+#endif
     else {
         uint32_t kv_idx = kv_idx_base + warp_idx * 8 + lane_idx / 4;
         // NOTE: NUM_MMA_KV * 2 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 2 /
