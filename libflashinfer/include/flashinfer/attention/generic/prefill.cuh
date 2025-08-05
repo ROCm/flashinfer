@@ -39,10 +39,16 @@ using gpu_iface::vec_dtypes::vec_cast;
 // using mma::MMAMode;
 
 constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
+
+// Defines thread layouts that are specific to AMD CDNA3 or Nvidia warp sizes.
 #if defined(PLATFORM_HIP_DEVICE)
-constexpr uint32_t WARP_STEP_SIZE = 16;
+constexpr uint32_t WARP_THREAD_COLS = 16;
+constexpr uint32_t WARP_THREAD_ROWS = 4;
+constexpr uint32_t HP_QUERY_ELEMS_PER_THREAD = 4;
 #else
-constexpr uint32_t WARP_STEP_SIZE = 8; // NVIDIA
+constexpr uint32_t WARP_THREAD_COLS = 8;
+constexpr uint32_t WARP_THREAD_ROWS = 4;
+constexpr uint32_t HP_QUERY_ELEMS_PER_THREAD = 8;
 #endif
 
 constexpr uint32_t get_num_warps_q(const uint32_t cta_tile_q)
@@ -365,8 +371,7 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
                    lane_idx = tid.x;
 
     if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
-        uint32_t kv_idx =
-            kv_idx_base + warp_idx * 4 + lane_idx / WARP_STEP_SIZE;
+        uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / 8;
         // NOTE: NUM_MMA_KV * 4 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 4 /
         // num_warps
         static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
@@ -377,9 +382,8 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
                 smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
                                                          kv_idx < kv_len);
                 *smem_offset =
-                    smem.template advance_offset_by_column<WARP_STEP_SIZE>(
-                        *smem_offset, j);
-                *gptr += WARP_STEP_SIZE * upcast_size<DTypeKV>();
+                    smem.template advance_offset_by_column<8>(*smem_offset, j);
+                *gptr += 8 * upcast_size<DTypeKV>();
             }
             kv_idx += NUM_WARPS * 4;
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4,
@@ -392,10 +396,6 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
         *smem_offset -= CTA_TILE_KV * UPCAST_STRIDE;
     }
     else {
-#if defined(PLATFORM_HIP_DEVICE)
-        static_assert(false,
-                      "SwizzleMode::k64B is not supported on AMD/CDNA3.");
-#else
         uint32_t kv_idx = kv_idx_base + warp_idx * 8 + lane_idx / 4;
         // NOTE: NUM_MMA_KV * 2 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 2 /
         // num_warps
@@ -411,7 +411,6 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
             *gptr += NUM_WARPS * 8 * stride_n;
         }
         *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
-#endif
     }
 }
 
@@ -552,47 +551,58 @@ load_q_global_smem(uint32_t packed_offset,
                    const dim3 tid = threadIdx)
 {
     using DTypeQ = typename KTraits::DTypeQ;
+#if defined(PLATFORM_HIP_DEVICE)
+    constexpr uint32_t UPCAST_STRIDE_Q =
+        KTraits::HEAD_DIM_QK / HP_QUERY_ELEMS_PER_THREAD;
+    constexpr uint32_t COLUMN_RESET_OFFSET =
+        (NUM_MMA_D_QK / 4) * WARP_THREAD_COLS;
+#else
     constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
+    constexpr uint32_t COLUMN_RESET_OFFSET = 2 * KTraits::NUM_MMA_D_QK;
+#endif
+
     const uint32_t lane_idx = tid.x,
                    warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
+    uint32_t row = tid / WARP_THREAD_COLS;
+    uint32_t col = tid % WARP_THREAD_COLS;
 
     if (get_warp_idx_kv<KTraits>(tid.z) == 0) {
-        uint32_t row = warp_idx_x * KTraits::NUM_MMA_Q * WARP_STEP_SIZE +
-                       lane_idx / WARP_STEP_SIZE;
-        uint32_t col = lane_idx % WARP_STEP_SIZE;
         uint32_t q_smem_offset_w =
-            q_smem->template get_permuted_offset<UPCAST_STRIDE_Q>(row, col);
+            q_smem->template get_permuted_offset<UPCAST_STRIDE_Q>(
+                warp_idx_x * KTraits::NUM_MMA_Q * 16 + row, col);
 
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
             for (uint32_t j = 0; j < 2 * 2; ++j) {
                 uint32_t q, r;
-                group_size.divmod(packed_offset + lane_idx / WARP_STEP_SIZE +
-                                      mma_q * 16 + j * 4,
-                                  q, r);
+                group_size.divmod(packed_offset + row + mma_q * 16 + j * 4, q,
+                                  r);
                 const uint32_t q_idx = q;
-                DTypeQ *q_ptr =
-                    q_ptr_base + q * q_stride_n + r * q_stride_h +
-                    (lane_idx % WARP_STEP_SIZE) * upcast_size<DTypeQ>();
+                DTypeQ *q_ptr = q_ptr_base + q * q_stride_n + r * q_stride_h +
+                                col * upcast_size<DTypeQ>();
 #pragma unroll
                 for (uint32_t mma_do = 0; mma_do < KTraits::NUM_MMA_D_QK / 4;
                      ++mma_do)
                 {
+#if defined(PLATFORM_HIP_DEVICE)
                     // load q fragment from gmem to smem
                     q_smem
                         ->template load_128b_async<SharedMemFillMode::kNoFill>(
                             q_smem_offset_w, q_ptr, q_idx < qo_upper_bound);
-                    q_smem_offset_w =
-                        q_smem
-                            ->template advance_offset_by_column<WARP_STEP_SIZE>(
-                                q_smem_offset_w, mma_do);
-                    q_ptr += WARP_STEP_SIZE * upcast_size<DTypeQ>();
+#else
+                    q_smem->template load_64b_async<SharedMemFillMode::kNoFill>(
+                        q_smem_offset_w, q_ptr, q_idx < qo_upper_bound);
+#endif
+                    q_smem_offset_w = q_smem->template advance_offset_by_column<
+                        WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
+                    q_ptr += HP_QUERY_ELEMS_PER_THREAD * upcast_size<DTypeQ>();
                 }
                 q_smem_offset_w =
-                    q_smem->template advance_offset_by_row<4, UPCAST_STRIDE_Q>(
+                    q_smem->template advance_offset_by_row<WARP_THREAD_ROWS,
+                                                           UPCAST_STRIDE_Q>(
                         q_smem_offset_w) -
-                    2 * KTraits::NUM_MMA_D_QK;
+                    COLUMN_RESET_OFFSET;
             }
         }
     }
