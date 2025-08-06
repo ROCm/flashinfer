@@ -805,7 +805,7 @@ k_smem_inplace_apply_rotary(const uint32_t kv_idx_base,
     using DTypeKV = typename KTraits::DTypeKV;
     static_assert(sizeof(DTypeKV) == 2);
     constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
-    uint32_t k_frag_local[2][4];
+    uint32_t k_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
     const uint32_t lane_idx = tid.x;
     if constexpr (KTraits::NUM_MMA_D_QK == 4 && KTraits::NUM_WARPS_Q == 4) {
         static_assert(KTraits::NUM_WARPS_KV == 1);
@@ -904,7 +904,11 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
 {
     constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
     constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
-    uint32_t a_frag[KTraits::NUM_MMA_Q][4], b_frag[4];
+    constexpr uint32_t Q_SMEM_COLUMN_ADVANCE =
+        16 / KTraits::HALF_ELEMS_PER_THREAD;
+
+    uint32_t a_frag[KTraits::NUM_MMA_Q][KTraits::INT32_ELEMS_PER_THREAD],
+        b_frag[KTraits::INT32_ELEMS_PER_THREAD];
     // compute q*k^T
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_QK; ++mma_d) {
@@ -916,13 +920,18 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
                     *q_smem_offset_r);
         }
 
-        *q_smem_offset_r = q_smem->template advance_offset_by_column<2>(
-                               *q_smem_offset_r, mma_d) -
-                           KTraits::NUM_MMA_Q * 16 * UPCAST_STRIDE_Q;
+        *q_smem_offset_r =
+            q_smem->template advance_offset_by_column<Q_SMEM_COLUMN_ADVANCE>(
+                *q_smem_offset_r, mma_d) -
+            KTraits::NUM_MMA_Q * 16 * UPCAST_STRIDE_Q;
 
 #pragma unroll
         for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
             if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
+#if defined(PLATFORM_HIP_DEVICE)
+                static_assert(false,
+                              "FP8 support not yet implemented for CDNA3");
+#endif
                 uint32_t b_frag_f8[2];
                 if (mma_d % 2 == 0) {
                     k_smem->ldmatrix_m8n8x4_left_half(*k_smem_offset_r,
@@ -994,7 +1003,7 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
                                KTraits::NUM_MMA_KV * 16 * UPCAST_STRIDE_K;
         }
     }
-    *q_smem_offset_r -= KTraits::NUM_MMA_D_QK * 2;
+    *q_smem_offset_r -= KTraits::NUM_MMA_D_QK * Q_SMEM_COLUMN_ADVANCE;
     *k_smem_offset_r -=
         KTraits::NUM_MMA_D_QK * sizeof(typename KTraits::DTypeKV);
 }
