@@ -4,8 +4,7 @@
 #include <vector>
 
 // Define WARP_FULL_MASK for HIP
-constexpr uint64_t WARP_FULL_MASK =
-    0xffffffffffffffffULL; // 64-bit mask for HIP
+constexpr uint64_t WARP_FULL_MASK = 0xffffffffffffffffULL;
 
 __device__ __forceinline__ void debug_print_registers(const char *stage,
                                                       uint32_t lane_id,
@@ -44,16 +43,11 @@ __device__ __forceinline__ void debug_print_registers(const char *stage,
     printf("]\n");
 }
 
-__device__ __forceinline__ void transpose_4x4_half_registers_opt(uint32_t *R,
-                                                                 uint32_t *out)
+__device__ __forceinline__ void transpose_4x4_half_registers_opt(uint32_t *R)
 {
     // Calculate lane within 4-thread group
     uint32_t lane_id = threadIdx.x % 64;
     uint32_t lane_in_group = lane_id % 4;
-
-    if (lane_id == 0) {
-        debug_print_registers("Initial", lane_id, lane_in_group, R, 2, 0);
-    }
 
     // === ROUND 1: Exchange with neighbor (XOR with 1) ===
     // T0↔T1, T2↔T3 partial exchange
@@ -66,95 +60,27 @@ __device__ __forceinline__ void transpose_4x4_half_registers_opt(uint32_t *R,
     R[reg_idx] = (R[reg_idx] & keep_mask) |
                  ((exchanged_val >> right_shift_amount) << left_shift_amount);
 
-    // if (lane_in_group & 1) { // Odd threads (1, 3)
-    //     R[reg_idx] = (R[reg_idx] & keep_mask) | (exchanged_val << 16);
-    // }
-    // else { // Even threads (0, 2)
-    //     R[reg_idx] = (R[reg_idx] & keep_mask) | (exchanged_val >> 16);
-    // }
-
-    // // Update based on thread position
-    // if (lane_in_group < 2) {
-    //     uint32_t r0_exchanged = __shfl_xor(R[0], 0x1);
-    //     // Top half (T0, T1) update R[0]
-    //     if (lane_in_group & 1) { // T1
-    //         R[0] = (R[0] & 0x0000FFFF) | (r0_exchanged << 16);
-    //     }
-    //     else { // T0
-    //         R[0] = (R[0] & 0xFFFF0000) | (r0_exchanged >> 16);
-    //     }
-    // }
-    // else {
-    //     uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
-    //     // Bottom half (T2, T3) update R[1]
-    //     if (lane_in_group & 1) { // T1
-    //         R[1] = (R[1] & 0x0000FFFF) | (r1_exchanged << 16);
-    //     }
-    //     else { // T0
-    //         R[1] = (R[1] & 0xFFFF0000) | (r1_exchanged >> 16);
-    //     }
-    // }
-
-    // Debug after first recombination
-    if (lane_id == 03) {
-        debug_print_registers("After Round 1 shuffles", lane_id, lane_in_group,
-                              R, 2, 0);
-    }
-
     // === ROUND 2: Exchange with one hop (XOR with 2) ===
     // T0↔T2, T1↔T3 exchange R[0] and R[1]
-    uint32_t temp0_exchanged = __shfl_xor(R[0], 0x2);
-    uint32_t temp1_exchanged = __shfl_xor(R[1], 0x2);
-
     // Swap entire registers based on thread position
-    if (lane_in_group < 2) {
-        R[1] = temp0_exchanged;
-    }
-    else {
-        // Bottom threads (T2, T3) get R[1] from partner, keep own R[0]
-        R[0] = temp1_exchanged;
-    }
+    uint32_t is_top = 1 - reg_idx;
+    uint32_t temp0 = __shfl_xor(R[0], 0x2);
+    uint32_t temp1 = __shfl_xor(R[1], 0x2);
 
-    if (lane_id == 0) {
-        debug_print_registers("After Round 2 shuffles", lane_id, lane_in_group,
-                              R, 2, 0);
-    }
+    // Compute both possibilities and select
+    R[0] = R[0] * is_top + temp1 * reg_idx;
+    R[1] = temp0 * is_top + R[1] * reg_idx;
 
     // === ROUND 3: Exchange with neighbor again (XOR with 1) ===
     // T0↔T1, T2↔T3 exchange remaining parts
 
-    if (lane_in_group < 2) {
-        uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
-        // Top half (T0, T1) update R[0]
-        if (lane_in_group & 1) { // T1
-            R[1] = (R[1] & 0x0000FFFF) | (r1_exchanged << 16);
-        }
-        else { // T0
-            R[1] = (R[1] & 0xFFFF0000) | (r1_exchanged >> 16);
-        }
-    }
-    else {
-        uint32_t r1_exchanged = __shfl_xor(R[0], 0x1);
-        // Bottom half (T2, T3) update R[1]
-        if (lane_in_group & 1) { // T1
-            R[0] = (R[0] & 0x0000FFFF) | (r1_exchanged << 16);
-        }
-        else { // T0
-            R[0] = (R[0] & 0xFFFF0000) | (r1_exchanged >> 16);
-        }
-    }
-
-    if (lane_id == 3) {
-        debug_print_registers("After Round 2 shuffles", lane_id, lane_in_group,
-                              R, 2, 0);
-    }
-
-    out[0] = R[0];
-    out[1] = R[1];
+    reg_idx = 1 - reg_idx;
+    exchanged_val = __shfl_xor(R[reg_idx], 0x1);
+    R[reg_idx] = (R[reg_idx] & keep_mask) |
+                 ((exchanged_val >> right_shift_amount) << left_shift_amount);
 }
 
-__device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
-                                                             uint32_t *out)
+__device__ __forceinline__ void transpose_4x4_half_registers_naive(uint32_t *R)
 {
     // Calculate lane within 4-thread group
     uint32_t lane_id = threadIdx.x % 64;
@@ -242,9 +168,6 @@ __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
         debug_print_registers("After Round 2 shuffles", lane_id, lane_in_group,
                               R, 2, 0);
     }
-
-    out[0] = R[0];
-    out[1] = R[1];
 }
 
 // Helper function to convert two uint16_t values to a single uint32_t
@@ -283,14 +206,12 @@ __global__ void test_transpose_kernel(uint16_t *output)
     R[1] = pack_half2(row_elements[2], row_elements[3]);
 
     // Call the transpose function
-    uint32_t out[2];
-    // transpose_4x4_half_registers(R, out);
-    transpose_4x4_half_registers_opt(R, out);
+    transpose_4x4_half_registers_opt(R);
 
     // Unpack the transposed results
     uint16_t transposed[4];
-    unpack_half2(out[0], transposed[0], transposed[1]);
-    unpack_half2(out[1], transposed[2], transposed[3]);
+    unpack_half2(R[0], transposed[0], transposed[1]);
+    unpack_half2(R[1], transposed[2], transposed[3]);
 
     // Write output - store both original and transposed values for verification
     for (int i = 0; i < 4; i++) {
