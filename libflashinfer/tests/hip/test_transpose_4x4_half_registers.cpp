@@ -1,10 +1,19 @@
 // test_transpose_4x4_half_registers.cpp
+#include "gpu_iface/backend/hip/mma_hip.h"
 #include <hip/hip_runtime.h>
 #include <iostream>
 #include <vector>
 
-// Define WARP_FULL_MASK for HIP
-constexpr uint64_t WARP_FULL_MASK = 0xffffffffffffffffULL;
+#define FI_GPU_CALL(call)                                                      \
+    do {                                                                       \
+        gpuError_t err = (call);                                               \
+        if (err != gpuSuccess) {                                               \
+            std::ostringstream err_msg;                                        \
+            err_msg << "GPU error: " << gpuGetErrorString(err) << " at "       \
+                    << __FILE__ << ":" << __LINE__;                            \
+            throw std::runtime_error(err_msg.str());                           \
+        }                                                                      \
+    } while (0)
 
 __device__ __forceinline__ void debug_print_registers(const char *stage,
                                                       uint32_t lane_id,
@@ -190,7 +199,6 @@ __global__ void test_transpose_kernel(uint16_t *output)
     uint32_t lane_id = thread_id % 64;
 
     // Calculate the thread's position in the logical 4x4 grid
-    uint32_t group_id = lane_id / 4;      // Which 4-thread group
     uint32_t lane_in_group = lane_id % 4; // Position within group
 
     // Initialize test data - each thread creates a row of the matrix B
@@ -206,7 +214,7 @@ __global__ void test_transpose_kernel(uint16_t *output)
     R[1] = pack_half2(row_elements[2], row_elements[3]);
 
     // Call the transpose function
-    transpose_4x4_half_registers_opt(R);
+    flashinfer::gpu_iface::mma_impl::hip::transpose_4x4_half_registers(R);
 
     // Unpack the transposed results
     uint16_t transposed[4];
@@ -233,14 +241,15 @@ int main()
     std::vector<uint16_t> h_output(total_values);
     uint16_t *d_output;
 
-    hipMalloc(&d_output, total_values * sizeof(uint16_t));
+    FI_GPU_CALL(hipMalloc(&d_output, total_values * sizeof(uint16_t)));
 
     // Launch the kernel
     test_transpose_kernel<<<1, num_threads>>>(d_output);
 
     // Copy results back to host
-    hipMemcpy(h_output.data(), d_output, total_values * sizeof(uint16_t),
-              hipMemcpyDeviceToHost);
+    FI_GPU_CALL(hipMemcpy(h_output.data(), d_output,
+                          total_values * sizeof(uint16_t),
+                          hipMemcpyDeviceToHost));
 
     // Verify the results
     bool success = true;
@@ -291,7 +300,7 @@ int main()
     }
 
     // Clean up
-    hipFree(d_output);
+    FI_GPU_CALL(hipFree(d_output));
 
     return success ? 0 : 1;
 }
