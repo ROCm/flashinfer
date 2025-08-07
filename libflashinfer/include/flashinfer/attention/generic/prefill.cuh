@@ -1353,7 +1353,7 @@ compute_sfm_v(smem_t<KTraits::SWIZZLE_MODE_KV> *v_smem,
             }
             else {
 #warning "TODO ldmatrix_m8n8x4_trans ............"
-                // v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
+                v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
             }
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
