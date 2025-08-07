@@ -62,50 +62,40 @@ __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
 
     // === ROUND 1: Exchange with neighbor (XOR with 1) ===
     // T0↔T1, T2↔T3 partial exchange
-    uint32_t r0_exchanged = __shfl_xor(R[0], 0x1);
-    uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
-
-    // Debug first exchange
-    if (lane_id == 0) {
-        uint32_t debug_regs[2] = {r0_exchanged, r1_exchanged};
-        debug_print_registers("Round1-Exchange", lane_id, lane_in_group,
-                              debug_regs, 2, 0);
-    }
 
     // Update based on thread position
     if (lane_in_group < 2) {
+        uint32_t r0_exchanged = __shfl_xor(R[0], 0x1);
         // Top half (T0, T1) update R[0]
         if (lane_in_group & 1) { // T1
-            temp_regs[0] = (R[0] & 0xFFFF0000) | (r0_exchanged & 0x0000FFFF);
+            R[0] = (R[0] & 0x0000FFFF) | (r0_exchanged << 16);
         }
         else { // T0
-            temp_regs[0] = (R[0] & 0x0000FFFF) | (r0_exchanged & 0xFFFF0000);
+            r0_exchanged >>= 16;
+            R[0] = (R[0] & 0xFFFF0000) | (r0_exchanged);
         }
-        // Keep R[1] unchanged
-        temp_regs[1] = R[1];
     }
     else {
+        uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
         // Bottom half (T2, T3) update R[1]
-        if (lane_in_group & 1) { // T3
-            temp_regs[1] = (R[1] & 0xFFFF0000) | (r1_exchanged & 0x0000FFFF);
+        if (lane_in_group & 1) { // T1
+            R[1] = (R[1] & 0x0000FFFF) | (r1_exchanged << 16);
         }
-        else { // T2
-            temp_regs[1] = (R[1] & 0x0000FFFF) | (r1_exchanged & 0xFFFF0000);
+        else { // T0
+            R[1] = (R[1] & 0xFFFF0000) | (r1_exchanged >> 16);
         }
-        // Keep R[0] unchanged
-        temp_regs[0] = R[0];
     }
 
     // Debug after first recombination
-    if (lane_id == 0) {
-        debug_print_registers("Round1-Exchange", lane_id, lane_in_group,
-                              temp_regs, 2, 0);
+    if (lane_id == 3) {
+        debug_print_registers("After Round 1 shuffles", lane_id, lane_in_group,
+                              R, 2, 0);
     }
-
+#if 0
     // === ROUND 2: Exchange with one hop (XOR with 2) ===
     // T0↔T2, T1↔T3 exchange R[0] and R[1]
-    uint32_t temp0_exchanged = __shfl_xor(temp_regs[0], 2);
-    uint32_t temp1_exchanged = __shfl_xor(temp_regs[1], 2);
+    uint32_t temp0_exchanged = __shfl_xor(R[0], 0x2);
+    uint32_t temp1_exchanged = __shfl_xor(R[1], 0x2);
 
     // Debug second exchange
     if (lane_id < 4) {
@@ -177,6 +167,7 @@ __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
         debug_print_registers("Final-Result", lane_id, lane_in_group, out, 2,
                               0);
     }
+#endif
 }
 
 // Helper function to convert two uint16_t values to a single uint32_t
