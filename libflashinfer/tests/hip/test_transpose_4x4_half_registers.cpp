@@ -51,60 +51,106 @@ __device__ __forceinline__ void transpose_4x4_half_registers_opt(uint32_t *R,
     uint32_t lane_id = threadIdx.x % 64;
     uint32_t lane_in_group = lane_id % 4;
 
+    if (lane_id == 0) {
+        debug_print_registers("Initial", lane_id, lane_in_group, R, 2, 0);
+    }
+
     // === ROUND 1: Exchange with neighbor (XOR with 1) ===
-    // Remove conditionals by using masks and bit operations
-
-    // Exchange values with neighbor
-    uint32_t r0_exchanged = __shfl_xor(R[0], 0x1);
-    uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
-
-    // Register selection mask: 0xFFFFFFFF for R[0] if lane<2, 0 otherwise
-    uint32_t r0_mask = ~((lane_in_group >> 1) * 0xFFFFFFFF);
-    // Register selection mask: 0xFFFFFFFF for R[1] if lane>=2, 0 otherwise
-    uint32_t r1_mask = (lane_in_group >> 1) * 0xFFFFFFFF;
-
-    // Bit selection based on odd/even thread
+    // T0↔T1, T2↔T3 partial exchange
+    uint32_t reg_idx = (lane_in_group >> 1) & 0x1;
+    uint32_t exchanged_val = __shfl_xor(R[reg_idx], 0x1);
     uint32_t shift = (lane_in_group & 1) * 16;
-    uint32_t keep_mask =
-        0xFFFF0000 >> shift; // 0xFFFF0000 for even, 0x0000FFFF for odd
+    uint32_t keep_mask = 0xFFFF0000 >> shift;
+    int right_shift_amount = 16 * (1 - (lane_in_group & 1));
+    int left_shift_amount = 16 * (lane_in_group & 1);
+    R[reg_idx] = (R[reg_idx] & keep_mask) |
+                 ((exchanged_val >> right_shift_amount) << left_shift_amount);
 
-    // Apply the masks to merge old and exchanged values
-    R[0] = (R[0] & keep_mask & r0_mask) |
-           ((lane_in_group & 1) ? ((r0_exchanged & 0xFFFF) << 16) & r0_mask
-                                : ((r0_exchanged >> 16) & 0xFFFF) & r0_mask);
+    // if (lane_in_group & 1) { // Odd threads (1, 3)
+    //     R[reg_idx] = (R[reg_idx] & keep_mask) | (exchanged_val << 16);
+    // }
+    // else { // Even threads (0, 2)
+    //     R[reg_idx] = (R[reg_idx] & keep_mask) | (exchanged_val >> 16);
+    // }
 
-    R[1] = (R[1] & keep_mask & r1_mask) |
-           ((lane_in_group & 1) ? ((r1_exchanged & 0xFFFF) << 16) & r1_mask
-                                : ((r1_exchanged >> 16) & 0xFFFF) & r1_mask);
+    // // Update based on thread position
+    // if (lane_in_group < 2) {
+    //     uint32_t r0_exchanged = __shfl_xor(R[0], 0x1);
+    //     // Top half (T0, T1) update R[0]
+    //     if (lane_in_group & 1) { // T1
+    //         R[0] = (R[0] & 0x0000FFFF) | (r0_exchanged << 16);
+    //     }
+    //     else { // T0
+    //         R[0] = (R[0] & 0xFFFF0000) | (r0_exchanged >> 16);
+    //     }
+    // }
+    // else {
+    //     uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
+    //     // Bottom half (T2, T3) update R[1]
+    //     if (lane_in_group & 1) { // T1
+    //         R[1] = (R[1] & 0x0000FFFF) | (r1_exchanged << 16);
+    //     }
+    //     else { // T0
+    //         R[1] = (R[1] & 0xFFFF0000) | (r1_exchanged >> 16);
+    //     }
+    // }
+
+    // Debug after first recombination
+    if (lane_id == 03) {
+        debug_print_registers("After Round 1 shuffles", lane_id, lane_in_group,
+                              R, 2, 0);
+    }
 
     // === ROUND 2: Exchange with one hop (XOR with 2) ===
+    // T0↔T2, T1↔T3 exchange R[0] and R[1]
     uint32_t temp0_exchanged = __shfl_xor(R[0], 0x2);
     uint32_t temp1_exchanged = __shfl_xor(R[1], 0x2);
 
-    // Use predicated assignments instead of if-else
-    uint32_t r0_old = R[0];
-    uint32_t r1_old = R[1];
+    // Swap entire registers based on thread position
+    if (lane_in_group < 2) {
+        R[1] = temp0_exchanged;
+    }
+    else {
+        // Bottom threads (T2, T3) get R[1] from partner, keep own R[0]
+        R[0] = temp1_exchanged;
+    }
 
-    // Branchless swap using masks
-    R[0] = (lane_in_group < 2) ? r0_old : temp1_exchanged;
-    R[1] = (lane_in_group < 2) ? temp0_exchanged : r1_old;
+    if (lane_id == 0) {
+        debug_print_registers("After Round 2 shuffles", lane_id, lane_in_group,
+                              R, 2, 0);
+    }
 
     // === ROUND 3: Exchange with neighbor again (XOR with 1) ===
-    r0_exchanged = __shfl_xor(R[0], 0x1);
-    r1_exchanged = __shfl_xor(R[1], 0x1);
+    // T0↔T1, T2↔T3 exchange remaining parts
 
-    // Swap register selectors for round 3 (inverse of round 1)
-    r0_mask = (lane_in_group >> 1) * 0xFFFFFFFF;
-    r1_mask = ~((lane_in_group >> 1) * 0xFFFFFFFF);
+    if (lane_in_group < 2) {
+        uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
+        // Top half (T0, T1) update R[0]
+        if (lane_in_group & 1) { // T1
+            R[1] = (R[1] & 0x0000FFFF) | (r1_exchanged << 16);
+        }
+        else { // T0
+            R[1] = (R[1] & 0xFFFF0000) | (r1_exchanged >> 16);
+        }
+    }
+    else {
+        uint32_t r1_exchanged = __shfl_xor(R[0], 0x1);
+        // Bottom half (T2, T3) update R[1]
+        if (lane_in_group & 1) { // T1
+            R[0] = (R[0] & 0x0000FFFF) | (r1_exchanged << 16);
+        }
+        else { // T0
+            R[0] = (R[0] & 0xFFFF0000) | (r1_exchanged >> 16);
+        }
+    }
 
-    // Apply the masks to merge old and exchanged values (same logic as round 1)
-    out[0] = (R[0] & keep_mask & r0_mask) |
-             ((lane_in_group & 1) ? ((r0_exchanged & 0xFFFF) << 16) & r0_mask
-                                  : ((r0_exchanged >> 16) & 0xFFFF) & r0_mask);
+    if (lane_id == 3) {
+        debug_print_registers("After Round 2 shuffles", lane_id, lane_in_group,
+                              R, 2, 0);
+    }
 
-    out[1] = (R[1] & keep_mask & r1_mask) |
-             ((lane_in_group & 1) ? ((r1_exchanged & 0xFFFF) << 16) & r1_mask
-                                  : ((r1_exchanged >> 16) & 0xFFFF) & r1_mask);
+    out[0] = R[0];
+    out[1] = R[1];
 }
 
 __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
@@ -238,8 +284,8 @@ __global__ void test_transpose_kernel(uint16_t *output)
 
     // Call the transpose function
     uint32_t out[2];
-    transpose_4x4_half_registers(R, out);
-    // transpose_4x4_half_registers_opt(R, out);
+    // transpose_4x4_half_registers(R, out);
+    transpose_4x4_half_registers_opt(R, out);
 
     // Unpack the transposed results
     uint16_t transposed[4];
