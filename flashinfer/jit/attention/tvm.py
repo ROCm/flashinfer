@@ -21,6 +21,7 @@ from typing import List
 import jinja2
 import torch
 
+from ..cpp_ext import check_hip_availability
 from ..env import (
     FLASHINFER_CSRC_DIR,
     FLASHINFER_GEN_SRC_DIR,
@@ -28,6 +29,7 @@ from ..env import (
 )
 from ..utils import (
     dtype_map,
+    dtype_map_hip,
     mask_mode_literal,
     pos_encoding_mode_literal,
     write_if_different,
