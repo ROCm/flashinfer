@@ -44,17 +44,75 @@ __device__ __forceinline__ void debug_print_registers(const char *stage,
     printf("]\n");
 }
 
-__device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
-                                                             uint32_t *out)
+__device__ __forceinline__ void transpose_4x4_half_registers_opt(uint32_t *R,
+                                                                 uint32_t *out)
 {
-    // Each thread has 4 half-precision values in 2 registers:
-    // R[0] = [B[lane_id][0], B[lane_id][1]]
-    // R[1] = [B[lane_id][2], B[lane_id][3]]
-
     // Calculate lane within 4-thread group
     uint32_t lane_id = threadIdx.x % 64;
     uint32_t lane_in_group = lane_id % 4;
-    uint32_t temp_regs[2];
+
+    // === ROUND 1: Exchange with neighbor (XOR with 1) ===
+    // Remove conditionals by using masks and bit operations
+
+    // Exchange values with neighbor
+    uint32_t r0_exchanged = __shfl_xor(R[0], 0x1);
+    uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
+
+    // Register selection mask: 0xFFFFFFFF for R[0] if lane<2, 0 otherwise
+    uint32_t r0_mask = ~((lane_in_group >> 1) * 0xFFFFFFFF);
+    // Register selection mask: 0xFFFFFFFF for R[1] if lane>=2, 0 otherwise
+    uint32_t r1_mask = (lane_in_group >> 1) * 0xFFFFFFFF;
+
+    // Bit selection based on odd/even thread
+    uint32_t shift = (lane_in_group & 1) * 16;
+    uint32_t keep_mask =
+        0xFFFF0000 >> shift; // 0xFFFF0000 for even, 0x0000FFFF for odd
+
+    // Apply the masks to merge old and exchanged values
+    R[0] = (R[0] & keep_mask & r0_mask) |
+           ((lane_in_group & 1) ? ((r0_exchanged & 0xFFFF) << 16) & r0_mask
+                                : ((r0_exchanged >> 16) & 0xFFFF) & r0_mask);
+
+    R[1] = (R[1] & keep_mask & r1_mask) |
+           ((lane_in_group & 1) ? ((r1_exchanged & 0xFFFF) << 16) & r1_mask
+                                : ((r1_exchanged >> 16) & 0xFFFF) & r1_mask);
+
+    // === ROUND 2: Exchange with one hop (XOR with 2) ===
+    uint32_t temp0_exchanged = __shfl_xor(R[0], 0x2);
+    uint32_t temp1_exchanged = __shfl_xor(R[1], 0x2);
+
+    // Use predicated assignments instead of if-else
+    uint32_t r0_old = R[0];
+    uint32_t r1_old = R[1];
+
+    // Branchless swap using masks
+    R[0] = (lane_in_group < 2) ? r0_old : temp1_exchanged;
+    R[1] = (lane_in_group < 2) ? temp0_exchanged : r1_old;
+
+    // === ROUND 3: Exchange with neighbor again (XOR with 1) ===
+    r0_exchanged = __shfl_xor(R[0], 0x1);
+    r1_exchanged = __shfl_xor(R[1], 0x1);
+
+    // Swap register selectors for round 3 (inverse of round 1)
+    r0_mask = (lane_in_group >> 1) * 0xFFFFFFFF;
+    r1_mask = ~((lane_in_group >> 1) * 0xFFFFFFFF);
+
+    // Apply the masks to merge old and exchanged values (same logic as round 1)
+    out[0] = (R[0] & keep_mask & r0_mask) |
+             ((lane_in_group & 1) ? ((r0_exchanged & 0xFFFF) << 16) & r0_mask
+                                  : ((r0_exchanged >> 16) & 0xFFFF) & r0_mask);
+
+    out[1] = (R[1] & keep_mask & r1_mask) |
+             ((lane_in_group & 1) ? ((r1_exchanged & 0xFFFF) << 16) & r1_mask
+                                  : ((r1_exchanged >> 16) & 0xFFFF) & r1_mask);
+}
+
+__device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
+                                                             uint32_t *out)
+{
+    // Calculate lane within 4-thread group
+    uint32_t lane_id = threadIdx.x % 64;
+    uint32_t lane_in_group = lane_id % 4;
 
     if (lane_id == 0) {
         debug_print_registers("Initial", lane_id, lane_in_group, R, 2, 0);
@@ -71,8 +129,7 @@ __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
             R[0] = (R[0] & 0x0000FFFF) | (r0_exchanged << 16);
         }
         else { // T0
-            r0_exchanged >>= 16;
-            R[0] = (R[0] & 0xFFFF0000) | (r0_exchanged);
+            R[0] = (R[0] & 0xFFFF0000) | (r0_exchanged >> 16);
         }
     }
     else {
@@ -91,83 +148,57 @@ __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t *R,
         debug_print_registers("After Round 1 shuffles", lane_id, lane_in_group,
                               R, 2, 0);
     }
-#if 0
+
     // === ROUND 2: Exchange with one hop (XOR with 2) ===
     // T0↔T2, T1↔T3 exchange R[0] and R[1]
     uint32_t temp0_exchanged = __shfl_xor(R[0], 0x2);
     uint32_t temp1_exchanged = __shfl_xor(R[1], 0x2);
 
-    // Debug second exchange
-    if (lane_id < 4) {
-        uint32_t debug_regs[2] = {temp0_exchanged, temp1_exchanged};
-        debug_print_registers("Round2-Exchange", lane_id, lane_in_group,
-                              debug_regs, 2, 0);
-    }
-
     // Swap entire registers based on thread position
     if (lane_in_group < 2) {
-        // Top threads (T0, T1) get R[0] from partner, keep own R[1]
-        temp_regs[0] = temp0_exchanged;
-        // Keep R[1] unchanged
+        R[1] = temp0_exchanged;
     }
     else {
         // Bottom threads (T2, T3) get R[1] from partner, keep own R[0]
-        temp_regs[1] = temp1_exchanged;
-        // Keep R[0] unchanged
+        R[0] = temp1_exchanged;
     }
 
-    // Debug after second recombination
-    if (lane_id < 4) {
-        debug_print_registers("Round2-Result", lane_id, lane_in_group,
-                              temp_regs, 2, 0);
+    if (lane_id == 0) {
+        debug_print_registers("After Round 2 shuffles", lane_id, lane_in_group,
+                              R, 2, 0);
     }
 
     // === ROUND 3: Exchange with neighbor again (XOR with 1) ===
     // T0↔T1, T2↔T3 exchange remaining parts
-    uint32_t final0_exchanged = __shfl_xor(temp_regs[0], 1);
-    uint32_t final1_exchanged = __shfl_xor(temp_regs[1], 1);
 
-    // Debug third exchange
-    if (lane_id < 4) {
-        uint32_t debug_regs[2] = {final0_exchanged, final1_exchanged};
-        debug_print_registers("Round3-Exchange", lane_id, lane_in_group,
-                              debug_regs, 2, 0);
-    }
-
-    // Final combination based on thread position
     if (lane_in_group < 2) {
-        // Top half (T0, T1) update R[1]
+        uint32_t r1_exchanged = __shfl_xor(R[1], 0x1);
+        // Top half (T0, T1) update R[0]
         if (lane_in_group & 1) { // T1
-            out[1] =
-                (temp_regs[1] & 0xFFFF0000) | (final1_exchanged & 0x0000FFFF);
+            R[1] = (R[1] & 0x0000FFFF) | (r1_exchanged << 16);
         }
         else { // T0
-            out[1] =
-                (temp_regs[1] & 0x0000FFFF) | (final1_exchanged & 0xFFFF0000);
+            R[1] = (R[1] & 0xFFFF0000) | (r1_exchanged >> 16);
         }
-        // Keep R[0] unchanged
-        out[0] = temp_regs[0];
     }
     else {
-        // Bottom half (T2, T3) update R[0]
-        if (lane_in_group & 1) { // T3
-            out[0] =
-                (temp_regs[0] & 0xFFFF0000) | (final0_exchanged & 0x0000FFFF);
+        uint32_t r1_exchanged = __shfl_xor(R[0], 0x1);
+        // Bottom half (T2, T3) update R[1]
+        if (lane_in_group & 1) { // T1
+            R[0] = (R[0] & 0x0000FFFF) | (r1_exchanged << 16);
         }
-        else { // T2
-            out[0] =
-                (temp_regs[0] & 0x0000FFFF) | (final0_exchanged & 0xFFFF0000);
+        else { // T0
+            R[0] = (R[0] & 0xFFFF0000) | (r1_exchanged >> 16);
         }
-        // Keep R[1] unchanged
-        out[1] = temp_regs[1];
     }
 
-    // Debug final result
-    if (lane_id < 4) {
-        debug_print_registers("Final-Result", lane_id, lane_in_group, out, 2,
-                              0);
+    if (lane_id == 3) {
+        debug_print_registers("After Round 2 shuffles", lane_id, lane_in_group,
+                              R, 2, 0);
     }
-#endif
+
+    out[0] = R[0];
+    out[1] = R[1];
 }
 
 // Helper function to convert two uint16_t values to a single uint32_t
@@ -208,6 +239,7 @@ __global__ void test_transpose_kernel(uint16_t *output)
     // Call the transpose function
     uint32_t out[2];
     transpose_4x4_half_registers(R, out);
+    // transpose_4x4_half_registers_opt(R, out);
 
     // Unpack the transposed results
     uint16_t transposed[4];
@@ -248,38 +280,38 @@ int main()
     std::cout << "Testing matrix transposition with shuffle operations..."
               << std::endl;
 
-    // for (int group = 0; group < num_threads / 4; group++) {
-    //     std::cout << "\nGroup " << group << " results:" << std::endl;
+    for (int group = 0; group < num_threads / 4; group++) {
+        std::cout << "\nGroup " << group << " results:" << std::endl;
 
-    //     for (int lane = 0; lane < 4; lane++) {
-    //         int thread_idx = group * 4 + lane;
+        for (int lane = 0; lane < 4; lane++) {
+            int thread_idx = group * 4 + lane;
 
-    //         // Print original values
-    //         std::cout << "Thread " << thread_idx << " original: ";
-    //         for (int i = 0; i < 4; i++) {
-    //             std::cout << h_output[thread_idx * 8 + i] << " ";
-    //         }
-    //         std::cout << std::endl;
+            // Print original values
+            std::cout << "Thread " << thread_idx << " original: ";
+            for (int i = 0; i < 4; i++) {
+                std::cout << h_output[thread_idx * 8 + i] << " ";
+            }
+            std::cout << std::endl;
 
-    //         // Print and verify transposed values
-    //         std::cout << "Thread " << thread_idx << " transposed: ";
-    //         for (int i = 0; i < 4; i++) {
-    //             uint16_t actual = h_output[thread_idx * 8 + 4 + i];
-    //             std::cout << actual << " ";
+            // Print and verify transposed values
+            std::cout << "Thread " << thread_idx << " transposed: ";
+            for (int i = 0; i < 4; i++) {
+                uint16_t actual = h_output[thread_idx * 8 + 4 + i];
+                std::cout << actual << " ";
 
-    //             // Expected after transpose: Thread N gets column N
-    //             // Thread 0 should have [0*100+0, 1*100+0, 2*100+0, 3*100+0]
-    //             // Thread 1 should have [0*100+1, 1*100+1, 2*100+1, 3*100+1]
-    //             uint16_t expected = i * 100 + lane;
+                // Expected after transpose: Thread N gets column N
+                // Thread 0 should have [0*100+0, 1*100+0, 2*100+0, 3*100+0]
+                // Thread 1 should have [0*100+1, 1*100+1, 2*100+1, 3*100+1]
+                uint16_t expected = i * 100 + lane;
 
-    //             if (actual != expected) {
-    //                 success = false;
-    //                 std::cout << "(Expected: " << expected << ") ";
-    //             }
-    //         }
-    //         std::cout << std::endl;
-    //     }
-    // }
+                if (actual != expected) {
+                    success = false;
+                    std::cout << "(Expected: " << expected << ") ";
+                }
+            }
+            std::cout << std::endl;
+        }
+    }
 
     if (success) {
         std::cout << "\nTranspose test PASSED! All values correctly transposed."
