@@ -308,7 +308,6 @@ __global__ void AppendPagedKVCacheKernel(paged_kv_t<DType, IdType> paged_kv,
                                          size_t append_v_stride_h)
 {
     uint32_t tx = threadIdx.x, ty = threadIdx.y;
-    uint32_t num_heads = paged_kv.num_heads;
     uint32_t head_idx = ty;
     uint32_t cta_id = blockIdx.x;
     uint32_t num_ctas = gridDim.x;

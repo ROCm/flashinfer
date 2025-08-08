@@ -175,7 +175,7 @@ template <SwizzleMode swizzle_mode, typename BasePtrTy = b128_t> struct smem_t
         flashinfer::gpu_iface::mma::load_fragment_transpose_4x4_half_registers(
             smem_t_ptr, frag);
 #else
-        ldmatrix_m8n8x4(offset, frag);
+        static_assert(false, "Not supported on current platform");
 #endif
     }
 
@@ -279,10 +279,48 @@ template <SwizzleMode swizzle_mode, typename BasePtrTy = b128_t> struct smem_t
             smem_ptr, reinterpret_cast<const b64_t *>(gptr));
     }
 
+    template <gpu_mem::SharedMemFillMode fill_mode, typename T>
+    __device__ __forceinline__ void
+    load_vector_async(uint32_t offset, const T *gptr, bool predicate)
+    {
+#if defined(PLATFORM_HIP_DEVICE)
+        load_64b_async<fill_mode>(offset, gptr, predicate);
+#else
+        load_128b_async<fill_mode>(offset, gptr, predicate);
+#endif
+    }
+
+    template <typename T>
+    __device__ __forceinline__ void load_vector_async(uint32_t offset,
+                                                      const T *gptr)
+    {
+#if defined(PLATFORM_HIP_DEVICE)
+        load_64b_async(offset, gptr);
+#else
+        load_128b_async(offset, gptr);
+#endif
+    }
+
     template <typename T>
     __device__ __forceinline__ void store_128b(uint32_t offset, T *gptr)
     {
         *reinterpret_cast<b128_t *>(gptr) = *(base + offset);
+    }
+
+    template <typename T>
+    __device__ __forceinline__ void store_64b(uint32_t offset, T *gptr)
+    {
+        *reinterpret_cast<b64_t *>(gptr) = *(base + offset);
+    }
+
+    template <typename T>
+    __device__ __forceinline__ void store_vector(uint32_t offset, T *gptr)
+    {
+#if defined(PLATFORM_HIP_DEVICE)
+        store_64b(offset, gptr);
+#else
+        store_128b(offset, gptr);
+#endif
     }
 };
 

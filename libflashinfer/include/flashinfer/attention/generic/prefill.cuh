@@ -393,13 +393,8 @@ __device__ __forceinline__ void produce_kv_helper_(
     for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
 #pragma unroll
         for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
-#if defined(PLATFORM_HIP_DEVICE)
-            smem.template load_64b_async<fill_mode>(*smem_offset, *gptr,
-                                                    kv_idx < kv_len);
-#else
-            smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
-                                                     kv_idx < kv_len);
-#endif
+            smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
+                                                       kv_idx < kv_len);
             *smem_offset =
                 smem.template advance_offset_by_column<WARP_THREAD_COLS>(
                     *smem_offset, j);
@@ -467,8 +462,8 @@ __device__ __forceinline__ void produce_kv(
         static_assert(NUM_MMA_KV * 2 % NUM_WARPS_Q == 0);
 #pragma unroll
         for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
-            smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
-                                                     kv_idx < kv_len);
+            smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
+                                                       kv_idx < kv_len);
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 8,
                                                                UPCAST_STRIDE>(
                 *smem_offset);
@@ -515,8 +510,8 @@ __device__ __forceinline__ void page_produce_kv(
                                     : paged_kv.k_data + thr_local_kv_offset[i];
 #pragma unroll
             for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DType)); ++j) {
-                smem.template load_128b_async<fill_mode>(*smem_offset, gptr,
-                                                         kv_idx < kv_len);
+                smem.template load_vector_async<fill_mode>(*smem_offset, gptr,
+                                                           kv_idx < kv_len);
                 *smem_offset =
                     smem.template advance_offset_by_column<8>(*smem_offset, j);
                 gptr += 8 * upcast_size<DType>();
@@ -538,8 +533,8 @@ __device__ __forceinline__ void page_produce_kv(
         for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
             DType *gptr = produce_v ? paged_kv.v_data + thr_local_kv_offset[i]
                                     : paged_kv.k_data + thr_local_kv_offset[i];
-            smem.template load_128b_async<fill_mode>(*smem_offset, gptr,
-                                                     kv_idx < kv_len);
+            smem.template load_vector_async<fill_mode>(*smem_offset, gptr,
+                                                       kv_idx < kv_len);
             kv_idx += NUM_WARPS * 8;
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 8,
                                                                UPCAST_STRIDE>(
@@ -668,15 +663,10 @@ __device__ __forceinline__ void load_q_global_smem(
                 for (uint32_t mma_do = 0; mma_do < KTraits::NUM_MMA_D_QK / 4;
                      ++mma_do)
                 {
-#if defined(PLATFORM_HIP_DEVICE)
                     // load q fragment from gmem to smem
-                    q_smem
-                        ->template load_128b_async<SharedMemFillMode::kNoFill>(
-                            q_smem_offset_w, q_ptr, q_idx < qo_upper_bound);
-#else
-                    q_smem->template load_64b_async<SharedMemFillMode::kNoFill>(
-                        q_smem_offset_w, q_ptr, q_idx < qo_upper_bound);
-#endif
+                    q_smem->template load_vector_async<
+                        SharedMemFillMode::kNoFill>(q_smem_offset_w, q_ptr,
+                                                    q_idx < qo_upper_bound);
                     q_smem_offset_w = q_smem->template advance_offset_by_column<
                         WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
                     q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ>();
@@ -1727,7 +1717,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
                          mma_do < KTraits::NUM_MMA_D_VO / 4; ++mma_do)
                     {
                         if (o_idx < qo_upper_bound) {
-                            o_smem->store_128b(o_smem_offset_w, o_ptr);
+                            o_smem->store_vector(o_smem_offset_w, o_ptr);
                         }
                         o_ptr += 8 * upcast_size<DTypeO>();
                         o_smem_offset_w =
@@ -1909,8 +1899,9 @@ SinglePrefillWithKVCacheDevice(const Params params,
         }
 
         smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> k_smem(
-            smem_storage.k_smem),
-            v_smem(smem_storage.v_smem);
+            smem_storage.k_smem);
+        smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> v_smem(
+            smem_storage.v_smem);
 
         const uint32_t num_iterations = ceil_div(
             MASK_MODE == MaskMode::kCausal

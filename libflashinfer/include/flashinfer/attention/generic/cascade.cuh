@@ -440,7 +440,6 @@ PersistentVariableLengthMergeStatesKernel(DTypeIn *__restrict__ V,
     uint32_t cta_id = blockIdx.x;
     uint32_t num_ctas = gridDim.x;
     const uint32_t seq_len = seq_len_ptr ? *seq_len_ptr : max_seq_len;
-    uint32_t num_iters = ceil_div(seq_len * num_heads, num_ctas);
     constexpr uint32_t vec_bits = sizeof(DTypeIn) * vec_size * 8;
     constexpr uint32_t head_dim = vec_size * bdx;
     extern __shared__ uint8_t smem[];
@@ -564,7 +563,6 @@ PersistentVariableLengthAttentionSumKernel(DTypeIn *__restrict__ V,
     uint32_t cta_id = blockIdx.x;
     uint32_t num_ctas = gridDim.x;
     const uint32_t seq_len = seq_len_ptr ? *seq_len_ptr : max_seq_len;
-    uint32_t num_iters = ceil_div(seq_len * num_heads, num_ctas);
     constexpr uint32_t vec_bits = sizeof(DTypeIn) * vec_size * 8;
     constexpr uint32_t head_dim = vec_size * bdx;
     extern __shared__ uint8_t smem[];

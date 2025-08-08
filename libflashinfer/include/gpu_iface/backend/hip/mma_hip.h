@@ -147,7 +147,7 @@ amdgcn_mfma_fp32_16x16x16fp16(float *C, uint32_t *A, uint32_t *B)
 /// the registers for a group of four consecuitive threads.
 template <typename T>
 __device__ __forceinline__ void
-load_fragment_4x4_half_registers(uint32_t *R, const T *smem_ptr)
+load_fragment_4x4_half_registers(const T *smem_ptr, uint32_t *R)
 {
     static_assert(std::is_same_v<T, __half>, "Only half type is supported");
     // Each thread loads 4 __half values in two 32b registers.

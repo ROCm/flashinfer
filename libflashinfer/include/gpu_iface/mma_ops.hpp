@@ -51,7 +51,7 @@ load_fragment_transpose_4x4_half_registers(const T *smem_ptr, uint32_t *R)
 {
     static_assert(std::is_same<T, half>::value,
                   "Only __half is supported for the 4x4 register transpose");
-    mma_detail::load_fragment_4x4_half_registers<half>(R, smem_ptr);
+    mma_detail::load_fragment_4x4_half_registers<half>(smem_ptr, R);
 }
 #endif
 
