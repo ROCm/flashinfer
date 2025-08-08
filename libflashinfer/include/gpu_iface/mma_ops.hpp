@@ -9,10 +9,10 @@
 // Include platform-specific implementations
 #if defined(PLATFORM_CUDA_DEVICE)
 #include "backend/cuda/mma.cuh"
-namespace detail = flashinfer::gpu_iface::mma_impl::cuda;
+namespace mma_detail = flashinfer::gpu_iface::mma_impl::cuda;
 #elif defined(PLATFORM_HIP_DEVICE)
 #include "backend/hip/mma_hip.h"
-namespace detail = flashinfer::gpu_iface::mma_impl::hip;
+namespace mma_detail = flashinfer::gpu_iface::mma_impl::hip;
 #endif
 
 namespace flashinfer
@@ -34,24 +34,24 @@ namespace mma
 template <typename T>
 __device__ __forceinline__ void load_fragment(uint32_t *R, const T *smem_ptr)
 {
-    detail::load_fragment<T>(R, smem_ptr);
+    mma_detail::load_fragment<T>(R, smem_ptr);
 }
 
 template <typename T>
 __device__ __forceinline__ void
 load_fragment_transpose(uint32_t *R, const T *smem_ptr, uint32_t stride)
 {
-    detail::load_fragment_transpose<T>(R, smem_ptr, stride);
+    mma_detail::load_fragment_transpose<T>(R, smem_ptr, stride);
 }
 
 #if defined(PLATFORM_HIP_DEVICE) && defined(__gfx942__)
 template <typename T>
 __device__ __forceinline__ void
-load_fragment_transpose_4x4_half_registers(uint32_t *R, const T *smem_ptr)
+load_fragment_transpose_4x4_half_registers(const T *smem_ptr, uint32_t *R)
 {
-    static_assert(std::is_same<T, int>::value,
+    static_assert(std::is_same<T, half>::value,
                   "Only __half is supported for the 4x4 register transpose");
-    detail::load_fragment_4x4_half_registers<half>(R, smem_ptr);
+    mma_detail::load_fragment_4x4_half_registers<half>(R, smem_ptr);
 }
 #endif
 
@@ -69,7 +69,7 @@ __device__ __forceinline__ void
 amdgcn_mfma_fp32_16x16x16fp16(float *C, uint32_t *A, uint32_t *B)
 {
 #if defined(PLATFORM_HIP_DEVICE)
-    detail::amdgcn_mfma_fp32_16x16x16fp16<T, mma_mode>(C, A, B);
+    mma_detail::amdgcn_mfma_fp32_16x16x16fp16<T, mma_mode>(C, A, B);
 #else
     FLASHINFER_RUNTIME_ASSERT(
         "MMA f16f16f32 not supported on this architecture");

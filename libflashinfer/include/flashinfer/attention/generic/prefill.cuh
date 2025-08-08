@@ -137,24 +137,25 @@ struct KernelTraits
     using AttentionVariant = AttentionVariant_;
 
 #if defined(PLATFORM_HIP_DEVICE)
-    static_assert(
-        sizeof(DTypeKV_) != 1,
-        "8-bit types not supported for CDNA3") static constexpr uint32_t
-        NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 64;
-    constexpr uint32_t WARP_THREAD_COLS = 16;
-    constexpr uint32_t WARP_THREAD_ROWS = 4;
-    constexpr uint32_t HALF_ELEMS_PER_THREAD = 4;
-    constexpr uint32_t INT32_ELEMS_PER_THREAD = 2;
-    constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
+    static_assert(sizeof(DTypeKV_) != 1, "8-bit types not supported for CDNA3");
+
+    using SmemBasePtrTy = uint2;
+    static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 64;
+    static constexpr uint32_t WARP_THREAD_COLS = 16;
+    static constexpr uint32_t WARP_THREAD_ROWS = 4;
+    static constexpr uint32_t HALF_ELEMS_PER_THREAD = 4;
+    static constexpr uint32_t INT32_ELEMS_PER_THREAD = 2;
+    static constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
     // FIXME: Update with a proper swizzle pattern. Linear is used primarily
     // for intial testing.
     static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::kLinear;
     static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::kLinear;
-    static constexpr SmemBasePtrTy = uint2;
+
     // Presently we use 16x4 thread layout for all cases.
     static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
     static constexpr uint32_t KV_THR_LAYOUT_COL = WARP_THREAD_COLS;
 #else
+    using SmemBasePtrTy = uint4;
     static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 32;
     constexpr uint32_t WARP_THREAD_COLS = 8;
     constexpr uint32_t WARP_THREAD_ROWS = 4;
@@ -166,7 +167,6 @@ struct KernelTraits
     static constexpr SwizzleMode SWIZZLE_MODE_KV =
         (sizeof(DTypeKV_) == 1 && HEAD_DIM_VO == 64) ? SwizzleMode::k64B
                                                      : SwizzleMode::k128B;
-    static constexpr SmemBasePtrTy = uint4;
     static constexpr uint32_t KV_THR_LAYOUT_ROW =
         SWIZZLE_MODE_KV == SwizzleMode::k128B ? WARP_THREAD_ROWS
                                               : WARP_THREAD_COLS;
@@ -357,12 +357,17 @@ q_frag_apply_llama_rope_with_pos(T *x_first_half,
 }
 
 template <bool produce_v, SharedMemFillMode fill_mode, typename KTraits>
-__device__ __forceinline__ void produce_kv_helper_(uint32_t warp_idx,
-                                                   uint32_t lane_idx)
+__device__ __forceinline__ void
+produce_kv_helper_(uint32_t warp_idx,
+                   uint32_t lane_idx,
+                   smem_t<KTraits::SWIZZLE_MODE_KV> smem,
+                   uint32_t *smem_offset,
+                   typename KTraits::DTypeKV **gptr)
 {
     using DTypeKV = typename KTraits::DTypeKV;
     constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
     constexpr uint32_t WARP_THREAD_ROWS = KTraits::WARP_THREAD_ROWS;
+    constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
     constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
     constexpr uint32_t NUM_MMA_D =
@@ -432,11 +437,8 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
 {
     // NOTE: for fp8, this function doesn't work for head_dim = 64 at the moment
     using DTypeKV = typename KTraits::DTypeKV;
-    constexpr uint32_t CTA_TILE_KV = KTraits::CTA_TILE_KV;
     constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
     constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
-    constexpr uint32_t NUM_MMA_D =
-        produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
     constexpr uint32_t UPCAST_STRIDE =
         produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
@@ -444,13 +446,13 @@ produce_kv(smem_t<KTraits::SWIZZLE_MODE_KV> smem,
                    lane_idx = tid.x;
 
     if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
-        produce_kv_helper_<produce_kv, fill_mode, KTraits>(uint32_t warp_idx,
-                                                           uint32_t lane_idx)
+        produce_kv_helper_<produce_kv, fill_mode, KTraits>(
+            warp_idx, lane_idx, smem, smem_offset, gptr);
     }
 #if defined(PLATFORM_HIP_DEVICE)
     else if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::kLinear) {
-        produce_kv_helper_<produce_kv, fill_mode, KTraits>(uint32_t warp_idx,
-                                                           uint32_t lane_idx)
+        produce_kv_helper_<produce_kv, fill_mode, KTraits>(
+            warp_idx, lane_idx, smem, smem_offset, gptr);
     }
 #endif
     else {
@@ -637,8 +639,8 @@ load_q_global_smem(uint32_t packed_offset,
 
     const uint32_t lane_idx = tid.x,
                    warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
-    uint32_t row = tid / WARP_THREAD_COLS;
-    uint32_t col = tid % WARP_THREAD_COLS;
+    uint32_t row = lane_idx / WARP_THREAD_COLS;
+    uint32_t col = lane_idx % WARP_THREAD_COLS;
 
     if (get_warp_idx_kv<KTraits>(tid.z) == 0) {
         uint32_t q_smem_offset_w =
@@ -904,7 +906,7 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
 {
     constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
     constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
-    constexpr uint32_t Q_SMEM_COLUMN_ADVANCE =
+    constexpr uint32_t QK_SMEM_COLUMN_ADVANCE =
         16 / KTraits::HALF_ELEMS_PER_THREAD;
 
     uint32_t a_frag[KTraits::NUM_MMA_Q][KTraits::INT32_ELEMS_PER_THREAD],
@@ -914,14 +916,14 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_QK; ++mma_d) {
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
-            q_smem->ldmatrix_m8n8x4(*q_smem_offset_r, a_frag[mma_q]);
+            q_smem->load_fragment(*q_smem_offset_r, a_frag[mma_q]);
             *q_smem_offset_r =
                 q_smem->template advance_offset_by_row<16, UPCAST_STRIDE_Q>(
                     *q_smem_offset_r);
         }
 
         *q_smem_offset_r =
-            q_smem->template advance_offset_by_column<Q_SMEM_COLUMN_ADVANCE>(
+            q_smem->template advance_offset_by_column<QK_SMEM_COLUMN_ADVANCE>(
                 *q_smem_offset_r, mma_d) -
             KTraits::NUM_MMA_Q * 16 * UPCAST_STRIDE_Q;
 
@@ -948,7 +950,7 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
                                      (typename KTraits::DTypeKV *)b_frag_f8);
             }
             else {
-                k_smem->ldmatrix_m8n8x4(*k_smem_offset_r, b_frag);
+                k_smem->load_fragment_4x4_transposed(*k_smem_offset_r, b_frag);
             }
             *k_smem_offset_r =
                 k_smem->template advance_offset_by_row<16, UPCAST_STRIDE_K>(
@@ -992,18 +994,20 @@ compute_qk(smem_t<KTraits::SWIZZLE_MODE_Q> *q_smem,
         }
         if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
             if (mma_d % 2 == 1) {
-                *k_smem_offset_r = k_smem->template advance_offset_by_column<2>(
-                    *k_smem_offset_r, mma_d / 2);
+                *k_smem_offset_r = k_smem->template advance_offset_by_column<
+                    QK_SMEM_COLUMN_ADVANCE>(*k_smem_offset_r, mma_d / 2);
             }
             *k_smem_offset_r -= KTraits::NUM_MMA_KV * 16 * UPCAST_STRIDE_K;
         }
         else {
-            *k_smem_offset_r = k_smem->template advance_offset_by_column<2>(
-                                   *k_smem_offset_r, mma_d) -
-                               KTraits::NUM_MMA_KV * 16 * UPCAST_STRIDE_K;
+            *k_smem_offset_r =
+                k_smem
+                    ->template advance_offset_by_column<QK_SMEM_COLUMN_ADVANCE>(
+                        *k_smem_offset_r, mma_d) -
+                KTraits::NUM_MMA_KV * 16 * UPCAST_STRIDE_K;
         }
     }
-    *q_smem_offset_r -= KTraits::NUM_MMA_D_QK * Q_SMEM_COLUMN_ADVANCE;
+    *q_smem_offset_r -= KTraits::NUM_MMA_D_QK * QK_SMEM_COLUMN_ADVANCE;
     *k_smem_offset_r -=
         KTraits::NUM_MMA_D_QK * sizeof(typename KTraits::DTypeKV);
 }
@@ -1937,8 +1941,9 @@ SinglePrefillWithKVCacheDevice(const Params params,
         uint32_t k_smem_offset_r =
                      k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
                          get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
-                             8 * (lane_idx / 16) + lane_idx % 8,
-                         (lane_idx % 16) / 8),
+                             HALF_ELEMS_PER_THREAD * (lane_idx / 16) +
+                             lane_idx % HALF_ELEMS_PER_THREAD,
+                         (lane_idx % 16) / HALF_ELEMS_PER_THREAD),
                  v_smem_offset_r =
                      v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
                          get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +

@@ -7,6 +7,7 @@
 #define FLASHINFER_PERMUTED_SMEM_CUH_
 
 #include "gpu_iface/memory_ops.hpp"
+#include "gpu_iface/mma_ops.hpp"
 #include "gpu_iface/platform.hpp"
 
 #if 0
@@ -160,6 +161,19 @@ template <SwizzleMode swizzle_mode, typename BasePtrTy = b128_t> struct smem_t
             *reinterpret_cast<const uint2 *>(base + offset);
         reinterpret_cast<uint2 *>(&frag[2])[0] =
             *reinterpret_cast<const uint2 *>(base + (offset ^ 0x1));
+#else
+        ldmatrix_m8n8x4(offset, frag);
+#endif
+    }
+
+    template <typename T = uint32_t>
+    __device__ __forceinline__ void
+    load_fragment_4x4_transposed(uint32_t offset, T *frag)
+    {
+#if defined(PLATFORM_HIP_DEVICE)
+        auto smem_t_ptr = reinterpret_cast<const half *>(base + offset);
+        flashinfer::gpu_iface::mma::load_fragment_transpose_4x4_half_registers(
+            smem_t_ptr, frag);
 #else
         ldmatrix_m8n8x4(offset, frag);
 #endif
