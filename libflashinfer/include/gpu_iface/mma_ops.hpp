@@ -28,8 +28,6 @@ namespace mma
  * \param R pointer to the fragment
  * \param smem_ptr pointer to the shared memory
  */
-// Call this load fragment
-// inside mma there is impl of load
 
 template <typename T>
 __device__ __forceinline__ void load_fragment(uint32_t *R, const T *smem_ptr)
@@ -44,13 +42,10 @@ load_fragment_transpose(uint32_t *R, const T *smem_ptr, uint32_t stride)
     mma_detail::load_fragment_transpose<T>(R, smem_ptr, stride);
 }
 
-#if defined(PLATFORM_HIP_DEVICE) && defined(__gfx942__)
-template <typename T>
+#if defined(PLATFORM_HIP_DEVICE)
 __device__ __forceinline__ void
-load_fragment_transpose_4x4_half_registers(const T *smem_ptr, uint32_t *R)
+load_fragment_transpose_4x4_half_registers(const half *smem_ptr, uint32_t *R)
 {
-    static_assert(std::is_same<T, half>::value,
-                  "Only __half is supported for the 4x4 register transpose");
     mma_detail::load_fragment_4x4_half_registers<half>(smem_ptr, R);
 }
 #endif
