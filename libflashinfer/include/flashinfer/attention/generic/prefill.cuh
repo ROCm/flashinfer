@@ -173,6 +173,7 @@ struct KernelTraits
     static constexpr uint32_t KV_THR_LAYOUT_COL =
         SWIZZLE_MODE_KV == SwizzleMode::k128B ? 8 : 4;
 #endif
+    static constexpr uint32_t THREADS_PER_ROW_GROUP = WARP_THREAD_COLS / 2;
     static constexpr uint32_t UPCAST_STRIDE_Q =
         HEAD_DIM_QK / upcast_size<DTypeQ_, VECTOR_BIT_WIDTH>();
     static constexpr uint32_t UPCAST_STRIDE_K =
@@ -276,7 +277,7 @@ get_warp_idx(const uint32_t tid_y = threadIdx.y,
  * \note The sin/cos computation is slow, especially for A100 GPUs which has low
  *   non tensor-ops flops, will optimize in the future.
  */
-template <typename T>
+template <typename T, uint32_t HALF_ELEMS_PER_THREAD>
 __device__ __forceinline__ void
 k_frag_apply_llama_rope(T *x_first_half,
                         T *x_second_half,
@@ -285,12 +286,17 @@ k_frag_apply_llama_rope(T *x_first_half,
 {
     static_assert(sizeof(T) == 2);
 #pragma unroll
-    for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+    for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
         float cos, sin, tmp;
         // 0 1 | 2 3
         // ---------
         // 4 5 | 6 7
+
+#if defined(PLATFORM_HIP_DEVICE)
+        uint32_t i = reg_id / 2, j = reg_id % 2;
+#else
         uint32_t i = reg_id / 4, j = (reg_id % 4) / 2;
+#endif
         __sincosf(float(kv_offset + 8 * i) * rope_freq[2 * j + reg_id % 2],
                   &sin, &cos);
         tmp = x_first_half[reg_id];
@@ -300,7 +306,7 @@ k_frag_apply_llama_rope(T *x_first_half,
     }
 }
 
-template <typename T>
+template <typename, uint32_t HALF_ELEMS_PER_THREAD>
 __device__ __forceinline__ void
 q_frag_apply_llama_rope(T *x_first_half,
                         T *x_second_half,
@@ -309,7 +315,7 @@ q_frag_apply_llama_rope(T *x_first_half,
                         const uint_fastdiv group_size)
 {
 #pragma unroll
-    for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+    for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
         float cos, sin, tmp;
         // 0 1 | 4 5
         // ---------
@@ -329,7 +335,7 @@ q_frag_apply_llama_rope(T *x_first_half,
     }
 }
 
-template <typename T, typename IdType>
+template <typename T, typename IdType, uint32_t HALF_ELEMS_PER_THREAD>
 __device__ __forceinline__ void
 q_frag_apply_llama_rope_with_pos(T *x_first_half,
                                  T *x_second_half,
@@ -342,12 +348,18 @@ q_frag_apply_llama_rope_with_pos(T *x_first_half,
         static_cast<float>(q_rope_offset[qo_packed_offset / group_size]),
         static_cast<float>(q_rope_offset[(qo_packed_offset + 8) / group_size])};
 #pragma unroll
-    for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+    for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
         float cos, sin, tmp;
         // 0 1 | 4 5
         // ---------
         // 2 3 | 6 7
-        uint32_t i = ((reg_id % 4) / 2), j = (reg_id / 4);
+#if defined(PLATFORM_HIP_DEVICE)
+        const uint32_t i = reg_id / 2;
+        const uint32_t j = reg_id % 2;
+#else
+        const uint32_t i = (reg_id % 4) / 2;
+        const uint32_t j = reg_id / 4;
+#endif
         __sincosf(pos[i] * rope_freq[2 * j + reg_id % 2], &sin, &cos);
         tmp = x_first_half[reg_id];
         x_first_half[reg_id] = (tmp * cos - (float)x_second_half[reg_id] * sin);
@@ -554,15 +566,8 @@ init_rope_freq(float (*rope_freq)[4],
     constexpr uint32_t HEAD_DIM = KTraits::NUM_MMA_D_QK * 16;
     const uint32_t lane_idx = tid_x;
 
-#if defined(PLATFORM_HIP_DEVICE)
-    // MI300: 8 threads handle 8 elements (1 element per thread)
-    constexpr uint32_t THREADS_PER_ROW = 8;
-    constexpr uint32_t ELEMS_PER_THREAD = 1;
-#else
-    // NVIDIA: 4 threads handle 8 elements (2 elements per thread)
-    constexpr uint32_t THREADS_PER_ROW = 4;
-    constexpr uint32_t ELEMS_PER_THREAD = 2;
-#endif
+    constexpr uint32_t THREADS_PER_ROW = KTraits::THREADS_PER_ROW_GROUP;
+    constexpr uint32_t ELEMS_PER_THREAD = 8 / THREADS_PER_ROW;
 
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO / 2; ++mma_d) {
@@ -699,14 +704,6 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary(
         static_assert(KTraits::NUM_MMA_D_QK % 4 == 0,
                       "NUM_MMA_D_QK must be a multiple of 4");
 
-#if defined(PLATFORM_HIP_DEVICE)
-        // MI300: 8 threads handle a row of 8 elements
-        const uint32_t pos_group_idx = lane_idx / 8;
-#else
-        // NVIDIA: 4 threads handle a row of 8 elements
-        const uint32_t pos_group_idx = lane_idx / 4;
-#endif
-
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
             uint32_t q_smem_offset_r_first_half = *q_smem_offset_r;
@@ -721,12 +718,13 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary(
                         KTraits::NUM_MMA_D_QK>(q_smem_offset_r_first_half, 0);
                 q_smem->template load_fragment(q_smem_offset_r_last_half,
                                                q_frag_local[1]);
-                q_frag_apply_llama_rope<typename KTraits::DTypeQ>(
+                q_frag_apply_llama_rope<typename KTraits::DTypeQ,
+                                        KTraits::HALF_ELEMS_PER_THREAD>(
                     (typename KTraits::DTypeQ *)q_frag_local[0],
                     (typename KTraits::DTypeQ *)q_frag_local[1],
                     rope_freq[mma_di],
                     q_packed_idx + kv_len * group_size - qo_len * group_size +
-                        mma_q * 16 + pos_group_idx,
+                        mma_q * 16 + lane_idx / KTraits::THREADS_PER_ROW_GROUP,
                     group_size);
                 q_smem->template store_fragment(q_smem_offset_r_last_half,
                                                 q_frag_local[1]);
@@ -755,7 +753,7 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary_with_pos(
     if (get_warp_idx_kv<KTraits>(tid.z) == 0) {
         constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
         const uint32_t lane_idx = tid.x;
-        uint32_t q_frag_local[2][4];
+        uint32_t q_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
         static_assert(KTraits::NUM_MMA_D_QK % 4 == 0,
                       "NUM_MMA_D_QK must be a multiple of 4");
 #pragma unroll
@@ -765,24 +763,26 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary_with_pos(
             for (uint32_t mma_di = 0; mma_di < KTraits::NUM_MMA_D_QK / 2;
                  ++mma_di)
             {
-                q_smem->ldmatrix_m8n8x4(q_smem_offset_r_first_half,
-                                        q_frag_local[0]);
+                q_smem->load_fragment(q_smem_offset_r_first_half,
+                                      q_frag_local[0]);
                 uint32_t q_smem_offset_r_last_half =
                     q_smem->template advance_offset_by_column<
                         KTraits::NUM_MMA_D_QK>(q_smem_offset_r_first_half, 0);
-                q_smem->ldmatrix_m8n8x4(q_smem_offset_r_last_half,
-                                        q_frag_local[1]);
-                q_frag_apply_llama_rope_with_pos<typename KTraits::DTypeQ,
-                                                 typename KTraits::IdType>(
+                q_smem->load_fragment(q_smem_offset_r_last_half,
+                                      q_frag_local[1]);
+                q_frag_apply_llama_rope_with_pos<
+                    typename KTraits::DTypeQ, typename KTraits::IdType,
+                    KTraits::HALF_ELEMS_PER_THREAD>(
                     (typename KTraits::DTypeQ *)q_frag_local[0],
                     (typename KTraits::DTypeQ *)q_frag_local[1],
                     rope_freq[mma_di],
-                    q_packed_idx_base + mma_q * 16 + lane_idx / 4, group_size,
-                    q_rope_offset);
-                q_smem->stmatrix_m8n8x4(q_smem_offset_r_last_half,
-                                        q_frag_local[1]);
-                q_smem->stmatrix_m8n8x4(q_smem_offset_r_first_half,
-                                        q_frag_local[0]);
+                    q_packed_idx_base + mma_q * 16 +
+                        lane_idx / KTraits::THREADS_PER_ROW_GROUP,
+                    group_size, q_rope_offset);
+                q_smem->store_fragment(q_smem_offset_r_last_half,
+                                       q_frag_local[1]);
+                q_smem->store_fragment(q_smem_offset_r_first_half,
+                                       q_frag_local[0]);
                 q_smem_offset_r_first_half =
                     q_smem->template advance_offset_by_column<2>(
                         q_smem_offset_r_first_half, mma_di);
@@ -804,6 +804,8 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
     using DTypeKV = typename KTraits::DTypeKV;
     static_assert(sizeof(DTypeKV) == 2);
     constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
+    constexpr uint32_t THREADS_PER_ROW_GROUP = KTraits::THREADS_PER_ROW_GROUP;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     uint32_t k_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
     const uint32_t lane_idx = tid.x;
     if constexpr (KTraits::NUM_MMA_D_QK == 4 && KTraits::NUM_WARPS_Q == 4) {
@@ -817,25 +819,24 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
         static_assert(
             KTraits::NUM_MMA_KV % 2 == 0,
             "when NUM_MMA_D_QK == 4, NUM_MMA_KV must be a multiple of 2");
-        uint32_t kv_idx = kv_idx_base + (warp_idx / 2) * 16 + lane_idx / 4;
+        uint32_t kv_idx = kv_idx_base + (warp_idx / 2) * 16 +
+                          lane_idx / THREADS_PER_ROW_GROUP;
         *k_smem_offset_r = (*k_smem_offset_r ^ (0x2 * (warp_idx % 2))) +
                            (warp_idx / 2) * 16 * UPCAST_STRIDE_K;
 #pragma unroll
         for (uint32_t i = 0; i < KTraits::NUM_MMA_KV / 2; ++i) {
             uint32_t k_smem_offset_r_first_half = *k_smem_offset_r;
             uint32_t mma_di = (warp_idx % 2);
-            k_smem->ldmatrix_m8n8x4(k_smem_offset_r_first_half,
-                                    k_frag_local[0]);
+            k_smem->load_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
             uint32_t k_smem_offset_r_last_half =
                 k_smem->template advance_offset_by_column<4>(
                     k_smem_offset_r_first_half, 0);
-            k_smem->ldmatrix_m8n8x4(k_smem_offset_r_last_half, k_frag_local[1]);
-            k_frag_apply_llama_rope<DTypeKV>((DTypeKV *)k_frag_local[0],
-                                             (DTypeKV *)k_frag_local[1],
-                                             rope_freq[mma_di], kv_idx);
-            k_smem->stmatrix_m8n8x4(k_smem_offset_r_last_half, k_frag_local[1]);
-            k_smem->stmatrix_m8n8x4(k_smem_offset_r_first_half,
-                                    k_frag_local[0]);
+            k_smem->load_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
+            k_frag_apply_llama_rope<DTypeKV, HALF_ELEMS_PER_THREAD>(
+                (DTypeKV *)k_frag_local[0], (DTypeKV *)k_frag_local[1],
+                rope_freq[mma_di], kv_idx);
+            k_smem->store_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
+            k_smem->store_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
             *k_smem_offset_r += 32 * UPCAST_STRIDE_K;
             kv_idx += 32;
         }
@@ -856,7 +857,7 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
         // ...
         uint32_t kv_idx = kv_idx_base +
                           (warp_idx_z * KTraits::NUM_MMA_KV * 16) +
-                          lane_idx / 4;
+                          lane_idx / THREADS_PER_ROW_GROUP;
         *k_smem_offset_r = *k_smem_offset_r ^ (0x2 * warp_idx_x);
 #pragma unroll
         for (uint32_t i = 0; i < KTraits::NUM_MMA_KV; ++i) {
@@ -866,20 +867,20 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
                  j < KTraits::NUM_MMA_D_QK / (2 * KTraits::NUM_WARPS_Q); ++j)
             {
                 uint32_t mma_di = warp_idx_x + j * KTraits::NUM_WARPS_Q;
-                k_smem->ldmatrix_m8n8x4(k_smem_offset_r_first_half,
-                                        k_frag_local[0]);
+                k_smem->load_fragment(k_smem_offset_r_first_half,
+                                      k_frag_local[0]);
                 uint32_t k_smem_offset_r_last_half =
                     k_smem->template advance_offset_by_column<
                         KTraits::NUM_MMA_D_QK>(k_smem_offset_r_first_half, 0);
-                k_smem->ldmatrix_m8n8x4(k_smem_offset_r_last_half,
-                                        k_frag_local[1]);
-                k_frag_apply_llama_rope<DTypeKV>((DTypeKV *)k_frag_local[0],
-                                                 (DTypeKV *)k_frag_local[1],
-                                                 rope_freq[mma_di], kv_idx);
-                k_smem->stmatrix_m8n8x4(k_smem_offset_r_last_half,
-                                        k_frag_local[1]);
-                k_smem->stmatrix_m8n8x4(k_smem_offset_r_first_half,
-                                        k_frag_local[0]);
+                k_smem->load_fragment(k_smem_offset_r_last_half,
+                                      k_frag_local[1]);
+                k_frag_apply_llama_rope<DTypeKV, HALF_ELEMS_PER_THREAD>(
+                    (DTypeKV *)k_frag_local[0], (DTypeKV *)k_frag_local[1],
+                    rope_freq[mma_di], kv_idx);
+                k_smem->store_fragment(k_smem_offset_r_last_half,
+                                       k_frag_local[1]);
+                k_smem->store_fragment(k_smem_offset_r_first_half,
+                                       k_frag_local[0]);
                 k_smem_offset_r_first_half =
                     k_smem->template advance_offset_by_column<
                         2 * KTraits::NUM_WARPS_Q>(k_smem_offset_r_first_half,
@@ -1027,12 +1028,13 @@ __device__ __forceinline__ void logits_transform(
     const uint32_t lane_idx = tid.x;
     uint32_t q[KTraits::NUM_MMA_Q][2], r[KTraits::NUM_MMA_Q][2];
     float logits = 0., logitsTransformed = 0.;
+    constexpr uint32_t TPR = KTraits::THREADS_PER_ROW_GROUP;
 
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
         for (uint32_t j = 0; j < 2; ++j) {
-            group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / 4 +
+            group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / TPR +
                                   8 * j,
                               q[mma_q][j], r[mma_q][j]);
         }
@@ -1046,8 +1048,8 @@ __device__ __forceinline__ void logits_transform(
             for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
                 const uint32_t q_idx = q[mma_q][(reg_id % 4) / 2],
                                kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % 4) + 8 * (reg_id / 4) +
-                                        reg_id % 2;
+                                        2 * (lane_idx % TPR) +
+                                        8 * (reg_id / 4) + reg_id % 2;
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
 
@@ -1106,12 +1108,13 @@ logits_mask(const Params &params,
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
     using DTypeQKAccum = typename KTraits::DTypeQKAccum;
     constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
+    constexpr uint32_t TPR = KTraits::THREADS_PER_ROW_GROUP;
     uint32_t q[NUM_MMA_Q][2], r[NUM_MMA_Q][2];
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
 #pragma unroll
         for (uint32_t j = 0; j < 2; ++j) {
-            group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / 4 +
+            group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / TPR +
                                   8 * j,
                               q[mma_q][j], r[mma_q][j]);
         }
@@ -1125,8 +1128,8 @@ logits_mask(const Params &params,
             for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
                 const uint32_t q_idx = q[mma_q][(reg_id % 4) / 2],
                                kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % 4) + 8 * (reg_id / 4) +
-                                        reg_id % 2;
+                                        2 * (lane_idx % TPR) +
+                                        8 * (reg_id / 4) + reg_id % 2;
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
                 const bool mask =

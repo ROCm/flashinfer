@@ -159,8 +159,6 @@ template <SwizzleMode swizzle_mode, typename BasePtrTy = b128_t> struct smem_t
         static_assert(sizeof(T) == 4, "Only 32-bit fragment loading supported");
         reinterpret_cast<uint2 *>(frag)[0] =
             *reinterpret_cast<const uint2 *>(base + offset);
-        reinterpret_cast<uint2 *>(&frag[2])[0] =
-            *reinterpret_cast<const uint2 *>(base + (offset ^ 0x1));
 #else
         ldmatrix_m8n8x4(offset, frag);
 #endif
@@ -187,8 +185,6 @@ template <SwizzleMode swizzle_mode, typename BasePtrTy = b128_t> struct smem_t
         static_assert(sizeof(T) == 4, "Only 32-bit fragment storing supported");
         *reinterpret_cast<uint2 *>(base + offset) =
             reinterpret_cast<const uint2 *>(frag)[0];
-        *reinterpret_cast<uint2 *>(base + (offset ^ 0x1)) =
-            reinterpret_cast<const uint2 *>(&frag[2])[0];
 #else
         stmatrix_m8n8x4(offset, frag);
 #endif
