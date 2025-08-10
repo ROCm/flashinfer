@@ -1652,6 +1652,8 @@ __device__ __forceinline__ void write_o_reg_gmem(
 {
     using DTypeO = typename KTraits::DTypeO;
     constexpr uint32_t UPCAST_STRIDE_O = KTraits::UPCAST_STRIDE_O;
+    constexpr uint32_t TPR = KTraits::THREADS_PER_ROW_GROUP;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     const uint32_t warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
     const uint32_t lane_idx = tid.x;
 
@@ -1661,7 +1663,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
 #pragma unroll
             for (uint32_t j = 0; j < 2; ++j) {
                 uint32_t q, r;
-                group_size.divmod(o_packed_idx_base + lane_idx / 4 +
+                group_size.divmod(o_packed_idx_base + lane_idx / TPR +
                                       mma_q * 16 + j * 8,
                                   q, r);
                 const uint32_t o_idx = q;
@@ -1671,12 +1673,12 @@ __device__ __forceinline__ void write_o_reg_gmem(
                     if (o_idx < qo_upper_bound) {
                         *reinterpret_cast<float2 *>(
                             o_ptr_base + q * o_stride_n + r * o_stride_h +
-                            mma_d * 16 + (lane_idx % 4) * 2) =
+                            mma_d * 16 + (lane_idx % TPR) * 2) =
                             *reinterpret_cast<float2 *>(
                                 &o_frag[mma_q][mma_d][j * 2]);
                         *reinterpret_cast<float2 *>(
                             o_ptr_base + q * o_stride_n + r * o_stride_h +
-                            mma_d * 16 + 8 + (lane_idx % 4) * 2) =
+                            mma_d * 16 + 8 + (lane_idx % TPR) * 2) =
                             *reinterpret_cast<float2 *>(
                                 &o_frag[mma_q][mma_d][4 + j * 2]);
                     }
@@ -1691,9 +1693,10 @@ __device__ __forceinline__ void write_o_reg_gmem(
 #pragma unroll
                 for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d)
                 {
-                    uint32_t o_frag_f16[8 / 2];
-                    vec_cast<DTypeO, float>::template cast<8>(
-                        (DTypeO *)o_frag_f16, o_frag[mma_q][mma_d]);
+                    uint32_t o_frag_f16[HALF_ELEMS_PER_THREAD / 2];
+                    vec_cast<DTypeO, float>::template cast<
+                        HALF_ELEMS_PER_THREAD>((DTypeO *)o_frag_f16,
+                                               o_frag[mma_q][mma_d]);
 
 #ifdef FLASHINFER_STMATRIX_M8N8X4_ENABLED
                     uint32_t o_smem_offset_w =
