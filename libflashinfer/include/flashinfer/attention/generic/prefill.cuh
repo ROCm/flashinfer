@@ -306,7 +306,7 @@ k_frag_apply_llama_rope(T *x_first_half,
     }
 }
 
-template <typename, uint32_t HALF_ELEMS_PER_THREAD>
+template <typename T, uint32_t HALF_ELEMS_PER_THREAD>
 __device__ __forceinline__ void
 q_frag_apply_llama_rope(T *x_first_half,
                         T *x_second_half,
@@ -1045,11 +1045,18 @@ __device__ __forceinline__ void logits_transform(
 #pragma unroll
         for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
 #pragma unroll
-            for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+            for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD;
+                 ++reg_id)
+            {
+#if defined(PLATFORM_HIP_DEVICE)
+                const uint32_t i = reg_id / 2;
+#else
+                const uint32_t i = reg_id / 4;
+#endif
                 const uint32_t q_idx = q[mma_q][(reg_id % 4) / 2],
                                kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % TPR) +
-                                        8 * (reg_id / 4) + reg_id % 2;
+                                        2 * (lane_idx % TPR) + 8 * i +
+                                        reg_id % 2;
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
 
@@ -1125,11 +1132,18 @@ logits_mask(const Params &params,
 #pragma unroll
         for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
 #pragma unroll
-            for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+            for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD;
+                 ++reg_id)
+            {
+#if defined(PLATFORM_HIP_DEVICE)
+                const uint32_t i = reg_id / 2;
+#else
+                const uint32_t i = reg_id / 4;
+#endif
                 const uint32_t q_idx = q[mma_q][(reg_id % 4) / 2],
                                kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % TPR) +
-                                        8 * (reg_id / 4) + reg_id % 2;
+                                        2 * (lane_idx % TPR) + 8 * i +
+                                        reg_id % 2;
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
                 const bool mask =
@@ -1430,7 +1444,9 @@ __device__ __forceinline__ void normalize_d(
 #pragma unroll
             for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
 #pragma unroll
-                for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+                for (uint32_t reg_id = 0;
+                     reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id)
+                {
                     o_frag[mma_q][mma_d][reg_id] =
                         o_frag[mma_q][mma_d][reg_id] *
                         d_rcp[mma_q][(reg_id % 4) / 2];
@@ -1474,23 +1490,29 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
     const uint32_t lane_idx,
     const dim3 tid = threadIdx)
 {
+    constexpr uint32_t TPR = KTraits::THREADS_PER_ROW_GROUP;
+    static_assert(WARP_SIZE % TPR == 0,
+                  "THREADS_PER_ROW_GROUP must divide WARP_SIZE");
+    constexpr uint32_t GROUPS_PER_WARP = WARP_SIZE / TPR;
+    const uint32_t lane_group_idx = lane_idx / TPR;
+
     // only necessary when blockDim.z > 1
     if constexpr (KTraits::NUM_WARPS_KV > 1) {
         float *smem_o = smem_storage->cta_sync_o_smem;
         float2 *smem_md = smem_storage->cta_sync_md_smem;
-        // o: [num_warps, NUM_MMA_Q, NUM_MMA_D_VO, WARP_SIZE(32), 8]
-        // md: [num_warps, NUM_MMA_Q, 16, 2 (m/d)]
+        // o: [num_warps, NUM_MMA_Q, NUM_MMA_D_VO, WARP_SIZE,
+        // HALF_ELEMS_PER_THREAD] md: [num_warps, NUM_MMA_Q, 16, 2 (m/d)]
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
             for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-                vec_t<float, 8>::memcpy(
+                vec_t<float, KTraits::HALF_ELEMS_PER_THREAD>::memcpy(
                     smem_o + (((warp_idx * KTraits::NUM_MMA_Q + mma_q) *
                                    KTraits::NUM_MMA_D_VO +
                                mma_d) *
                                   WARP_SIZE +
                               lane_idx) *
-                                 8,
+                                 KTraits::HALF_ELEMS_PER_THREAD,
                     o_frag[mma_q][mma_d]);
             }
         }
@@ -1501,8 +1523,8 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 #pragma unroll
                 for (uint32_t j = 0; j < 2; ++j) {
                     smem_md[((warp_idx * KTraits::NUM_MMA_Q + mma_q) * 2 + j) *
-                                8 +
-                            lane_idx / 4] =
+                                GROUPS_PER_WARP +
+                            lane_group_idx] =
                         make_float2(float(m[mma_q][j]), d[mma_q][j]);
                 }
             }
@@ -1523,8 +1545,8 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
                                               mma_q) *
                                                  2 +
                                              j) *
-                                                8 +
-                                            lane_idx / 4];
+                                                GROUPS_PER_WARP +
+                                            lane_group_idx];
                         float m_prev = m_new, d_prev = d_new;
                         m_new = max(m_new, md.x);
                         d_new =
@@ -1540,8 +1562,8 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
                                               mma_q) *
                                                  2 +
                                              j) *
-                                                8 +
-                                            lane_idx / 4];
+                                                GROUPS_PER_WARP +
+                                            lane_group_idx];
                         float mi = md.x;
                         o_scale[j][i] =
                             gpu_iface::math::ptx_exp2(float(mi - m_new));
@@ -1553,11 +1575,11 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 #pragma unroll
                 for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d)
                 {
-                    vec_t<float, 8> o_new;
+                    vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> o_new;
                     o_new.fill(0.f);
 #pragma unroll
                     for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
-                        vec_t<float, 8> oi;
+                        vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> oi;
                         oi.load(smem_o + ((((i * KTraits::NUM_WARPS_Q +
                                              get_warp_idx_q<KTraits>(tid.y)) *
                                                 KTraits::NUM_MMA_Q +
@@ -1566,10 +1588,12 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
                                            mma_d) *
                                               WARP_SIZE +
                                           lane_idx) *
-                                             8);
+                                             KTraits::HALF_ELEMS_PER_THREAD);
 
 #pragma unroll
-                        for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+                        for (uint32_t reg_id = 0;
+                             reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id)
+                        {
                             o_new[reg_id] +=
                                 oi[reg_id] * o_scale[(reg_id % 4) / 2][i];
                         }
@@ -1586,11 +1610,11 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 #pragma unroll
                 for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d)
                 {
-                    vec_t<float, 8> o_new;
+                    vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> o_new;
                     o_new.fill(0.f);
 #pragma unroll
                     for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
-                        vec_t<float, 8> oi;
+                        vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> oi;
                         oi.load(smem_o + ((((i * KTraits::NUM_WARPS_Q +
                                              get_warp_idx_q<KTraits>(tid.y)) *
                                                 KTraits::NUM_MMA_Q +
@@ -1599,9 +1623,11 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
                                            mma_d) *
                                               WARP_SIZE +
                                           lane_idx) *
-                                             8);
+                                             KTraits::HALF_ELEMS_PER_THREAD);
 #pragma unroll
-                        for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+                        for (uint32_t reg_id = 0;
+                             reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id)
+                        {
                             o_new[reg_id] += oi[reg_id];
                         }
                     }
