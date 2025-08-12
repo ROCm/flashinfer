@@ -2254,7 +2254,7 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params,
                         void *args[] = {(void *)&params};
                         dim3 nblks(ceil_div(qo_len * group_size, CTA_TILE_Q), 1,
                                    num_kv_heads);
-                        dim3 nthrs(32, NUM_WARPS_Q, NUM_WARPS_KV); // FIXME
+                        dim3 nthrs(WARP_SIZE, NUM_WARPS_Q, NUM_WARPS_KV);
                         FI_GPU_CALL(gpuLaunchKernel((void *)kernel, nblks,
                                                     nthrs, args, smem_size,
                                                     stream));
@@ -2272,7 +2272,7 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params,
                         void *args[] = {(void *)&params};
                         dim3 nblks(ceil_div(qo_len * group_size, CTA_TILE_Q),
                                    num_chunks, num_kv_heads);
-                        dim3 nthrs(32, NUM_WARPS_Q, NUM_WARPS_KV);
+                        dim3 nthrs(WARP_SIZE, NUM_WARPS_Q, NUM_WARPS_KV);
                         FI_GPU_CALL(gpuLaunchKernel((void *)kernel, nblks,
                                                     nthrs, args, smem_size,
                                                     stream));
@@ -3091,7 +3091,7 @@ BatchPrefillWithRaggedKVCacheDispatched(Params params,
     }
 
     dim3 nblks(padded_batch_size, 1, num_kv_heads);
-    dim3 nthrs(32, NUM_WARPS_Q, NUM_WARPS_KV);
+    dim3 nthrs(WARP_SIZE, NUM_WARPS_Q, NUM_WARPS_KV);
     constexpr uint32_t NUM_MMA_D_QK = HEAD_DIM_QK / 16;
     constexpr uint32_t NUM_MMA_D_VO = HEAD_DIM_VO / 16;
     using DTypeQKAccum =
@@ -3219,7 +3219,7 @@ BatchPrefillWithPagedKVCacheDispatched(Params params,
     }
 
     dim3 nblks(padded_batch_size, 1, num_kv_heads);
-    dim3 nthrs(32, NUM_WARPS_Q, NUM_WARPS_KV);
+    dim3 nthrs(WARP_SIZE, NUM_WARPS_Q, NUM_WARPS_KV);
 
     constexpr uint32_t NUM_MMA_D_QK = HEAD_DIM_QK / 16;
     constexpr uint32_t NUM_MMA_D_VO = HEAD_DIM_VO / 16;
