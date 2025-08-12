@@ -960,8 +960,6 @@ __device__ __forceinline__ void compute_qk(
                 if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum,
                                              float>)
                 {
-#warning "TODO: mma_sync_m16n16k16_row_col_f16f16f32 ...."
-#if 0
                     if (mma_d == 0) {
                         mma::mma_sync_m16n16k16_row_col_f16f16f32<
                             typename KTraits::DTypeQ, MMAMode::kInit>(
@@ -972,11 +970,13 @@ __device__ __forceinline__ void compute_qk(
                             typename KTraits::DTypeQ>(s_frag[mma_q][mma_kv],
                                                       a_frag[mma_q], b_frag);
                     }
-#endif
                 }
                 else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
-#warning "Not yet implemented"
-#if 0
+#if defined(PLATFORM_HIP_DEVICE)
+                    static_assert(
+                        false,
+                        "FP16 DTypeQKAccum not yet implemented for CDNA3");
+#endif
                     if (mma_d == 0) {
                         mma::mma_sync_m16n16k16_row_col_f16f16f16<
                             MMAMode::kInit>((uint32_t *)s_frag[mma_q][mma_kv],
@@ -987,7 +987,6 @@ __device__ __forceinline__ void compute_qk(
                             (uint32_t *)s_frag[mma_q][mma_kv], a_frag[mma_q],
                             b_frag);
                     }
-#endif
                 }
             }
         }
