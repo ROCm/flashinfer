@@ -1242,8 +1242,11 @@ __device__ __forceinline__ void update_mdo_states(
             }
         }
         else if constexpr (std::is_same_v<DTypeQKAccum, half>) {
-#warning "Not implemented yet ...."
-#if 0
+#if defined(PLATFORM_HIP_DEVICE)
+            static_assert(
+                false,
+                "Half precision accumulator not yet implemented for AMD");
+#else
             const half2 sm_scale = __float2half2_rn(variant.sm_scale_log2);
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
