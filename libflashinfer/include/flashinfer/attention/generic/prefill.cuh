@@ -932,7 +932,7 @@ __device__ __forceinline__ void compute_qk(
 #if defined(PLATFORM_HIP_DEVICE)
                 static_assert(false,
                               "FP8 support not yet implemented for CDNA3");
-#endif
+#else
                 uint32_t b_frag_f8[2];
                 if (mma_d % 2 == 0) {
                     k_smem->ldmatrix_m8n8x4_left_half(*k_smem_offset_r,
@@ -947,9 +947,14 @@ __device__ __forceinline__ void compute_qk(
                 vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::
                     template cast<8>((typename KTraits::DTypeQ *)b_frag,
                                      (typename KTraits::DTypeKV *)b_frag_f8);
+#endif
             }
             else {
+#if defined(PLATFORM_HIP_DEVICE)
                 k_smem->load_fragment_4x4_transposed(*k_smem_offset_r, b_frag);
+#else
+                k_smem->load_fragment(*k_smem_offset_r, b_frag);
+#endif
             }
             *k_smem_offset_r =
                 k_smem->template advance_offset_by_row<16, UPCAST_STRIDE_K>(
@@ -976,7 +981,7 @@ __device__ __forceinline__ void compute_qk(
                     static_assert(
                         false,
                         "FP16 DTypeQKAccum not yet implemented for CDNA3");
-#endif
+#else
                     if (mma_d == 0) {
                         mma::mma_sync_m16n16k16_row_col_f16f16f16<
                             MMAMode::kInit>((uint32_t *)s_frag[mma_q][mma_kv],
@@ -987,6 +992,7 @@ __device__ __forceinline__ void compute_qk(
                             (uint32_t *)s_frag[mma_q][mma_kv], a_frag[mma_q],
                             b_frag);
                     }
+#endif
                 }
             }
         }
@@ -1309,16 +1315,18 @@ __device__ __forceinline__ void compute_sfm_v(
     float (*d)[2])
 {
     constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
 
     typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
-                                       [8];
+                                       [HALF_ELEMS_PER_THREAD];
     if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
             for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-                vec_cast<typename KTraits::DTypeQ, float>::template cast<8>(
-                    s_frag_f16[mma_q][mma_kv], s_frag[mma_q][mma_kv]);
+                vec_cast<typename KTraits::DTypeQ, float>::template cast<
+                    HALF_ELEMS_PER_THREAD>(s_frag_f16[mma_q][mma_kv],
+                                           s_frag[mma_q][mma_kv]);
             }
         }
     }
@@ -1328,8 +1336,6 @@ __device__ __forceinline__ void compute_sfm_v(
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
             for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-#warning "TODO: m16k16_rowsum_f16f16f32 ..........."
-#if 0
                 if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum,
                                              float>)
                 {
@@ -1337,10 +1343,15 @@ __device__ __forceinline__ void compute_sfm_v(
                                                  s_frag_f16[mma_q][mma_kv]);
                 }
                 else {
+#if defined(PLATFORM_HIP_DEVICE)
+                    static_assert(
+                        !std::is_same_v<DTypeQKAccum, __half>::value,
+                        "FP16 reduction path not implemented for CDNA3");
+#else
                     mma::m16k16_rowsum_f16f16f32(d[mma_q],
                                                  s_frag[mma_q][mma_kv]);
-                }
 #endif
+                }
             }
         }
     }
@@ -1351,8 +1362,10 @@ __device__ __forceinline__ void compute_sfm_v(
         for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
             uint32_t b_frag[4];
             if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
-#warning "Not yet implemented......"
-#if 0
+#if defined(PLATFORM_HIP_DEVICE)
+                static_assert(false,
+                              "FP8 V path not implemented for CDNA3 yet");
+#else
                 uint32_t b_frag_f8[2];
                 if (mma_d % 2 == 0) {
                     v_smem->ldmatrix_m8n8x4_trans_left_half(*v_smem_offset_r,
@@ -1366,9 +1379,9 @@ __device__ __forceinline__ void compute_sfm_v(
                     frag_layout_swizzle_16b_to_8b_trans(b_frag_f8[0]);
                 b_frag_f8[1] =
                     frag_layout_swizzle_16b_to_8b_trans(b_frag_f8[1]);
-                vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::template
-                    cast<8>((typename KTraits::DTypeQ *)b_frag,
-                            (typename KTraits::DTypeKV *)b_frag_f8);
+                vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::
+                    template cast<8>((typename KTraits::DTypeQ *)b_frag,
+                                     (typename KTraits::DTypeKV *)b_frag_f8);
                 swap(b_frag[1], b_frag[2]);
 #endif
             }
