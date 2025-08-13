@@ -168,6 +168,16 @@ load_fragment_4x4_half_registers(const T *smem_ptr, uint32_t *R)
     transpose_4x4_half_registers(R);
 }
 
+// TODO: Verify correct matrix multiplication order for rowsum on CDNA3
+// Current assumption: s_frag × ones_vector = row_sums
+// Need to validate:
+// 1. How compute_qk stores Q×K^T result in s_frag for CDNA3
+// 2. Whether K is pre-transposed or transposed during fragment loading
+// 3. If we need s_frag × M1 or M1 × s_frag for correct row sums
+//
+// Test with known input matrices to verify:
+// - s_frag layout matches expected Q×K^T result
+// - rowsum produces correct per-row sums
 template <typename DType>
 __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float *d, DType *s_frag)
 {

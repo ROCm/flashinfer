@@ -967,7 +967,11 @@ __device__ __forceinline__ void compute_qk(
             }
             else {
 #if defined(PLATFORM_HIP_DEVICE)
-                k_smem->load_fragment_4x4_transposed(*k_smem_offset_r, b_frag);
+                // TODO: We need to validate the layout of K. Whether a
+                // transposed load is needed or whether K is pre-transposed.
+                // k_smem->load_fragment_4x4_transposed(*k_smem_offset_r,
+                // b_frag);
+                k_smem->load_fragment(*k_smem_offset_r, b_frag);
 #else
                 k_smem->load_fragment(*k_smem_offset_r, b_frag);
 #endif
@@ -1378,10 +1382,12 @@ __device__ __forceinline__ void compute_sfm_v(
     typename KTraits::DTypeQKAccum (
         *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[2])
+    float (*d)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD])
 {
     constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+    constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
+        KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
 
     typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
                                        [HALF_ELEMS_PER_THREAD];
