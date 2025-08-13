@@ -154,6 +154,11 @@ struct KernelTraits
     // Presently we use 16x4 thread layout for all cases.
     static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
     static constexpr uint32_t KV_THR_LAYOUT_COL = WARP_THREAD_COLS;
+    // The constant is defined based on the matrix layout of the "D/C"
+    // accumulator matrix in a D = A*B+C computation. On CDNA3 the D/C matrices
+    // are distributed as four 4x16 bands across the 64 threads. Each thread
+    // owns one element from four different rows.
+    static constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD = 4;
 #else
     using SmemBasePtrTy = uint4;
     static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 32;
@@ -172,6 +177,14 @@ struct KernelTraits
                                               : WARP_THREAD_COLS;
     static constexpr uint32_t KV_THR_LAYOUT_COL =
         SWIZZLE_MODE_KV == SwizzleMode::k128B ? 8 : 4;
+
+    // The constant is defined based on the matrix layout of the "D/C"
+    // accumulator matrix in a D = A*B+C computation. On CUDA for
+    // m16n8k16 mma ops the D/C matrix is distributed as 4 8x8 block and each
+    // thread stores eight elements from two different rows.
+    // Refer:
+    // https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-i8-f8
+    static constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD = 2;
 #endif
     static constexpr uint32_t THREADS_PER_ROW_GROUP = WARP_THREAD_COLS / 2;
     static constexpr uint32_t UPCAST_STRIDE_Q =
@@ -590,9 +603,12 @@ template <typename KTraits>
 __device__ __forceinline__ void init_states(
     typename KTraits::AttentionVariant variant,
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    typename KTraits::DTypeQKAccum (*m)[2],
-    float (*d)[2])
+    typename KTraits::DTypeQKAccum (
+        *m)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD],
+    float (*d)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD])
 {
+    constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
+        KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
@@ -610,7 +626,7 @@ __device__ __forceinline__ void init_states(
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-            for (uint32_t j = 0; j < 2; ++j) {
+            for (uint32_t j = 0; j < NUM_MMA_ACCUM_CHUNKS_PER_THREAD; ++j) {
                 m[mma_q][j] =
                     typename KTraits::DTypeQKAccum(-gpu_iface::math::inf);
                 d[mma_q][j] = 1.f;
@@ -1172,11 +1188,14 @@ __device__ __forceinline__ void update_mdo_states(
     typename KTraits::DTypeQKAccum (
         *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    typename KTraits::DTypeQKAccum (*m)[2],
-    float (*d)[2])
+    typename KTraits::DTypeQKAccum (
+        *m)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD],
+    float (*d)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD])
 {
     using DTypeQKAccum = typename KTraits::DTypeQKAccum;
     using AttentionVariant = typename KTraits::AttentionVariant;
+    constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
+        KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
     constexpr bool use_softmax = AttentionVariant::use_softmax;
 
     if constexpr (use_softmax) {
@@ -1185,19 +1204,62 @@ __device__ __forceinline__ void update_mdo_states(
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-                for (uint32_t j = 0; j < 2; ++j) {
+                for (uint32_t j = 0; j < NUM_MMA_ACCUM_CHUNKS_PER_THREAD; ++j) {
                     float m_prev = m[mma_q][j];
 #pragma unroll
                     for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV;
                          ++mma_kv)
                     {
+#if defined(PLATFORM_HIP_DEVICE)
+                        m[mma_q][j] =
+                            max(m[mma_q][j], s_frag[mma_q][mma_kv][j]);
+#else
                         float m_local =
                             max(max(s_frag[mma_q][mma_kv][j * 2 + 0],
                                     s_frag[mma_q][mma_kv][j * 2 + 1]),
                                 max(s_frag[mma_q][mma_kv][j * 2 + 4],
                                     s_frag[mma_q][mma_kv][j * 2 + 5]));
                         m[mma_q][j] = max(m[mma_q][j], m_local);
+#endif
                     }
+#if defined(PLATFORM_HIP_DEVICE)
+                    // Butterfly reduction across all threads in the band (16
+                    // threads) for CDNA3's 64-thread wavefront
+                    m[mma_q][j] =
+                        max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(
+                                             m[mma_q][j], 0x8)); // 16 apart
+                    m[mma_q][j] =
+                        max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(
+                                             m[mma_q][j], 0x4)); // 8 apart
+                    m[mma_q][j] =
+                        max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(
+                                             m[mma_q][j], 0x2)); // 4 apart
+                    m[mma_q][j] =
+                        max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(
+                                             m[mma_q][j], 0x1)); // 2 apart
+
+                    float o_scale = gpu_iface::math::ptx_exp2(
+                        m_prev * sm_scale - m[mma_q][j] * sm_scale);
+                    d[mma_q][j] *= o_scale;
+
+                    // Scale output fragments for this specific row
+#pragma unroll
+                    for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO;
+                         ++mma_d)
+                    {
+                        o_frag[mma_q][mma_d][j] *= o_scale; // Direct indexing
+                    }
+
+                    // Convert logits to probabilities for this row
+#pragma unroll
+                    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV;
+                         ++mma_kv)
+                    {
+                        s_frag[mma_q][mma_kv][j] = gpu_iface::math::ptx_exp2(
+                            s_frag[mma_q][mma_kv][j] * sm_scale -
+                            m[mma_q][j] * sm_scale);
+                    }
+#else
                     m[mma_q][j] =
                         max(m[mma_q][j],
                             gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x2));
@@ -1238,6 +1300,7 @@ __device__ __forceinline__ void update_mdo_states(
                                 s_frag[mma_q][mma_kv][j * 2 + 5] * sm_scale -
                                 m[mma_q][j] * sm_scale);
                     }
+#endif
                 }
             }
         }
@@ -1860,6 +1923,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
         [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
         [[maybe_unused]] constexpr uint32_t HALF_ELEMS_PER_THREAD =
             KTraits::HALF_ELEMS_PER_THREAD;
+        [[maybe_unused]] constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
+            KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
 
         DTypeQ *q = params.q;
         DTypeKV *k = params.k;
@@ -1899,8 +1964,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
         DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][HALF_ELEMS_PER_THREAD];
         alignas(
             16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
-        DTypeQKAccum m[NUM_MMA_Q][2];
-        float d[NUM_MMA_Q][2];
+        DTypeQKAccum m[NUM_MMA_Q][NUM_MMA_ACCUM_CHUNKS_PER_THREAD];
+        float d[NUM_MMA_Q][NUM_MMA_ACCUM_CHUNKS_PER_THREAD];
         float rope_freq[NUM_MMA_D_QK / 2][4];
         if constexpr (KTraits::POS_ENCODING_MODE == PosEncodingMode::kRoPELlama)
         {
