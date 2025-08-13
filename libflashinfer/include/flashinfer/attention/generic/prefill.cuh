@@ -9,7 +9,7 @@
 #include "gpu_iface/fastdiv.cuh"
 #include "gpu_iface/math_ops.hpp"
 #include "gpu_iface/memory_ops.hpp"
-// #include "gpu_iface/mma_ops.hpp"
+#include "gpu_iface/mma_ops.hpp"
 #include "gpu_iface/platform.hpp"
 #include "gpu_iface/utils.cuh"
 
@@ -33,10 +33,10 @@ DEFINE_HAS_MEMBER(maybe_k_rope_offset)
 
 namespace cg = flashinfer::gpu_iface::cg;
 namespace memory = flashinfer::gpu_iface::memory;
-// namespace mma = gpu_iface::mma;
+namespace mma = gpu_iface::mma;
 
 using gpu_iface::vec_dtypes::vec_cast;
-// using mma::MMAMode;
+using mma::MMAMode;
 
 constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
 
@@ -158,7 +158,7 @@ struct KernelTraits
     // accumulator matrix in a D = A*B+C computation. On CDNA3 the D/C matrices
     // are distributed as four 4x16 bands across the 64 threads. Each thread
     // owns one element from four different rows.
-    static constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD = 4;
+    static constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = 4;
 #else
     using SmemBasePtrTy = uint4;
     static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 32;
@@ -184,7 +184,7 @@ struct KernelTraits
     // thread stores eight elements from two different rows.
     // Refer:
     // https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-i8-f8
-    static constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD = 2;
+    static constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = 2;
 #endif
     static constexpr uint32_t THREADS_PER_ROW_GROUP = WARP_THREAD_COLS / 2;
     static constexpr uint32_t UPCAST_STRIDE_Q =
@@ -603,12 +603,11 @@ template <typename KTraits>
 __device__ __forceinline__ void init_states(
     typename KTraits::AttentionVariant variant,
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    typename KTraits::DTypeQKAccum (
-        *m)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD],
-    float (*d)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD])
+    typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
 {
-    constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
-        KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
+    constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
+        KTraits::NUM_ACCUM_ROWS_PER_THREAD;
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
@@ -626,7 +625,7 @@ __device__ __forceinline__ void init_states(
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-            for (uint32_t j = 0; j < NUM_MMA_ACCUM_CHUNKS_PER_THREAD; ++j) {
+            for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j) {
                 m[mma_q][j] =
                     typename KTraits::DTypeQKAccum(-gpu_iface::math::inf);
                 d[mma_q][j] = 1.f;
@@ -1192,14 +1191,13 @@ __device__ __forceinline__ void update_mdo_states(
     typename KTraits::DTypeQKAccum (
         *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    typename KTraits::DTypeQKAccum (
-        *m)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD],
-    float (*d)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD])
+    typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
 {
     using DTypeQKAccum = typename KTraits::DTypeQKAccum;
     using AttentionVariant = typename KTraits::AttentionVariant;
-    constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
-        KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
+    constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
+        KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     constexpr bool use_softmax = AttentionVariant::use_softmax;
 
     if constexpr (use_softmax) {
@@ -1208,7 +1206,7 @@ __device__ __forceinline__ void update_mdo_states(
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-                for (uint32_t j = 0; j < NUM_MMA_ACCUM_CHUNKS_PER_THREAD; ++j) {
+                for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j) {
                     float m_prev = m[mma_q][j];
 #pragma unroll
                     for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV;
@@ -1382,12 +1380,15 @@ __device__ __forceinline__ void compute_sfm_v(
     typename KTraits::DTypeQKAccum (
         *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD])
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
 {
     constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
-    constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
-        KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
+    constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
+    constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
+        KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+    constexpr uint32_t V_SMEM_COLUMN_ADVANCE =
+        16 / KTraits::HALF_ELEMS_PER_THREAD;
 
     typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
                                        [HALF_ELEMS_PER_THREAD];
@@ -1417,7 +1418,7 @@ __device__ __forceinline__ void compute_sfm_v(
                 else {
 #if defined(PLATFORM_HIP_DEVICE)
                     static_assert(
-                        !std::is_same_v<DTypeQKAccum, __half>::value,
+                        !std::is_same_v<typename KTraits::DTypeQKAccum, __half>,
                         "FP16 reduction path not implemented for CDNA3");
 #else
                     mma::m16k16_rowsum_f16f16f32(d[mma_q],
@@ -1432,7 +1433,7 @@ __device__ __forceinline__ void compute_sfm_v(
     for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
 #pragma unroll
         for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-            uint32_t b_frag[4];
+            uint32_t b_frag[INT32_ELEMS_PER_THREAD];
             if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
 #if defined(PLATFORM_HIP_DEVICE)
                 static_assert(false,
@@ -1458,13 +1459,14 @@ __device__ __forceinline__ void compute_sfm_v(
 #endif
             }
             else {
-#warning "TODO ldmatrix_m8n8x4_trans ............"
+#if defined(PLATFORM_HIP_DEVICE)
+                v_smem->load_fragment_4x4_transposed(*v_smem_offset_r, b_frag);
+#else
                 v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
+#endif
             }
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
-#warning "TODO mma_sync_m16n16k16_row_col_f16f16f32 ............"
-#if 0
                 if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum,
                                              float>)
                 {
@@ -1479,18 +1481,17 @@ __device__ __forceinline__ void compute_sfm_v(
                         o_frag[mma_q][mma_d], (uint32_t *)s_frag[mma_q][mma_kv],
                         b_frag);
                 }
-#endif
             }
             if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
                 if (mma_d % 2 == 1) {
                     *v_smem_offset_r =
-                        v_smem->template advance_offset_by_column<2>(
-                            *v_smem_offset_r, mma_d / 2);
+                        v_smem->template advance_offset_by_column<
+                            V_SMEM_COLUMN_ADVANCE>(*v_smem_offset_r, mma_d / 2);
                 }
             }
             else {
-                *v_smem_offset_r = v_smem->template advance_offset_by_column<2>(
-                    *v_smem_offset_r, mma_d);
+                *v_smem_offset_r = v_smem->template advance_offset_by_column<
+                    V_SMEM_COLUMN_ADVANCE>(*v_smem_offset_r, mma_d);
             }
         }
         *v_smem_offset_r =
@@ -1504,17 +1505,17 @@ __device__ __forceinline__ void compute_sfm_v(
 template <typename KTraits>
 __device__ __forceinline__ void normalize_d(
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    typename KTraits::DTypeQKAccum (*m)[2],
-    float (*d)[2])
+    typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
 {
     using AttentionVariant = typename KTraits::AttentionVariant;
     if constexpr (AttentionVariant::use_softmax) {
-        float d_rcp[KTraits::NUM_MMA_Q][2];
+        float d_rcp[KTraits::NUM_MMA_Q][KTraits::NUM_ACCUM_ROWS_PER_THREAD];
         // compute reciprocal of d
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-            for (uint32_t j = 0; j < 2; ++j) {
+            for (uint32_t j = 0; j < KTraits::NUM_ACCUM_ROWS_PER_THREAD; ++j) {
                 d_rcp[mma_q][j] =
                     (m[mma_q][j] !=
                      typename KTraits::DTypeQKAccum(-gpu_iface::math::inf))
@@ -1541,15 +1542,15 @@ __device__ __forceinline__ void normalize_d(
 }
 
 template <typename KTraits>
-__device__ __forceinline__ void
-finalize_m(typename KTraits::AttentionVariant variant,
-           typename KTraits::DTypeQKAccum (*m)[2])
+__device__ __forceinline__ void finalize_m(
+    typename KTraits::AttentionVariant variant,
+    typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
 {
     if constexpr (variant.use_softmax) {
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-            for (uint32_t j = 0; j < 2; ++j) {
+            for (uint32_t j = 0; j < KTraits::NUM_ACCUM_ROWS_PER_THREAD; ++j) {
                 if (m[mma_q][j] !=
                     typename KTraits::DTypeQKAccum(-gpu_iface::math::inf))
                 {
@@ -1568,13 +1569,15 @@ template <typename KTraits>
 __device__ __forceinline__ void threadblock_sync_mdo_states(
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
     typename KTraits::SharedStorage *smem_storage,
-    typename KTraits::DTypeQKAccum (*m)[2],
-    float (*d)[2],
+    typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
     const uint32_t warp_idx,
     const uint32_t lane_idx,
     const dim3 tid = threadIdx)
 {
     constexpr uint32_t TPR = KTraits::THREADS_PER_ROW_GROUP;
+    constexpr uint32_t NARPT = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+
     static_assert(WARP_SIZE % TPR == 0,
                   "THREADS_PER_ROW_GROUP must divide WARP_SIZE");
     constexpr uint32_t GROUPS_PER_WARP = WARP_SIZE / TPR;
@@ -1605,7 +1608,7 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-                for (uint32_t j = 0; j < 2; ++j) {
+                for (uint32_t j = 0; j < NARPT; ++j) {
                     smem_md[((warp_idx * KTraits::NUM_MMA_Q + mma_q) * 2 + j) *
                                 GROUPS_PER_WARP +
                             lane_group_idx] =
@@ -1619,7 +1622,7 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
                 float o_scale[2][KTraits::NUM_WARPS_KV];
 #pragma unroll
-                for (uint32_t j = 0; j < 2; ++j) {
+                for (uint32_t j = 0; j < NARPT; ++j) {
                     float m_new = -gpu_iface::math::inf, d_new = 1.f;
 #pragma unroll
                     for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
@@ -1929,8 +1932,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
         [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
         [[maybe_unused]] constexpr uint32_t HALF_ELEMS_PER_THREAD =
             KTraits::HALF_ELEMS_PER_THREAD;
-        [[maybe_unused]] constexpr uint32_t NUM_MMA_ACCUM_CHUNKS_PER_THREAD =
-            KTraits::NUM_MMA_ACCUM_CHUNKS_PER_THREAD;
+        [[maybe_unused]] constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
+            KTraits::NUM_ACCUM_ROWS_PER_THREAD;
 
         DTypeQ *q = params.q;
         DTypeKV *k = params.k;
@@ -1970,8 +1973,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
         DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][HALF_ELEMS_PER_THREAD];
         alignas(
             16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
-        DTypeQKAccum m[NUM_MMA_Q][NUM_MMA_ACCUM_CHUNKS_PER_THREAD];
-        float d[NUM_MMA_Q][NUM_MMA_ACCUM_CHUNKS_PER_THREAD];
+        DTypeQKAccum m[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
+        float d[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
         float rope_freq[NUM_MMA_D_QK / 2][4];
         if constexpr (KTraits::POS_ENCODING_MODE == PosEncodingMode::kRoPELlama)
         {
