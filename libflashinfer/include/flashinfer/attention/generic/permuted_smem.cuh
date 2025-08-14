@@ -171,7 +171,7 @@ template <SwizzleMode swizzle_mode, typename BasePtrTy = b128_t> struct smem_t
 #if defined(PLATFORM_HIP_DEVICE)
         auto smem_t_ptr = reinterpret_cast<const half *>(base + offset);
         flashinfer::gpu_iface::mma::load_fragment_transpose_4x4_half_registers(
-            smem_t_ptr, frag);
+            frag, smem_t_ptr);
 #else
         static_assert(false, "Not supported on current platform");
 #endif

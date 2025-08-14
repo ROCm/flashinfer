@@ -146,7 +146,7 @@ mma_sync_m16n16k16_row_col_f16f16f32(float *C, uint32_t *A, uint32_t *B)
 /// the registers for a group of four consecuitive threads.
 template <typename T>
 __device__ __forceinline__ void
-load_fragment_4x4_half_registers(const T *smem_ptr, uint32_t *R)
+load_fragment_4x4_half_registers(uint32_t *R, const T *smem_ptr)
 {
     static_assert(std::is_same_v<T, __half>, "Only half type is supported");
     // Each thread loads 4 __half values in two 32b registers.

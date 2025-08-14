@@ -415,7 +415,6 @@ __device__ __forceinline__ void produce_kv_helper_(
 #endif
 
     uint32_t row = lane_idx / WARP_THREAD_COLS;
-    uint32_t col = lane_idx % WARP_THREAD_COLS;
     uint32_t kv_idx = kv_idx_base + warp_idx * WARP_THREAD_ROWS + row;
     // NOTE: NUM_MMA_KV*4/NUM_WARPS_Q = NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
     static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
@@ -1392,8 +1391,7 @@ __device__ __forceinline__ void compute_sfm_v(
     constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
-    constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
-        KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+
     constexpr uint32_t V_SMEM_COLUMN_ADVANCE =
         16 / KTraits::HALF_ELEMS_PER_THREAD;
 
