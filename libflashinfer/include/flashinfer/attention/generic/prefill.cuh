@@ -164,7 +164,6 @@ struct KernelTraits
     // CUDA: 4 threads (each thread handles 2 elements from same row group)
     // CDNA3: 16 threads (each thread handles 1 element from same row group)
     static constexpr uint32_t THREADS_PER_MATRIX_ROW_SET = 16;
-
 #else
     using SmemBasePtrTy = uint4;
     static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 32;
@@ -191,7 +190,7 @@ struct KernelTraits
     // Refer:
     // https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-i8-f8
     static constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = 2;
-    static constexpr uint32_t THREADS_PER_MATRIX_ROW_SET = 16;
+    static constexpr uint32_t THREADS_PER_MATRIX_ROW_SET = 4;
 #endif
     static constexpr uint32_t UPCAST_STRIDE_Q =
         HEAD_DIM_QK / upcast_size<DTypeQ_, VECTOR_BIT_WIDTH>();
@@ -1761,7 +1760,10 @@ __device__ __forceinline__ void write_o_reg_gmem(
     using DTypeO = typename KTraits::DTypeO;
     constexpr uint32_t UPCAST_STRIDE_O = KTraits::UPCAST_STRIDE_O;
     constexpr uint32_t TPR = KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+    constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
+
     const uint32_t warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
     const uint32_t lane_idx = tid.x;
 
@@ -1769,7 +1771,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
 #pragma unroll
         for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-            for (uint32_t j = 0; j < 2; ++j) {
+            for (uint32_t j = 0; j < NAPTR; ++j) {
                 uint32_t q, r;
                 group_size.divmod(o_packed_idx_base + lane_idx / TPR +
                                       mma_q * 16 + j * 8,
@@ -1779,16 +1781,22 @@ __device__ __forceinline__ void write_o_reg_gmem(
                 for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d)
                 {
                     if (o_idx < qo_upper_bound) {
-                        *reinterpret_cast<float2 *>(
-                            o_ptr_base + q * o_stride_n + r * o_stride_h +
-                            mma_d * 16 + (lane_idx % TPR) * 2) =
+                        auto base_addr = o_ptr_base + q * o_stride_n +
+                                         r * o_stride_h + mma_d * 16;
+                        auto col_offset = lane_idx % 16;
+#if defined(PLATFORM_HIP_DEVICE)
+                        *(base_addr + col_offset) = o_frag[mma_q][mma_d][j];
+#else
+                        *reinterpret_cast<float2 *>(base_addr +
+                                                    col_offset * 2) =
                             *reinterpret_cast<float2 *>(
                                 &o_frag[mma_q][mma_d][j * 2]);
-                        *reinterpret_cast<float2 *>(
-                            o_ptr_base + q * o_stride_n + r * o_stride_h +
-                            mma_d * 16 + 8 + (lane_idx % TPR) * 2) =
+
+                        *reinterpret_cast<float2 *>(base_addr + 8 +
+                                                    col_offset * 2) =
                             *reinterpret_cast<float2 *>(
-                                &o_frag[mma_q][mma_d][4 + j * 2]);
+                                &o_frag[mma_q][mma_d][$ + j * 2]);
+#endif
                     }
                 }
             }
@@ -1817,41 +1825,53 @@ __device__ __forceinline__ void write_o_reg_gmem(
                     uint32_t o_smem_offset_w =
                         o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
                             (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 +
-                                lane_idx / 4,
+                                lane_idx / TPR,
                             mma_d * 2);
+#if defined(PLATFORM_HIP_DEVICE)
                     ((uint32_t *)(o_smem->base +
-                                  o_smem_offset_w))[lane_idx % 4] =
+                                  o_smem_offset_w))[lane_idx % TPR] =
+                        o_frag_f16[0];
+                    // Move 2 elements forward in the same row
+                    uint32_t offset_2 = o_smem_offset_w + 2;
+                    ((uint32_t *)(o_smem->base + offset_2))[lane_idx % 16] =
+                        o_frag_f16[1];
+#else
+                    ((uint32_t *)(o_smem->base +
+                                  o_smem_offset_w))[lane_idx % TPR] =
                         o_frag_f16[0];
                     ((uint32_t *)(o_smem->base + o_smem_offset_w +
                                   8 * UPCAST_STRIDE_O))[lane_idx % 4] =
                         o_frag_f16[1];
                     ((uint32_t *)(o_smem->base +
-                                  (o_smem_offset_w ^ 0x1)))[lane_idx % 4] =
+                                  (o_smem_offset_w ^ 0x1)))[lane_idx % TPR] =
                         o_frag_f16[2];
                     ((uint32_t *)(o_smem->base + (o_smem_offset_w ^ 0x1) +
                                   8 * UPCAST_STRIDE_O))[lane_idx % 4] =
                         o_frag_f16[3];
+#endif
 #endif
                 }
             }
 
             uint32_t o_smem_offset_w =
                 o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
-                    warp_idx_x * KTraits::NUM_MMA_Q * 16 + lane_idx / 8,
-                    lane_idx % 8);
+                    warp_idx_x * KTraits::NUM_MMA_Q * 16 +
+                        lane_idx / WARP_THREAD_COLS,
+                    lane_idx % WARP_THREAD_COLS);
 
 #pragma unroll
             for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
                 for (uint32_t j = 0; j < 2 * 2; ++j) {
                     uint32_t q, r;
-                    group_size.divmod(o_packed_idx_base + lane_idx / 8 +
+                    group_size.divmod(o_packed_idx_base +
+                                          lane_idx / WARP_THREAD_COLS +
                                           mma_q * 16 + j * 4,
                                       q, r);
                     const uint32_t o_idx = q;
-                    DTypeO *o_ptr = o_ptr_base + q * o_stride_n +
-                                    r * o_stride_h +
-                                    (lane_idx % 8) * upcast_size<DTypeO>();
+                    DTypeO *o_ptr =
+                        o_ptr_base + q * o_stride_n + r * o_stride_h +
+                        (lane_idx % WARP_THREAD_COLS) * upcast_size<DTypeO>();
 #pragma unroll
                     for (uint32_t mma_do = 0;
                          mma_do < KTraits::NUM_MMA_D_VO / 4; ++mma_do)
@@ -1859,10 +1879,10 @@ __device__ __forceinline__ void write_o_reg_gmem(
                         if (o_idx < qo_upper_bound) {
                             o_smem->store_vector(o_smem_offset_w, o_ptr);
                         }
-                        o_ptr += 8 * upcast_size<DTypeO>();
+                        o_ptr += WARP_THREAD_COLS * upcast_size<DTypeO>();
                         o_smem_offset_w =
-                            o_smem->template advance_offset_by_column<8>(
-                                o_smem_offset_w, mma_do);
+                            o_smem->template advance_offset_by_column<
+                                WARP_THREAD_COLS>(o_smem_offset_w, mma_do);
                     }
                     o_smem_offset_w = o_smem->template advance_offset_by_row<
                                           4, UPCAST_STRIDE_O>(o_smem_offset_w) -
