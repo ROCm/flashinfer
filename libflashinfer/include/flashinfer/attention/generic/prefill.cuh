@@ -164,6 +164,9 @@ struct KernelTraits
     // CUDA: 4 threads (each thread handles 2 elements from same row group)
     // CDNA3: 16 threads (each thread handles 1 element from same row group)
     static constexpr uint32_t THREADS_PER_MATRIX_ROW_SET = 16;
+    // controls the indexing stride used in logits-related functions
+    // (logits_transform, logits_mask, and LSE writing).
+    static constexpr uint32_t LOGITS_INDEX_STRIDE = 4;
 #else
     using SmemBasePtrTy = uint4;
     static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 32;
@@ -191,6 +194,7 @@ struct KernelTraits
     // https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-i8-f8
     static constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = 2;
     static constexpr uint32_t THREADS_PER_MATRIX_ROW_SET = 4;
+    static constexpr uint32_t LOGITS_INDEX_STRIDE = 8;
 #endif
     static constexpr uint32_t UPCAST_STRIDE_Q =
         HEAD_DIM_QK / upcast_size<DTypeQ_, VECTOR_BIT_WIDTH>();
@@ -463,7 +467,6 @@ __device__ __forceinline__ void produce_kv(
     const dim3 tid = threadIdx)
 {
     // NOTE: for fp8, this function doesn't work for head_dim = 64 at the moment
-    using DTypeKV = typename KTraits::DTypeKV;
     constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
     constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
@@ -516,7 +519,6 @@ __device__ __forceinline__ void page_produce_kv(
 {
     // NOTE: for fp8, this function doesn't work for head_dim = 64 at the moment
     using DType = typename KTraits::DTypeKV;
-    using IdType = typename KTraits::IdType;
     constexpr SharedMemFillMode fill_mode =
         produce_v ? SharedMemFillMode::kFillZero : SharedMemFillMode::kNoFill;
     constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
@@ -682,7 +684,7 @@ __device__ __forceinline__ void load_q_global_smem(
                                   r);
                 const uint32_t q_idx = q;
                 DTypeQ *q_ptr = q_ptr_base + q * q_stride_n + r * q_stride_h +
-                                col * upcast_size<DTypeQ>();
+                                col * upcast_size<DTypeQ, 64>();
 #pragma unroll
                 for (uint32_t mma_do = 0; mma_do < KTraits::NUM_MMA_D_QK / 4;
                      ++mma_do)
@@ -693,7 +695,7 @@ __device__ __forceinline__ void load_q_global_smem(
                                                     q_idx < qo_upper_bound);
                     q_smem_offset_w = q_smem->template advance_offset_by_column<
                         WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
-                    q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ>();
+                    q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ, 64>();
                 }
                 q_smem_offset_w =
                     q_smem->template advance_offset_by_row<WARP_THREAD_ROWS,
@@ -1055,17 +1057,20 @@ __device__ __forceinline__ void logits_transform(
     const dim3 tid = threadIdx,
     const uint32_t kv_head_idx = blockIdx.z)
 {
-    const uint32_t lane_idx = tid.x;
-    uint32_t q[KTraits::NUM_MMA_Q][2], r[KTraits::NUM_MMA_Q][2];
-    float logits = 0., logitsTransformed = 0.;
     constexpr uint32_t TPR = KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+    constexpr uint32_t LIS = KTraits::LOGITS_INDEX_STRIDE;
+
+    const uint32_t lane_idx = tid.x;
+    uint32_t q[KTraits::NUM_MMA_Q][NAPTR], r[KTraits::NUM_MMA_Q][NAPTR];
+    float logits = 0., logitsTransformed = 0.;
 
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-        for (uint32_t j = 0; j < 2; ++j) {
+        for (uint32_t j = 0; j < NAPTR; ++j) {
             group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / TPR +
-                                  8 * j,
+                                  LIS * j,
                               q[mma_q][j], r[mma_q][j]);
         }
     }
@@ -1079,16 +1084,20 @@ __device__ __forceinline__ void logits_transform(
                  ++reg_id)
             {
 #if defined(PLATFORM_HIP_DEVICE)
-                const uint32_t i = reg_id / 2;
+                const uint32_t q_idx = q[mma_q][reg_id % NAPTR];
+                const uint32_t qo_head_idx =
+                    kv_head_idx * group_size + r[mma_q][reg_id % NAPTR];
+                const uint32_t kv_idx = kv_idx_base + mma_kv * 16 +
+                                        2 * (lane_idx % TPR) +
+                                        8 * (reg_id / 2) + reg_id % 2;
 #else
-                const uint32_t i = reg_id / 4;
-#endif
                 const uint32_t q_idx = q[mma_q][(reg_id % 4) / 2],
                                kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % TPR) + 8 * i +
+                                        2 * (lane_idx % 4) + 8 * (reg_id / 4) +
                                         reg_id % 2;
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
+#endif
 
 #ifdef FP16_QK_REDUCTION_SUPPORTED
                 if constexpr (std::is_same<DTypeQKAccum, __half>::value) {
@@ -1143,16 +1152,18 @@ logits_mask(const Params &params,
     const uint32_t lane_idx = tid.x;
     constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
-    using DTypeQKAccum = typename KTraits::DTypeQKAccum;
     constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
     constexpr uint32_t TPR = KTraits::THREADS_PER_MATRIX_ROW_SET;
-    uint32_t q[NUM_MMA_Q][2], r[NUM_MMA_Q][2];
+    constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+    constexpr uint32_t LIS = KTraits::LOGITS_INDEX_STRIDE;
+
+    uint32_t q[NUM_MMA_Q][NAPTR], r[NUM_MMA_Q][NAPTR];
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-        for (uint32_t j = 0; j < 2; ++j) {
+        for (uint32_t j = 0; j < NAPTR; ++j) {
             group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / TPR +
-                                  8 * j,
+                                  LIS * j,
                               q[mma_q][j], r[mma_q][j]);
         }
     }
@@ -1166,16 +1177,20 @@ logits_mask(const Params &params,
                  ++reg_id)
             {
 #if defined(PLATFORM_HIP_DEVICE)
-                const uint32_t i = reg_id / 2;
+                const uint32_t q_idx = q[mma_q][(reg_id % NAPTR)],
+                               kv_idx = kv_idx_base + mma_kv * 16 +
+                                        2 * (lane_idx % TPR) +
+                                        8 * (reg_id / 2) + reg_id % 2;
+                const uint32_t qo_head_idx =
+                    kv_head_idx * group_size + r[mma_q][(reg_id % NAPTR)];
 #else
-                const uint32_t i = reg_id / 4;
-#endif
                 const uint32_t q_idx = q[mma_q][(reg_id % 4) / 2],
                                kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % TPR) + 8 * i +
-                                        reg_id % 2;
+                                        2 * (lane_idx % TPR) +
+                                        8 * (reg_id / 4) + reg_id % 2;
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
+#endif
                 const bool mask =
                     (!(MASK_MODE == MaskMode::kCausal
                            ? (kv_idx + qo_len > kv_len + q_idx ||

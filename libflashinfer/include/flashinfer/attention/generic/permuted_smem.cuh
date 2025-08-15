@@ -38,7 +38,7 @@ using b64_t = uint2;
  * \brief Compute the number of elements that can be stored in a b128_t.
  * \tparam T The data type of the elements.
  */
-template <typename T, size_t VectorWidthBits = 128>
+template <typename T, size_t VectorWidthBits>
 constexpr __host__ __device__ __forceinline__ uint32_t upcast_size()
 {
     static_assert(VectorWidthBits == 128 || VectorWidthBits == 64,
