@@ -411,6 +411,7 @@ __device__ __forceinline__ void produce_kv_helper_(
         produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
     constexpr uint32_t UPCAST_STRIDE =
         produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
+    constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
 
 #if defined(PLATFORM_HIP_DEVICE)
     constexpr uint32_t COLUMN_RESET_OFFSET = (NUM_MMA_D / 4) * WARP_THREAD_COLS;
@@ -431,7 +432,7 @@ __device__ __forceinline__ void produce_kv_helper_(
             *smem_offset =
                 smem.template advance_offset_by_column<WARP_THREAD_COLS>(
                     *smem_offset, j);
-            *gptr += 8 * upcast_size<DTypeKV>();
+            *gptr += 8 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
         }
         kv_idx += NUM_WARPS * WARP_THREAD_ROWS;
         *smem_offset =
@@ -439,7 +440,8 @@ __device__ __forceinline__ void produce_kv_helper_(
                                                 UPCAST_STRIDE>(*smem_offset) -
             COLUMN_RESET_OFFSET;
         *gptr += NUM_WARPS * WARP_THREAD_ROWS * stride_n -
-                 sizeof(DTypeKV) * NUM_MMA_D * upcast_size<DTypeKV>();
+                 sizeof(DTypeKV) * NUM_MMA_D *
+                     upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
     }
     *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
 }
@@ -528,6 +530,8 @@ __device__ __forceinline__ void page_produce_kv(
         produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
     constexpr uint32_t UPCAST_STRIDE =
         produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
+    constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+
     const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z),
                    lane_idx = tid.x;
     if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
@@ -545,7 +549,7 @@ __device__ __forceinline__ void page_produce_kv(
                                                            kv_idx < kv_len);
                 *smem_offset =
                     smem.template advance_offset_by_column<8>(*smem_offset, j);
-                gptr += 8 * upcast_size<DType>();
+                gptr += 8 * upcast_size<DType, VECTOR_BIT_WIDTH>();
             }
             kv_idx += NUM_WARPS * 4;
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4,
@@ -657,6 +661,7 @@ __device__ __forceinline__ void load_q_global_smem(
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     constexpr uint32_t NUM_MMA_D_QK = KTraits::NUM_MMA_D_QK;
     constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
+    constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
 
 #if defined(PLATFORM_HIP_DEVICE)
     constexpr uint32_t COLUMN_RESET_OFFSET =
@@ -684,7 +689,7 @@ __device__ __forceinline__ void load_q_global_smem(
                                   r);
                 const uint32_t q_idx = q;
                 DTypeQ *q_ptr = q_ptr_base + q * q_stride_n + r * q_stride_h +
-                                col * upcast_size<DTypeQ, 64>();
+                                col * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
 #pragma unroll
                 for (uint32_t mma_do = 0; mma_do < KTraits::NUM_MMA_D_QK / 4;
                      ++mma_do)
@@ -695,7 +700,8 @@ __device__ __forceinline__ void load_q_global_smem(
                                                     q_idx < qo_upper_bound);
                     q_smem_offset_w = q_smem->template advance_offset_by_column<
                         WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
-                    q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ, 64>();
+                    q_ptr += HALF_ELEMS_PER_THREAD *
+                             upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
                 }
                 q_smem_offset_w =
                     q_smem->template advance_offset_by_row<WARP_THREAD_ROWS,
@@ -1784,6 +1790,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
     constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
+    constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
 
     const uint32_t warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
     const uint32_t lane_idx = tid.x;
@@ -1890,9 +1897,10 @@ __device__ __forceinline__ void write_o_reg_gmem(
                                           mma_q * 16 + j * 4,
                                       q, r);
                     const uint32_t o_idx = q;
-                    DTypeO *o_ptr =
-                        o_ptr_base + q * o_stride_n + r * o_stride_h +
-                        (lane_idx % WARP_THREAD_COLS) * upcast_size<DTypeO>();
+                    DTypeO *o_ptr = o_ptr_base + q * o_stride_n +
+                                    r * o_stride_h +
+                                    (lane_idx % WARP_THREAD_COLS) *
+                                        upcast_size<DTypeO, VECTOR_BIT_WIDTH>();
 #pragma unroll
                     for (uint32_t mma_do = 0;
                          mma_do < KTraits::NUM_MMA_D_VO / 4; ++mma_do)
@@ -1900,7 +1908,8 @@ __device__ __forceinline__ void write_o_reg_gmem(
                         if (o_idx < qo_upper_bound) {
                             o_smem->store_vector(o_smem_offset_w, o_ptr);
                         }
-                        o_ptr += WARP_THREAD_COLS * upcast_size<DTypeO>();
+                        o_ptr += WARP_THREAD_COLS *
+                                 upcast_size<DTypeO, VECTOR_BIT_WIDTH>();
                         o_smem_offset_w =
                             o_smem->template advance_offset_by_column<
                                 WARP_THREAD_COLS>(o_smem_offset_w, mma_do);
@@ -2000,6 +2009,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
             KTraits::LOGITS_INDEX_STRIDE;
         [[maybe_unused]] constexpr uint32_t THREADS_PER_MATRIX_ROW_SET =
             KTraits::THREADS_PER_MATRIX_ROW_SET;
+        [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH =
+            KTraits::VECTOR_BIT_WIDTH;
 
         DTypeQ *q = params.q;
         DTypeKV *k = params.k;
@@ -2113,20 +2124,20 @@ SinglePrefillWithKVCacheDevice(const Params params,
                  : chunk_size) /
             CTA_TILE_KV;
 
-        DTypeKV *k_ptr =
-            k +
-            (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
-             lane_idx / KV_THR_LAYOUT_COL) *
-                k_stride_n +
-            kv_head_idx * k_stride_h +
-            (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>();
-        DTypeKV *v_ptr =
-            v +
-            (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
-             lane_idx / KV_THR_LAYOUT_COL) *
-                v_stride_n +
-            kv_head_idx * v_stride_h +
-            (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>();
+        DTypeKV *k_ptr = k +
+                         (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
+                          lane_idx / KV_THR_LAYOUT_COL) *
+                             k_stride_n +
+                         kv_head_idx * k_stride_h +
+                         (lane_idx % KV_THR_LAYOUT_COL) *
+                             upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+        DTypeKV *v_ptr = v +
+                         (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
+                          lane_idx / KV_THR_LAYOUT_COL) *
+                             v_stride_n +
+                         kv_head_idx * v_stride_h +
+                         (lane_idx % KV_THR_LAYOUT_COL) *
+                             upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
 
         uint32_t k_smem_offset_r =
                      k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
@@ -2499,6 +2510,8 @@ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKVCacheKernel
         [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_COL =
             KTraits::KV_THR_LAYOUT_COL;
         [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
+        [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH =
+            KTraits::VECTOR_BIT_WIDTH;
 
         DTypeQ *q = params.q;
         IdType *request_indices = params.request_indices;
@@ -2675,14 +2688,16 @@ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKVCacheKernel
              warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL) *
                 k_stride_n +
             kv_head_idx * k_stride_h +
-            (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>();
+            (lane_idx % KV_THR_LAYOUT_COL) *
+                upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
         DTypeKV *v_ptr =
             v +
             (kv_indptr[request_idx] + chunk_start +
              warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL) *
                 v_stride_n +
             kv_head_idx * v_stride_h +
-            (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>();
+            (lane_idx % KV_THR_LAYOUT_COL) *
+                upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
 
         produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
             k_smem, &k_smem_offset_w, &k_ptr, k_stride_n, 0, chunk_size, tid);
@@ -2874,6 +2889,8 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
         [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_COL =
             KTraits::KV_THR_LAYOUT_COL;
         [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
+        [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH =
+            KTraits::VECTOR_BIT_WIDTH;
 
         IdType *request_indices = params.request_indices;
         IdType *qo_tile_indices = params.qo_tile_indices;
@@ -3023,7 +3040,8 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
                 page_iter, entry_idx);
             thr_local_kv_offset[i] = paged_kv.protective_get_kv_offset(
                 page_iter, kv_head_idx, entry_idx,
-                (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>(),
+                (lane_idx % KV_THR_LAYOUT_COL) *
+                    upcast_size<DTypeKV, VECTOR_BIT_WIDTH>(),
                 last_indptr);
         }
         page_produce_kv<false, KTraits>(k_smem, &k_smem_offset_w, paged_kv, 0,
@@ -3077,7 +3095,8 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
                     page_iter, entry_idx);
                 thr_local_kv_offset[i] = paged_kv.protective_get_kv_offset(
                     page_iter, kv_head_idx, entry_idx,
-                    (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>(),
+                    (lane_idx % KV_THR_LAYOUT_COL) *
+                        upcast_size<DTypeKV, VECTOR_BIT_WIDTH>(),
                     last_indptr);
             }
             memory::wait_group<1>();
