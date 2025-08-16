@@ -1529,6 +1529,8 @@ __device__ __forceinline__ void normalize_d(
     float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
 {
     using AttentionVariant = typename KTraits::AttentionVariant;
+    constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+
     if constexpr (AttentionVariant::use_softmax) {
         float d_rcp[KTraits::NUM_MMA_Q][KTraits::NUM_ACCUM_ROWS_PER_THREAD];
         // compute reciprocal of d
@@ -1552,9 +1554,15 @@ __device__ __forceinline__ void normalize_d(
                 for (uint32_t reg_id = 0;
                      reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id)
                 {
+#if defined(PLATFORM_HIP_DEVICE)
+                    o_frag[mma_q][mma_d][reg_id] =
+                        o_frag[mma_q][mma_d][reg_id] *
+                        d_rcp[mma_q][reg_id % NAPTR];
+#else
                     o_frag[mma_q][mma_d][reg_id] =
                         o_frag[mma_q][mma_d][reg_id] *
                         d_rcp[mma_q][(reg_id % 4) / 2];
+#endif
                 }
             }
         }
@@ -1988,6 +1996,10 @@ SinglePrefillWithKVCacheDevice(const Params params,
             KTraits::HALF_ELEMS_PER_THREAD;
         [[maybe_unused]] constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
             KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+        [[maybe_unused]] constexpr uint32_t LOGITS_INDEX_STRIDE =
+            KTraits::LOGITS_INDEX_STRIDE;
+        [[maybe_unused]] constexpr uint32_t THREADS_PER_MATRIX_ROW_SET =
+            KTraits::THREADS_PER_MATRIX_ROW_SET;
 
         DTypeQ *q = params.q;
         DTypeKV *k = params.k;
@@ -2229,12 +2241,14 @@ SinglePrefillWithKVCacheDevice(const Params params,
 #pragma unroll
                     for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
 #pragma unroll
-                        for (uint32_t j = 0; j < 2; ++j) {
+                        for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j)
+                        {
                             uint32_t q, r;
-                            group_size.divmod(qo_packed_idx_base +
-                                                  lane_idx / 4 + j * 8 +
-                                                  mma_q * 16,
-                                              q, r);
+                            group_size.divmod(
+                                qo_packed_idx_base +
+                                    lane_idx / THREADS_PER_MATRIX_ROW_SET +
+                                    j * LOGITS_INDEX_STRIDE + mma_q * 16,
+                                q, r);
                             const uint32_t qo_head_idx =
                                 kv_head_idx * group_size + r;
                             const uint32_t qo_idx = q;
