@@ -83,7 +83,7 @@ inline std::vector<float> apply_llama_rope(const T *input,
             rst[k] = cos * fi::con::explicit_casting<T, float>(input[k]) +
                      sin * permuted_input[k];
     }
-    return std::move(rst);
+    return rst;
 }
 
 template <typename dtype_q, typename dtype_kv, typename dtype_out>
