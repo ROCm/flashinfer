@@ -92,21 +92,31 @@ __global__ void test_q_loading_kernel(
     // Synchronize to ensure loading is complete
     __syncthreads();
 
-    // Copy shared memory contents to global memory for verification
-    // Only first warp does this to avoid conflicts
     if (threadIdx.y == 0 && threadIdx.z == 0) {
         const uint32_t lane_idx = threadIdx.x;
-        const uint32_t total_elements =
-            KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_QK;
+        constexpr uint32_t smem_height = KTraits::CTA_TILE_Q; // 16
+        constexpr uint32_t smem_width = KTraits::HEAD_DIM_QK; // 64
+        constexpr uint32_t total_elements = smem_height * smem_width;
 
-        // Each thread copies a portion of shared memory
-        for (uint32_t i = lane_idx; i < total_elements;
-             i += KTraits::NUM_THREADS)
+        // Each thread copies using proper swizzled access
+        for (uint32_t linear_idx = lane_idx; linear_idx < total_elements;
+             linear_idx += KTraits::NUM_THREADS)
         {
-            // For linear swizzle mode, direct copy
-            if (i < total_elements) {
-                q_smem_output[i] = reinterpret_cast<typename KTraits::DTypeQ *>(
-                    smem_storage.q_smem)[i];
+            if (linear_idx < total_elements) {
+                uint32_t row = linear_idx / smem_width;
+                uint32_t col = linear_idx % smem_width;
+                uint32_t swizzled_offset = q_smem.template get_permuted_offset<
+                    smem_width / upcast_size<typename KTraits::DTypeQ,
+                                             KTraits::VECTOR_BIT_WIDTH>()>(
+                    row, col / upcast_size<typename KTraits::DTypeQ,
+                                           KTraits::VECTOR_BIT_WIDTH>());
+                uint32_t element_idx =
+                    col % upcast_size<typename KTraits::DTypeQ,
+                                      KTraits::VECTOR_BIT_WIDTH>();
+                typename KTraits::DTypeQ *smem_ptr =
+                    reinterpret_cast<typename KTraits::DTypeQ *>(
+                        q_smem.base + swizzled_offset);
+                q_smem_output[linear_idx] = smem_ptr[element_idx];
             }
         }
     }
