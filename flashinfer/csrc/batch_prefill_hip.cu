@@ -17,9 +17,9 @@
 #include "pytorch_conversion_utils.h"
 #include "pytorch_extension_utils.h"
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
-#include <flashinfer/attention/generic/mask.cuh>
+#include <flashinfer/attention/generic/pos_enc.cuh>
 #include <flashinfer/attention/generic/scheduler.cuh>
-#include <flashinfer/attention/pos_enc.cuh>
+#include <gpu_iface/enums.hpp>
 #include <optional>
 
 namespace flashinfer
@@ -38,7 +38,6 @@ BatchPrefillWithPagedKVCacheDispatched(Params params,
                                        typename Params::DTypeO *tmp_v,
                                        float *tmp_s,
                                        hipStream_t stream);
-
 template <uint32_t CTA_TILE_Q,
           uint32_t HEAD_DIM_QK,
           uint32_t HEAD_DIM_VO,

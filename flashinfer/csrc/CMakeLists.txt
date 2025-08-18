@@ -87,6 +87,7 @@ if(FLASHINFER_ENABLE_HIP)
       ${COMMON_HIP_INCLUDE_DIRS}
     LINK_LIBS
       $<$<TARGET_EXISTS:flashinfer::decode_kernels>:flashinfer::decode_kernels>
+      $<$<TARGET_EXISTS:flashinfer::prefill_kernels>:flashinfer::prefill_kernels>
     COMPILE_FLAGS
       $<$<COMPILE_LANGUAGE:CXX>:-Wno-switch-bool>
     PY_LIMITED_API ${FLASHINFER_PY_LIMITED_API}
