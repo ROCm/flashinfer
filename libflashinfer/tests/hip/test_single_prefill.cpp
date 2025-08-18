@@ -18,6 +18,14 @@
 using namespace flashinfer;
 
 template <typename DTypeQ, typename DTypeKV, typename DTypeO>
+void _TestComputeQKCorrectness()
+{
+    std::vector<DTypeQ> q(qo_len * num_qo_heads * head_dim);
+    std::vector<DTypeKV> k(kv_len * num_kv_heads * head_dim);
+    std::vector<DTypeO> o(qo_len * num_qo_heads * head_dim);
+}
+
+template <typename DTypeQ, typename DTypeKV, typename DTypeO>
 void _TestSinglePrefillKernelCorrectness(size_t qo_len,
                                          size_t kv_len,
                                          size_t num_qo_heads,
