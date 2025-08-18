@@ -9,7 +9,6 @@
 
 #include "flashinfer/attention/generic/page.cuh"
 #include "flashinfer/attention/generic/pos_enc.cuh"
-#include "flashinfer/attention/generic/tensor_info.cuh" // For tensor_info_t
 
 #include "utils_hip.h"
 
@@ -134,7 +133,7 @@ std::vector<float> compute_qk(const std::vector<dtype_q> &q,
         }
     });
 
-    return std::move(qk_scores);
+    return qk_scores;
 }
 
 template <typename dtype_q, typename dtype_kv, typename dtype_out>

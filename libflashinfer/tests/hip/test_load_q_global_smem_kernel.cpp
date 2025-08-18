@@ -17,18 +17,17 @@ using namespace flashinfer;
 
 // CPU Reference Implementation for Q Loading
 template <typename DTypeQ>
-std::vector<DTypeQ> cpu_reference_q_smem_layout(
-    const std::vector<DTypeQ> &q_global,
-    size_t qo_len,
-    size_t num_qo_heads,
-    size_t head_dim,
-    size_t q_stride_n,
-    size_t q_stride_h,
-    size_t qo_packed_idx_base,
-    uint32_t group_size,
-    size_t
-        smem_height, // Expected shared memory height (16 for single MMA block)
-    size_t smem_width) // Expected shared memory width (head_dim)
+std::vector<DTypeQ>
+cpu_reference_q_smem_layout(const std::vector<DTypeQ> &q_global,
+                            size_t qo_len,
+                            size_t num_qo_heads,
+                            size_t head_dim,
+                            size_t q_stride_n,
+                            size_t q_stride_h,
+                            size_t qo_packed_idx_base,
+                            uint32_t group_size,
+                            size_t smem_height,
+                            size_t smem_width)
 {
     std::vector<DTypeQ> q_smem_expected(smem_height * smem_width, DTypeQ(0));
 
@@ -64,14 +63,13 @@ uint_fastdiv create_group_size_div(uint32_t group_size)
 
 // Test kernel for Q loading
 template <typename KTraits>
-__global__ void test_q_loading_kernel(
-    typename KTraits::DTypeQ *q_global,
-    typename KTraits::DTypeQ *q_smem_output, // Output: dump of shared memory
-    uint32_t qo_packed_idx_base,
-    uint32_t qo_len,
-    uint32_t q_stride_n,
-    uint32_t q_stride_h,
-    uint_fastdiv group_size_div)
+__global__ void test_q_loading_kernel(typename KTraits::DTypeQ *q_global,
+                                      typename KTraits::DTypeQ *q_smem_output,
+                                      uint32_t qo_packed_idx_base,
+                                      uint32_t qo_len,
+                                      uint32_t q_stride_n,
+                                      uint32_t q_stride_h,
+                                      uint_fastdiv group_size_div)
 {
     // Set up shared memory
     extern __shared__ uint8_t smem[];
@@ -80,9 +78,6 @@ __global__ void test_q_loading_kernel(
 
     smem_t<KTraits::SWIZZLE_MODE_Q, typename KTraits::SmemBasePtrTy> q_smem(
         smem_storage.q_smem);
-
-    // // Fast integer division for group_size
-    // uint_fastdiv group_size_div(group_size);
 
     // Call the function we're testing
     load_q_global_smem<KTraits>(qo_packed_idx_base, qo_len, q_global,

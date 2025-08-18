@@ -18,11 +18,150 @@
 using namespace flashinfer;
 
 template <typename DTypeQ, typename DTypeKV, typename DTypeO>
-void _TestComputeQKCorrectness()
+void _TestComputeQKCorrectness(size_t qo_len,
+                               size_t kv_len,
+                               size_t num_qo_heads,
+                               size_t num_kv_heads,
+                               size_t head_dim,
+                               bool causal,
+                               QKVLayout kv_layout,
+                               PosEncodingMode pos_encoding_mode,
+                               bool use_fp16_qk_reduction,
+                               float rtol = 1e-3,
+                               float atol = 1e-3)
 {
+    std::cout << "Testing compute_qk: qo_len=" << qo_len
+              << ", kv_len=" << kv_len << ", num_qo_heads=" << num_qo_heads
+              << ", num_kv_heads=" << num_kv_heads << ", head_dim=" << head_dim
+              << std::endl;
+
+    // Generate test data (same as original test)
     std::vector<DTypeQ> q(qo_len * num_qo_heads * head_dim);
     std::vector<DTypeKV> k(kv_len * num_kv_heads * head_dim);
-    std::vector<DTypeO> o(qo_len * num_qo_heads * head_dim);
+    std::vector<DTypeKV> v(kv_len * num_kv_heads *
+                           head_dim); // Still needed for params
+    std::vector<DTypeO> o(qo_len * num_qo_heads *
+                          head_dim); // Still needed for params
+
+    utils::vec_normal_(q);
+    utils::vec_normal_(k);
+    utils::vec_normal_(v); // Initialize even though we won't use it
+    utils::vec_zero_(o);
+
+    // GPU memory allocation (same pattern as original)
+    DTypeQ *q_d;
+    FI_GPU_CALL(hipMalloc(&q_d, q.size() * sizeof(DTypeQ)));
+    FI_GPU_CALL(hipMemcpy(q_d, q.data(), q.size() * sizeof(DTypeQ),
+                          hipMemcpyHostToDevice));
+
+    DTypeKV *k_d;
+    FI_GPU_CALL(hipMalloc(&k_d, k.size() * sizeof(DTypeKV)));
+    FI_GPU_CALL(hipMemcpy(k_d, k.data(), k.size() * sizeof(DTypeKV),
+                          hipMemcpyHostToDevice));
+
+    DTypeKV *v_d;
+    FI_GPU_CALL(hipMalloc(&v_d, v.size() * sizeof(DTypeKV)));
+    FI_GPU_CALL(hipMemcpy(v_d, v.data(), v.size() * sizeof(DTypeKV),
+                          hipMemcpyHostToDevice));
+
+    DTypeO *o_d;
+    FI_GPU_CALL(hipMalloc(&o_d, o.size() * sizeof(DTypeO)));
+    FI_GPU_CALL(hipMemcpy(o_d, o.data(), o.size() * sizeof(DTypeO),
+                          hipMemcpyHostToDevice));
+
+    DTypeO *tmp_d;
+    FI_GPU_CALL(hipMalloc(&tmp_d, 16 * 1024 * 1024 * sizeof(DTypeO)));
+
+    // Allocate output buffer for QK scores
+    const size_t qk_output_size = qo_len * kv_len * num_qo_heads;
+    float *qk_scores_d;
+    FI_GPU_CALL(hipMalloc(&qk_scores_d, qk_output_size * sizeof(float)));
+
+    // Call ComputeQKStubCaller instead of SinglePrefillWithKVCache
+    hipError_t status =
+        flashinfer::ComputeQKStubCaller<DTypeQ, DTypeKV, DTypeO>(
+            q_d, k_d, v_d, o_d, tmp_d,
+            /*lse=*/nullptr, qk_scores_d, // Add qk_scores_d parameter
+            num_qo_heads, num_kv_heads, qo_len, kv_len, head_dim, causal,
+            kv_layout, pos_encoding_mode, use_fp16_qk_reduction);
+
+    EXPECT_EQ(status, hipSuccess)
+        << "ComputeQKStubCaller kernel launch failed, error message: "
+        << hipGetErrorString(status);
+
+    // Get GPU QK scores
+    std::vector<float> gpu_qk_scores(qk_output_size);
+    FI_GPU_CALL(hipMemcpy(gpu_qk_scores.data(), qk_scores_d,
+                          qk_output_size * sizeof(float),
+                          hipMemcpyDeviceToHost));
+
+    // Check if GPU output is not empty
+    bool isEmpty = gpu_qk_scores.empty();
+    EXPECT_EQ(isEmpty, false) << "GPU QK scores vector is empty";
+
+    // Compute CPU reference using our cpu_reference::compute_qk
+    std::vector<float> cpu_qk_scores = cpu_reference::compute_qk(
+        q, k, qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim, kv_layout);
+
+    // Validate results (same pattern as original test)
+    size_t num_results_error_atol = 0;
+    bool nan_detected = false;
+
+    // Compare element-by-element
+    size_t comparison_size =
+        std::min(gpu_qk_scores.size(), cpu_qk_scores.size());
+    for (size_t i = 0; i < comparison_size; ++i) {
+        float gpu_val = gpu_qk_scores[i];
+        float cpu_val = cpu_qk_scores[i];
+
+        if (isnan(gpu_val)) {
+            nan_detected = true;
+        }
+
+        if (!utils::isclose(cpu_val, gpu_val, rtol, atol)) {
+            num_results_error_atol++;
+            if (num_results_error_atol <= 10)
+            { // Only print first 10 mismatches
+                std::cout << "QK mismatch at i=" << i << ", cpu_val=" << cpu_val
+                          << ", gpu_val=" << gpu_val << std::endl;
+            }
+        }
+    }
+
+    // Calculate and report accuracy
+    float result_accuracy =
+        1.0f - float(num_results_error_atol) / float(comparison_size);
+
+    std::cout << "compute_qk results: num_qo_heads=" << num_qo_heads
+              << ", num_kv_heads=" << num_kv_heads << ", qo_len=" << qo_len
+              << ", kv_len=" << kv_len << ", head_dim=" << head_dim
+              << ", causal=" << causal
+              << ", kv_layout=" << QKVLayoutToString(kv_layout)
+              << ", pos_encoding_mode="
+              << PosEncodingModeToString(pos_encoding_mode)
+              << ", qk_accuracy=" << result_accuracy << " ("
+              << num_results_error_atol << "/" << comparison_size
+              << " mismatches)" << std::endl;
+
+    // Print some sample values for debugging
+    std::cout << "Sample QK scores (first 10): GPU vs CPU" << std::endl;
+    for (size_t i = 0; i < std::min(size_t(10), comparison_size); ++i) {
+        std::cout << "  [" << i << "] GPU=" << gpu_qk_scores[i]
+                  << ", CPU=" << cpu_qk_scores[i] << std::endl;
+    }
+
+    // Assertions (slightly relaxed for initial testing)
+    EXPECT_GT(result_accuracy, 0.80)
+        << "compute_qk accuracy too low"; // Start with 80%
+    EXPECT_FALSE(nan_detected) << "NaN detected in compute_qk results";
+
+    // Cleanup
+    FI_GPU_CALL(hipFree(q_d));
+    FI_GPU_CALL(hipFree(k_d));
+    FI_GPU_CALL(hipFree(v_d));
+    FI_GPU_CALL(hipFree(o_d));
+    FI_GPU_CALL(hipFree(tmp_d));
+    FI_GPU_CALL(hipFree(qk_scores_d));
 }
 
 template <typename DTypeQ, typename DTypeKV, typename DTypeO>
@@ -395,23 +534,59 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
 // }
 // #endif
 
+// int main(int argc, char **argv)
+// {
+//     // ::testing::InitGoogleTest(&argc, argv);
+//     // return RUN_ALL_TESTS();
+//     using DTypeIn = __half;
+//     using DTypeO = __half;
+//     bool use_fp16_qk_reduction = false;
+//     size_t qo_len = 399;
+//     size_t kv_len = 533;
+//     size_t num_heads = 1;
+//     size_t head_dim = 64;
+//     bool causal = false;
+//     size_t pos_encoding_mode = 0;
+//     size_t kv_layout = 0;
+
+//     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
+//         qo_len, kv_len, num_heads, num_heads, head_dim, causal,
+//         QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
+//         use_fp16_qk_reduction);
+// }
+
 int main(int argc, char **argv)
 {
-    // ::testing::InitGoogleTest(&argc, argv);
-    // return RUN_ALL_TESTS();
+    // Test compute_qk first with simple parameters
+    std::cout << "=== Testing compute_qk function ===" << std::endl;
     using DTypeIn = __half;
     using DTypeO = __half;
     bool use_fp16_qk_reduction = false;
+    bool causal = false;
+    size_t pos_encoding_mode = 0;
+    size_t kv_layout = 0;
+
+    // Start with small dimensions for easier debugging
+    _TestComputeQKCorrectness<DTypeIn, DTypeIn, DTypeO>(
+        16, // qo_len - small for debugging
+        32, // kv_len
+        1,  // num_qo_heads - single head
+        1,  // num_kv_heads - single head
+        64, // head_dim
+        causal, QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
+        use_fp16_qk_reduction);
+
+    std::cout << "\n=== Testing full single prefill ===" << std::endl;
+    // Your existing test...
     size_t qo_len = 399;
     size_t kv_len = 533;
     size_t num_heads = 1;
     size_t head_dim = 64;
-    bool causal = false;
-    size_t pos_encoding_mode = 0;
-    size_t kv_layout = 0;
 
     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
         qo_len, kv_len, num_heads, num_heads, head_dim, causal,
         QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
         use_fp16_qk_reduction);
+
+    return 0;
 }

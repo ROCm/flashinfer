@@ -980,10 +980,6 @@ __device__ __forceinline__ void compute_qk(
             }
             else {
 #if defined(PLATFORM_HIP_DEVICE)
-                // TODO: We need to validate the layout of K. Whether a
-                // transposed load is needed or whether K is pre-transposed.
-                // k_smem->load_fragment_4x4_transposed(*k_smem_offset_r,
-                // b_frag);
                 k_smem->load_fragment(*k_smem_offset_r, b_frag);
 #else
                 k_smem->load_fragment(*k_smem_offset_r, b_frag);
