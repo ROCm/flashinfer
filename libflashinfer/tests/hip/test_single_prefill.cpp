@@ -3,11 +3,11 @@
 //
 // SPDX - License - Identifier : Apache 2.0
 
-#include "flashinfer/attention/generic/prefill.cuh"
-
 #include "../../utils/cpu_reference_hip.h"
 #include "../../utils/flashinfer_prefill_ops.hip.h"
 #include "../../utils/utils_hip.h"
+#include "flashinfer/attention/generic/prefill.cuh"
+#include "gpu_iface/gpu_runtime_compat.hpp"
 
 #include <type_traits>
 
@@ -41,23 +41,27 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
     utils::vec_zero_(o);
 
     DTypeQ *q_d;
-    hipMalloc(&q_d, q.size() * sizeof(DTypeQ));
-    hipMemcpy(q_d, q.data(), q.size() * sizeof(DTypeQ), hipMemcpyHostToDevice);
+    FI_GPU_CALL(hipMalloc(&q_d, q.size() * sizeof(DTypeQ)));
+    FI_GPU_CALL(hipMemcpy(q_d, q.data(), q.size() * sizeof(DTypeQ),
+                          hipMemcpyHostToDevice));
 
     DTypeKV *k_d;
-    hipMalloc(&k_d, k.size() * sizeof(DTypeKV));
-    hipMemcpy(k_d, k.data(), k.size() * sizeof(DTypeKV), hipMemcpyHostToDevice);
+    FI_GPU_CALL(hipMalloc(&k_d, k.size() * sizeof(DTypeKV)));
+    FI_GPU_CALL(hipMemcpy(k_d, k.data(), k.size() * sizeof(DTypeKV),
+                          hipMemcpyHostToDevice));
 
     DTypeKV *v_d;
-    hipMalloc(&v_d, v.size() * sizeof(DTypeKV));
-    hipMemcpy(v_d, v.data(), v.size() * sizeof(DTypeKV), hipMemcpyHostToDevice);
+    FI_GPU_CALL(hipMalloc(&v_d, v.size() * sizeof(DTypeKV)));
+    FI_GPU_CALL(hipMemcpy(v_d, v.data(), v.size() * sizeof(DTypeKV),
+                          hipMemcpyHostToDevice));
 
     DTypeO *o_d;
-    hipMalloc(&o_d, o.size() * sizeof(DTypeO));
-    hipMemcpy(o_d, o.data(), o.size() * sizeof(DTypeO), hipMemcpyHostToDevice);
+    FI_GPU_CALL(hipMalloc(&o_d, o.size() * sizeof(DTypeO)));
+    FI_GPU_CALL(hipMemcpy(o_d, o.data(), o.size() * sizeof(DTypeO),
+                          hipMemcpyHostToDevice));
 
     DTypeO *tmp_d;
-    hipMalloc(&tmp_d, 16 * 1024 * 1024 * sizeof(DTypeO));
+    FI_GPU_CALL(hipMalloc(&tmp_d, 16 * 1024 * 1024 * sizeof(DTypeO)));
 
     hipError_t status =
         flashinfer::SinglePrefillWithKVCache<DTypeQ, DTypeKV, DTypeO>(
@@ -71,8 +75,8 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
         << hipGetErrorString(status);
 
     std::vector<DTypeO> o_h(o.size());
-    hipMemcpy(o_h.data(), o_d, o_h.size() * sizeof(DTypeO),
-              hipMemcpyDeviceToHost);
+    FI_GPU_CALL(hipMemcpy(o_h.data(), o_d, o_h.size() * sizeof(DTypeO),
+                          hipMemcpyDeviceToHost));
 
     // Print the first 10 elements of the output vector for debugging
     // std::cout << "Output vector (first 10 elements):";
@@ -88,8 +92,8 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
     std::vector<float> att_out;
     std::vector<DTypeO> o_ref =
         cpu_reference::single_mha<DTypeQ, DTypeKV, DTypeO>(
-            q, k, v, att_out, qo_len, kv_len, num_qo_heads, num_kv_heads,
-            head_dim, causal, kv_layout, pos_encoding_mode);
+            q, k, v, qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim,
+            causal, kv_layout, pos_encoding_mode);
     size_t num_results_error_atol = 0;
     bool nan_detected = false;
 
@@ -126,11 +130,11 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
     EXPECT_GT(result_accuracy, 0.90) << "Result correctness test failed.";
     EXPECT_FALSE(nan_detected) << "Nan detected in the result.";
 
-    hipFree(q_d);
-    hipFree(k_d);
-    hipFree(v_d);
-    hipFree(o_d);
-    hipFree(tmp_d);
+    FI_GPU_CALL(hipFree(q_d));
+    FI_GPU_CALL(hipFree(k_d));
+    FI_GPU_CALL(hipFree(v_d));
+    FI_GPU_CALL(hipFree(o_d));
+    FI_GPU_CALL(hipFree(tmp_d));
 }
 
 // template <typename DTypeIn, typename DTypeO>

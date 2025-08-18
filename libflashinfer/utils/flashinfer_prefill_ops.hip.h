@@ -59,7 +59,7 @@ hipError_t SinglePrefillWithKVCacheCustomMask(
     auto [qo_stride_n, qo_stride_h, kv_stride_n, kv_stride_h] = get_qkv_strides(
         kv_layout, kv_len, num_qo_heads, num_kv_heads, head_dim);
     DISPATCH_use_fp16_qk_reduction(
-        use_fp16_qk_reduction, USE_FP16_QK_REDUCTION,
+        static_cast<int>(use_fp16_qk_reduction), USE_FP16_QK_REDUCTION,
         {DISPATCH_head_dim(
             head_dim, HEAD_DIM,
             {DISPATCH_pos_encoding_mode(pos_encoding_mode, POS_ENCODING_MODE, {
@@ -134,7 +134,7 @@ hipError_t SinglePrefillWithKVCache(
     auto [qo_stride_n, qo_stride_h, kv_stride_n, kv_stride_h] = get_qkv_strides(
         kv_layout, kv_len, num_qo_heads, num_kv_heads, head_dim);
     DISPATCH_use_fp16_qk_reduction(
-        use_fp16_qk_reduction, USE_FP16_QK_REDUCTION,
+        static_cast<int>(use_fp16_qk_reduction), USE_FP16_QK_REDUCTION,
         {DISPATCH_mask_mode(
             mask_mode, MASK_MODE,
             {DISPATCH_head_dim(

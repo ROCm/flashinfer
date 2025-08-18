@@ -152,8 +152,8 @@ struct KernelTraits
     static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::kLinear;
 
     // Presently we use 16x4 thread layout for all cases.
-    static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
-    static constexpr uint32_t KV_THR_LAYOUT_COL = WARP_THREAD_COLS;
+    static constexpr uint32_t KV_THR_LAYOUT_ROW = 16;
+    static constexpr uint32_t KV_THR_LAYOUT_COL = 4;
     // The constant is defined based on the matrix layout of the "D/C"
     // accumulator matrix in a D = A*B+C computation. On CDNA3 the D/C matrices
     // are distributed as four 4x16 bands across the 64 threads. Each thread
@@ -402,8 +402,8 @@ __device__ __forceinline__ void produce_kv_helper_(
     const uint32_t kv_len)
 {
     using DTypeKV = typename KTraits::DTypeKV;
-    constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
-    constexpr uint32_t WARP_THREAD_ROWS = KTraits::WARP_THREAD_ROWS;
+    constexpr uint32_t WARP_THREAD_COLS = KTraits::KV_THR_LAYOUT_COL;
+    constexpr uint32_t WARP_THREAD_ROWS = KTraits::KV_THR_LAYOUT_ROW;
     constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
     constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;

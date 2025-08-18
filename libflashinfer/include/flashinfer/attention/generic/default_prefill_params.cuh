@@ -41,10 +41,10 @@ struct SinglePrefillParams
     float *lse;
     float *maybe_alibi_slopes;
     uint_fastdiv group_size;
-    uint32_t qo_len;
-    uint32_t kv_len;
     uint32_t num_qo_heads;
     uint32_t num_kv_heads;
+    uint32_t qo_len;
+    uint32_t kv_len;
     uint32_t q_stride_n;
     uint32_t q_stride_h;
     uint32_t k_stride_n;
