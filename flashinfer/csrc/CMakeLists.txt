@@ -39,7 +39,9 @@ file(
   "${CMAKE_CURRENT_SOURCE_DIR}/norm_hip.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/page_hip.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/rope_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/single_decode_hip.cu")
+  "${CMAKE_CURRENT_SOURCE_DIR}/single_decode_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/batch_prefill_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill_hip.cu")
 
 # SM90-specific sources
 file(
