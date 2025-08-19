@@ -77,6 +77,14 @@ void _TestComputeQKCorrectness(size_t qo_len,
     float *qk_scores_d;
     FI_GPU_CALL(hipMalloc(&qk_scores_d, qk_output_size * sizeof(float)));
 
+    std::cout << "Debug: Kernel launch parameters:" << std::endl;
+    std::cout << "  qo_len=" << qo_len << ", kv_len=" << kv_len << std::endl;
+    std::cout << "  num_qo_heads=" << num_qo_heads
+              << ", num_kv_heads=" << num_kv_heads << std::endl;
+    std::cout << "  head_dim=" << head_dim << std::endl;
+    std::cout << "  qk_output_size=" << qk_output_size << std::endl;
+    std::cout << "  Launching ComputeQKStubCaller..." << std::endl;
+
     // Call ComputeQKStubCaller instead of SinglePrefillWithKVCache
     hipError_t status =
         flashinfer::ComputeQKStubCaller<DTypeQ, DTypeKV, DTypeO>(
@@ -85,6 +93,8 @@ void _TestComputeQKCorrectness(size_t qo_len,
             num_qo_heads, num_kv_heads, qo_len, kv_len, head_dim, causal,
             kv_layout, pos_encoding_mode, use_fp16_qk_reduction);
 
+    std::cout << "  Kernel launch status: " << hipGetErrorString(status)
+              << std::endl;
     EXPECT_EQ(status, hipSuccess)
         << "ComputeQKStubCaller kernel launch failed, error message: "
         << hipGetErrorString(status);
@@ -534,59 +544,59 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
 // }
 // #endif
 
-// int main(int argc, char **argv)
-// {
-//     // ::testing::InitGoogleTest(&argc, argv);
-//     // return RUN_ALL_TESTS();
-//     using DTypeIn = __half;
-//     using DTypeO = __half;
-//     bool use_fp16_qk_reduction = false;
-//     size_t qo_len = 399;
-//     size_t kv_len = 533;
-//     size_t num_heads = 1;
-//     size_t head_dim = 64;
-//     bool causal = false;
-//     size_t pos_encoding_mode = 0;
-//     size_t kv_layout = 0;
-
-//     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
-//         qo_len, kv_len, num_heads, num_heads, head_dim, causal,
-//         QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
-//         use_fp16_qk_reduction);
-// }
-
 int main(int argc, char **argv)
 {
-    // Test compute_qk first with simple parameters
-    std::cout << "=== Testing compute_qk function ===" << std::endl;
+    // ::testing::InitGoogleTest(&argc, argv);
+    // return RUN_ALL_TESTS();
     using DTypeIn = __half;
     using DTypeO = __half;
     bool use_fp16_qk_reduction = false;
-    bool causal = false;
-    size_t pos_encoding_mode = 0;
-    size_t kv_layout = 0;
-
-    // Start with small dimensions for easier debugging
-    _TestComputeQKCorrectness<DTypeIn, DTypeIn, DTypeO>(
-        16, // qo_len - small for debugging
-        32, // kv_len
-        1,  // num_qo_heads - single head
-        1,  // num_kv_heads - single head
-        64, // head_dim
-        causal, QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
-        use_fp16_qk_reduction);
-
-    std::cout << "\n=== Testing full single prefill ===" << std::endl;
-    // Your existing test...
     size_t qo_len = 399;
     size_t kv_len = 533;
     size_t num_heads = 1;
     size_t head_dim = 64;
+    bool causal = false;
+    size_t pos_encoding_mode = 0;
+    size_t kv_layout = 0;
 
     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
         qo_len, kv_len, num_heads, num_heads, head_dim, causal,
         QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
         use_fp16_qk_reduction);
-
-    return 0;
 }
+
+// int main(int argc, char **argv)
+// {
+//     // Test compute_qk first with simple parameters
+//     std::cout << "=== Testing compute_qk function ===" << std::endl;
+//     using DTypeIn = __half;
+//     using DTypeO = __half;
+//     bool use_fp16_qk_reduction = false;
+//     bool causal = false;
+//     size_t pos_encoding_mode = 0;
+//     size_t kv_layout = 0;
+
+//     // Start with small dimensions for easier debugging
+//     _TestComputeQKCorrectness<DTypeIn, DTypeIn, DTypeO>(
+//         16, // qo_len - small for debugging
+//         32, // kv_len
+//         1,  // num_qo_heads - single head
+//         1,  // num_kv_heads - single head
+//         64, // head_dim
+//         causal, QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
+//         use_fp16_qk_reduction);
+
+//     std::cout << "\n=== Testing full single prefill ===" << std::endl;
+//     // Your existing test...
+//     size_t qo_len = 399;
+//     size_t kv_len = 533;
+//     size_t num_heads = 1;
+//     size_t head_dim = 64;
+
+//     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
+//         qo_len, kv_len, num_heads, num_heads, head_dim, causal,
+//         QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
+//         use_fp16_qk_reduction);
+
+//     return 0;
+// }

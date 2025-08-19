@@ -22,18 +22,6 @@
 namespace flashinfer
 {
 
-// template <uint32_t HEAD_DIM_QK,
-//           uint32_t HEAD_DIM_VO,
-//           PosEncodingMode POS_ENCODING_MODE,
-//           bool USE_FP16_QK_REDUCTION,
-//           MaskMode MASK_MODE,
-//           typename AttentionVariant,
-//           typename Params>
-// hipError_t ComputeQKStubDispatched(Params params,
-//                                    typename Params::DTypeO *tmp,
-//                                    float *qk_scores_output,
-//                                    hipStream_t stream);
-
 template <uint32_t HEAD_DIM_QK,
           uint32_t HEAD_DIM_VO,
           PosEncodingMode POS_ENCODING_MODE,

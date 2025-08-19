@@ -2163,6 +2163,30 @@ SinglePrefillWithKVCacheDevice(const Params params,
             v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, 0, chunk_size, tid);
         memory::commit_group();
 
+#if Debug
+        for (auto mma_q = 0ul; mma_q < 4; ++mma_q) {
+            uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+            qo_smem.load_fragment(q_smem_offset_r, a_frag);
+            int global_idx = (blockIdx.z * gridDim.y * gridDim.x +
+                              blockIdx.y * gridDim.x + blockIdx.x) *
+                                 (blockDim.z * blockDim.y * blockDim.x) +
+                             (threadIdx.z * blockDim.y * blockDim.x +
+                              threadIdx.y * blockDim.x + threadIdx.x);
+            if (global_idx == 0) {
+                auto frag_T = reinterpret_cast<__half *>(a_frag);
+                printf("DEBUG: Q Frag in permuted_smem for mma_q %lu \n",
+                       mma_q);
+                for (auto i = 0ul; i < 4; ++i) {
+                    printf("%f ", (float)(*(frag_T + i)));
+                }
+                printf("\n");
+            }
+
+            q_smem_offset_r = qo_smem.template advance_offset_by_column<4>(
+                q_smem_offset_r, 0);
+        }
+#endif
+
 #pragma unroll 1
         for (uint32_t iter = 0; iter < num_iterations; ++iter) {
             memory::wait_group<1>();

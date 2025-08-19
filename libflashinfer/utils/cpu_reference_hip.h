@@ -14,6 +14,7 @@
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
+#include <iostream>
 
 namespace cpu_reference
 {
@@ -162,6 +163,14 @@ single_mha(const std::vector<dtype_q> &q,
     DISPATCH_head_dim(head_dim, HEAD_DIM, {
         tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads,
                            kv_layout, HEAD_DIM);
+#if Debug
+        std::cout << "DEBUG Q (CPU): " << '\n';
+        for (auto i = 0ul; i < 64; ++i) {
+            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
+            std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
+        }
+        std::cout << std::endl;
+#endif
         for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx)
         {
             const size_t kv_head_idx = qo_head_idx / info.get_group_size();
