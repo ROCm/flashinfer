@@ -25,7 +25,7 @@ find_package(Threads REQUIRED)
 find_package(HIP REQUIRED)
 set(CMAKE_HIP_COMPILER ${HIP_HIPCC_EXECUTABLE})
 set(HIP_HIPCC_FLAGS
-    "${HIP_HIPCC_FLAGS} -O3 --offload-arch=gfx942 -D__HIP_NO_HALF_OPERATORS__=0 -D__HIP_NO_HALF_CONVERSIONS__=0"
+    "${HIP_HIPCC_FLAGS} -O3 --offload-arch=gfx942 -D__HIP_NO_HALF_OPERATORS__=0 -D__HIP_NO_HALF_CONVERSIONS__=0 -DHIP_ENABLE_WARP_SYNC_BUILTINS -DPLATFORM_HIP_DEVICE"
 )
 
 # clang-format off Add flashinfer directory here Example:
@@ -62,10 +62,12 @@ add_library(decode STATIC
 add_library(page STATIC
             ${FLASHINFER_INCLUDE_DIRS}/flashinfer/attention/generic/page.cuh)
 add_library(mma_ops STATIC ${FLASHINFER_INCLUDE_DIRS}/gpu_iface/mma_ops.hpp)
+add_library(prefill STATIC
+            ${FLASHINFER_INCLUDE_DIRS}/flashinfer/attention/generic/prefill.cuh)
 
 set(CMAKE_HIP_FLAGS
-    "${CMAKE_HIP_FLAGS} -O3 -g -D__HIP_PLATFORM_AMD__ -D__HIP_NO_HALF_OPERATORS__=0 -D__HIP_NO_HALF_CONVERSIONS__=0"
-    -DPLATFORM_HIP_DEVICE)
+    "${CMAKE_HIP_FLAGS} -O3 -g -D__HIP_PLATFORM_AMD__ -D__HIP_NO_HALF_OPERATORS__=0 -D__HIP_NO_HALF_CONVERSIONS__=0
+    -DHIP_ENABLE_WARP_SYNC_BUILTINS -DPLATFORM_HIP_DEVICE")
 
 set_target_properties(
   math
@@ -114,7 +116,11 @@ set_target_properties(
   PROPERTIES HIP_SOURCES_PROPERTY_FORMAT 1
              HIP_SEPARABLE_COMPILATION ON
              LINKER_LANGUAGE HIP)
-
+set_target_properties(
+  prefill
+  PROPERTIES HIP_SOURCES_PROPERTY_FORMAT 1
+             HIP_SEPARABLE_COMPILATION ON
+             LINKER_LANGUAGE HIP)
 target_link_libraries(math PUBLIC hip::host hip::device)
 target_link_libraries(layout PUBLIC hip::host hip::device)
 target_link_libraries(pos_enc PUBLIC hip::host hip::device)
@@ -132,7 +138,7 @@ target_link_libraries(
          math)
 
 target_link_libraries(mma_ops PUBLIC hip::host hip::device)
-
+target_link_libraries(prefill PUBLIC hip::host hip::device)
 message("CMAKE_CURRENT_SOURCE_DIR: ${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(test_math ${CMAKE_CURRENT_SOURCE_DIR}/test_math.cpp)
@@ -178,6 +184,16 @@ target_link_libraries(
   test_transpose_4x4_half_registers PRIVATE mma_ops "${TORCH_LIBRARIES}" gtest
                                             gtest_main pthread)
 
+add_executable(test_single_prefill
+               ${CMAKE_CURRENT_SOURCE_DIR}/test_single_prefill.cpp)
+target_link_libraries(test_single_prefill PRIVATE prefill "${TORCH_LIBRARIES}"
+                                                  gtest gtest_main pthread)
+
+add_executable(test_batch_prefill
+               ${CMAKE_CURRENT_SOURCE_DIR}/test_batch_prefill.cpp)
+target_link_libraries(test_batch_prefill PRIVATE prefill "${TORCH_LIBRARIES}"
+                                                 gtest gtest_main pthread)
+
 if(HIP_FOUND)
   set_target_properties(test_math PROPERTIES HIP_SEPARABLE_COMPILATION ON)
   set_target_properties(test_pos_enc PROPERTIES HIP_SEPARABLE_COMPILATION ON)
@@ -192,6 +208,10 @@ if(HIP_FOUND)
   set_target_properties(test_transpose_4x4_half_registers
                         PROPERTIES HIP_SEPARABLE_COMPILATION ON)
   set_target_properties(test_rowsum PROPERTIES HIP_SEPARABLE_COMPILATION ON)
+  set_target_properties(test_single_prefill PROPERTIES HIP_SEPARABLE_COMPILATION
+                                                       ON)
+  set_target_properties(test_batch_prefill PROPERTIES HIP_SEPARABLE_COMPILATION
+                                                      ON)
 endif()
 
 enable_testing()
@@ -205,3 +225,5 @@ add_test(NAME test_mfma_fp32_16x16x16fp16 COMMAND test_mfma_fp32_16x16x16fp16)
 add_test(NAME test_transpose_4x4_half_registers
          COMMAND test_transpose_4x4_half_registers)
 add_test(NAME test_rowsum COMMAND test_rowsum)
+add_test(NAME SinglePrefillTest COMMAND test_single_prefill)
+add_test(NAME BatchPrefillTest COMMAND test_batch_prefill)

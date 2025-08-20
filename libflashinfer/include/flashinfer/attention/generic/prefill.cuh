@@ -309,7 +309,7 @@ k_frag_apply_llama_rope(T *x_first_half,
     static_assert(sizeof(T) == 2);
 #pragma unroll
     for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
-        float cos, sin, tmp;
+        float cos, sin, tmp_1, tmp_2;
         // 0 1 | 2 3
         // ---------
         // 4 5 | 6 7
@@ -321,10 +321,12 @@ k_frag_apply_llama_rope(T *x_first_half,
 #endif
         __sincosf(float(kv_offset + 8 * i) * rope_freq[2 * j + reg_id % 2],
                   &sin, &cos);
-        tmp = x_first_half[reg_id];
-        x_first_half[reg_id] = (tmp * cos - (float)x_second_half[reg_id] * sin);
+        tmp_1 = fi::con::explicit_casting<T, float>(x_first_half[reg_id]);
+        tmp_2 = fi::con::explicit_casting<T, float>(x_second_half[reg_id]);
+        x_first_half[reg_id] =
+            fi::con::explicit_casting<float, T>(tmp_1 * cos - tmp_2 * sin);
         x_second_half[reg_id] =
-            ((float)x_second_half[reg_id] * cos + tmp * sin);
+            fi::con::explicit_casting<float, T>(tmp_2 * cos + tmp_1 * sin);
     }
 }
 
@@ -338,7 +340,7 @@ q_frag_apply_llama_rope(T *x_first_half,
 {
 #pragma unroll
     for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
-        float cos, sin, tmp;
+        float cos, sin, tmp_1, tmp_2;
         // 0 1 | 4 5
         // ---------
         // 2 3 | 6 7
@@ -350,10 +352,12 @@ q_frag_apply_llama_rope(T *x_first_half,
         __sincosf(float((qo_packed_offset + 8 * i) / group_size) *
                       rope_freq[2 * j + reg_id % 2],
                   &sin, &cos);
-        tmp = x_first_half[reg_id];
-        x_first_half[reg_id] = (tmp * cos - (float)x_second_half[reg_id] * sin);
+        tmp_1 = fi::con::explicit_casting<T, float>(x_first_half[reg_id]);
+        tmp_2 = fi::con::explicit_casting<T, float>(x_second_half[reg_id]);
+        x_first_half[reg_id] =
+            fi::con::explicit_casting<float, T>(tmp_1 * cos - tmp_2 * sin);
         x_second_half[reg_id] =
-            ((float)x_second_half[reg_id] * cos + tmp * sin);
+            fi::con::explicit_casting<float, T>(tmp_2 * cos + tmp_1 * sin);
     }
 }
 
@@ -371,7 +375,7 @@ q_frag_apply_llama_rope_with_pos(T *x_first_half,
         static_cast<float>(q_rope_offset[(qo_packed_offset + 8) / group_size])};
 #pragma unroll
     for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
-        float cos, sin, tmp;
+        float cos, sin, tmp_1, tmp_2;
         // 0 1 | 4 5
         // ---------
         // 2 3 | 6 7
@@ -383,10 +387,12 @@ q_frag_apply_llama_rope_with_pos(T *x_first_half,
         const uint32_t j = reg_id / 4;
 #endif
         __sincosf(pos[i] * rope_freq[2 * j + reg_id % 2], &sin, &cos);
-        tmp = x_first_half[reg_id];
-        x_first_half[reg_id] = (tmp * cos - (float)x_second_half[reg_id] * sin);
+        tmp_1 = fi::con::explicit_casting<T, float>(x_first_half[reg_id]);
+        tmp_2 = fi::con::explicit_casting<T, float>(x_second_half[reg_id]);
+        x_first_half[reg_id] =
+            fi::con::explicit_casting<float, T>(tmp_1 * cos - tmp_2 * sin);
         x_second_half[reg_id] =
-            ((float)x_second_half[reg_id] * cos + tmp * sin);
+            fi::con::explicit_casting<float, T>(tmp_2 * cos + tmp_1 * sin);
     }
 }
 
@@ -559,13 +565,14 @@ __device__ __forceinline__ void page_produce_kv(
         }
         *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
     }
+    // TODO - Verify this
     else {
         uint32_t kv_idx = kv_idx_base + warp_idx * 8 + lane_idx / 4;
         // NOTE: NUM_MMA_KV * 2 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 2 /
         // num_warps
-        static_assert(NUM_MMA_KV * 2 % NUM_WARPS_Q == 0);
+        static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
 #pragma unroll
-        for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
+        for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
             DType *gptr = produce_v ? paged_kv.v_data + thr_local_kv_offset[i]
                                     : paged_kv.k_data + thr_local_kv_offset[i];
             smem.template load_vector_async<fill_mode>(*smem_offset, gptr,
@@ -2521,6 +2528,10 @@ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKVCacheKernel
         [[maybe_unused]] constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
         [[maybe_unused]] constexpr uint32_t NUM_WARPS_KV =
             KTraits::NUM_WARPS_KV;
+        [[maybe_unused]] constexpr uint32_t HALF_ELEMS_PER_THREAD =
+            KTraits::HALF_ELEMS_PER_THREAD;
+        [[maybe_unused]] constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
+            KTraits::NUM_ACCUM_ROWS_PER_THREAD;
         [[maybe_unused]] constexpr SwizzleMode SWIZZLE_MODE_Q =
             KTraits::SWIZZLE_MODE_Q;
         [[maybe_unused]] constexpr SwizzleMode SWIZZLE_MODE_KV =
@@ -2587,10 +2598,11 @@ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKVCacheKernel
         const uint32_t qo_upper_bound =
             min(qo_len, ceil_div((qo_tile_idx + 1) * CTA_TILE_Q, group_size));
 
-        DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][8];
-        alignas(16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][8];
-        DTypeQKAccum m[NUM_MMA_Q][2];
-        float d[NUM_MMA_Q][2];
+        DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][HALF_ELEMS_PER_THREAD];
+        alignas(
+            16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
+        DTypeQKAccum m[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
+        float d[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
         float rope_freq[NUM_MMA_D_QK / 2][4];
 
         if constexpr (KTraits::POS_ENCODING_MODE == PosEncodingMode::kRoPELlama)
@@ -2605,7 +2617,8 @@ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKVCacheKernel
         const uint32_t qo_packed_idx_base =
             (qo_tile_idx * NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
             NUM_MMA_Q * 16;
-        smem_t<SWIZZLE_MODE_Q> qo_smem(smem_storage.q_smem);
+        smem_t<SWIZZLE_MODE_Q, typename KTraits::SmemBasePtrTy> qo_smem(
+            smem_storage.q_smem);
         const uint32_t o_stride_n = num_qo_heads * HEAD_DIM_VO,
                        o_stride_h = HEAD_DIM_VO;
 
@@ -2678,8 +2691,10 @@ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKVCacheKernel
                  : chunk_size) /
             CTA_TILE_KV;
 
-        smem_t<SWIZZLE_MODE_KV> k_smem(smem_storage.k_smem),
-            v_smem(smem_storage.v_smem);
+        smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> k_smem(
+            smem_storage.k_smem);
+        smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> v_smem(
+            smem_storage.v_smem);
 
         uint32_t k_smem_offset_r =
                      k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
@@ -2898,6 +2913,10 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
         [[maybe_unused]] constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
         [[maybe_unused]] constexpr uint32_t NUM_WARPS_KV =
             KTraits::NUM_WARPS_KV;
+        [[maybe_unused]] constexpr uint32_t HALF_ELEMS_PER_THREAD =
+            KTraits::HALF_ELEMS_PER_THREAD;
+        [[maybe_unused]] constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
+            KTraits::NUM_ACCUM_ROWS_PER_THREAD;
         [[maybe_unused]] constexpr SwizzleMode SWIZZLE_MODE_Q =
             KTraits::SWIZZLE_MODE_Q;
         [[maybe_unused]] constexpr SwizzleMode SWIZZLE_MODE_KV =
@@ -2931,6 +2950,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
 
         const uint32_t lane_idx = tid.x,
                        warp_idx = get_warp_idx<KTraits>(tid.y, tid.z);
+
         if (block_valid_mask && !block_valid_mask[bx]) {
             return;
         }
@@ -2954,10 +2974,11 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
         const uint32_t qo_upper_bound =
             min(qo_len, ceil_div((qo_tile_idx + 1) * CTA_TILE_Q, group_size));
 
-        DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][8];
-        alignas(16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][8];
-        DTypeQKAccum m[NUM_MMA_Q][2];
-        float d[NUM_MMA_Q][2];
+        DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][HALF_ELEMS_PER_THREAD];
+        alignas(
+            16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
+        DTypeQKAccum m[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
+        float d[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
         float rope_freq[NUM_MMA_D_QK / 2][4];
 
         if constexpr (KTraits::POS_ENCODING_MODE == PosEncodingMode::kRoPELlama)
@@ -2972,9 +2993,13 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
         const uint32_t qo_packed_idx_base =
             (qo_tile_idx * NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
             NUM_MMA_Q * 16;
+
         const uint32_t q_stride_n = params.q_stride_n,
                        q_stride_h = params.q_stride_h;
-        smem_t<SWIZZLE_MODE_Q> qo_smem(smem_storage.q_smem);
+
+        smem_t<SWIZZLE_MODE_Q, typename KTraits::SmemBasePtrTy> qo_smem(
+            smem_storage.q_smem);
+
         const uint32_t o_stride_n = num_qo_heads * HEAD_DIM_VO,
                        o_stride_h = HEAD_DIM_VO;
         DTypeQ *q_ptr_base = q + q_indptr[request_idx] * q_stride_n +
@@ -3017,16 +3042,22 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
             block.sync();
         }
 
-        smem_t<SWIZZLE_MODE_KV> k_smem(smem_storage.k_smem),
-            v_smem(smem_storage.v_smem);
+        smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> k_smem(
+            smem_storage.k_smem);
+        smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> v_smem(
+            smem_storage.v_smem);
+
+        // TODO: Verify this
         size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / 2 /
                                    NUM_WARPS_Q];
 
         uint32_t k_smem_offset_r =
                      k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
                          get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
-                             8 * (lane_idx / 16) + lane_idx % 8,
-                         (lane_idx % 16) / 8),
+                             HALF_ELEMS_PER_THREAD * (lane_idx / 16) +
+                             lane_idx % HALF_ELEMS_PER_THREAD,
+                         (lane_idx % 16) / HALF_ELEMS_PER_THREAD),
+
                  v_smem_offset_r =
                      v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
                          get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
@@ -3042,6 +3073,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
                          warp_idx * KV_THR_LAYOUT_ROW +
                              lane_idx / KV_THR_LAYOUT_COL,
                          lane_idx % KV_THR_LAYOUT_COL);
+
         const IdType last_indptr = paged_kv.indptr[paged_kv.batch_size];
 
         uint32_t packed_page_iter_base =

@@ -15,6 +15,12 @@
 #include "gpu_iface/utils.cuh"
 #include "gpu_iface/vec_dtypes.hpp"
 
+#if defined(PLATFORM_HIP_DEVICE)
+#define __LDG(arg) *(arg)
+#else
+#define __LDG(arg) __ldg(arg)
+#endif
+
 namespace flashinfer
 {
 using namespace gpu_iface::vec_dtypes;
@@ -186,7 +192,7 @@ template <typename DType, typename IdType> struct paged_kv_t
                                                 uint32_t entry_idx,
                                                 uint32_t feat_idx) const
     {
-        return k_data + get_elem_offset(__ldg(indices + page_iter), head_idx,
+        return k_data + get_elem_offset(__LDG(indices + page_iter), head_idx,
                                         entry_idx, feat_idx);
     }
 
@@ -198,7 +204,7 @@ template <typename DType, typename IdType> struct paged_kv_t
                              IdType last_indptr) const
     {
         if (page_iter < last_indptr) {
-            return get_elem_offset(__ldg(indices + page_iter), head_idx,
+            return get_elem_offset(__LDG(indices + page_iter), head_idx,
                                    entry_idx, feat_idx);
         }
         else {
@@ -222,7 +228,7 @@ template <typename DType, typename IdType> struct paged_kv_t
                                                 uint32_t entry_idx,
                                                 uint32_t feat_idx) const
     {
-        return v_data + get_elem_offset(__ldg(indices + page_iter), head_idx,
+        return v_data + get_elem_offset(__LDG(indices + page_iter), head_idx,
                                         entry_idx, feat_idx);
     }
 
@@ -637,7 +643,7 @@ template <typename DType, typename IdType> struct paged_kv_mla_t
                               IdType last_indptr) const
     {
         if (page_iter < last_indptr) {
-            return get_elem_offset_ckv(__ldg(indices + page_iter), entry_idx,
+            return get_elem_offset_ckv(__LDG(indices + page_iter), entry_idx,
                                        feat_idx);
         }
         else {
@@ -660,7 +666,7 @@ template <typename DType, typename IdType> struct paged_kv_mla_t
                               IdType last_indptr) const
     {
         if (page_iter < last_indptr) {
-            return get_elem_offset_kpe(__ldg(indices + page_iter), entry_idx,
+            return get_elem_offset_kpe(__LDG(indices + page_iter), entry_idx,
                                        feat_idx);
         }
         else {
@@ -671,14 +677,14 @@ template <typename DType, typename IdType> struct paged_kv_mla_t
     __device__ __forceinline__ DType *
     get_ckv_ptr(size_t page_idx, size_t entry_idx, size_t feat_idx) const
     {
-        return ckv_data + get_elem_offset_ckv(__ldg(indices + page_idx),
+        return ckv_data + get_elem_offset_ckv(__LDG(indices + page_idx),
                                               entry_idx, feat_idx);
     }
 
     __device__ __forceinline__ DType *
     get_kpe_ptr(size_t page_idx, size_t entry_idx, size_t feat_idx) const
     {
-        return kpe_data + get_elem_offset_kpe(__ldg(indices + page_idx),
+        return kpe_data + get_elem_offset_kpe(__LDG(indices + page_idx),
                                               entry_idx, feat_idx);
     }
 };
