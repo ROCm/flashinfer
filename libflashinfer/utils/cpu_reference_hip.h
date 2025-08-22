@@ -164,10 +164,17 @@ single_mha(const std::vector<dtype_q> &q,
         tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads,
                            kv_layout, HEAD_DIM);
 #if Debug
-        std::cout << "DEBUG Q (CPU): " << '\n';
-        for (auto i = 0ul; i < 64; ++i) {
-            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
-            std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
+        // std::cout << "DEBUG Q (CPU): " << '\n';
+        // for (auto i = 0ul; i < 64; ++i) {
+        //     //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
+        //     std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
+        // }
+        // std::cout << std::endl;
+
+        std::cout << "DEBUG K (CPU): " << '\n';
+        for (auto i = 0ul; i < 4; ++i) {
+            //  k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)
+            std::cout << (float)k[info.get_kv_elem_offset(4, 0, i)] << " ";
         }
         std::cout << std::endl;
 #endif
