@@ -401,6 +401,16 @@ __device__ __forceinline__ void produce_kv_impl_cuda_(
     const uint32_t kv_idx_base,
     const uint32_t kv_len)
 {
+    using DTypeKV = typename KTraits::DTypeKV;
+    constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
+    constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
+    constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
+    constexpr uint32_t NUM_MMA_D =
+        produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
+    constexpr uint32_t UPCAST_STRIDE =
+        produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
+    constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+
     if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
         uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / 8;
         // NOTE: NUM_MMA_KV * 4 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 4 /
@@ -410,11 +420,11 @@ __device__ __forceinline__ void produce_kv_impl_cuda_(
         for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
 #pragma unroll
             for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
-                smem.load_128b_async<fill_mode>(*smem_offset, *gptr,
-                                                kv_idx < kv_len);
+                smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
+                                                         kv_idx < kv_len);
                 *smem_offset =
                     smem.template advance_offset_by_column<8>(*smem_offset, j);
-                *gptr += 8 * upcast_size<DTypeKV>();
+                *gptr += 8 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
             }
             kv_idx += NUM_WARPS * 4;
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4,
@@ -422,9 +432,10 @@ __device__ __forceinline__ void produce_kv_impl_cuda_(
                                *smem_offset) -
                            sizeof(DTypeKV) * NUM_MMA_D;
             *gptr += NUM_WARPS * 4 * stride_n -
-                     sizeof(DTypeKV) * NUM_MMA_D * upcast_size<DTypeKV>();
+                     sizeof(DTypeKV) * NUM_MMA_D *
+                         upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
         }
-        *smem_offset -= CTA_TILE_KV * UPCAST_STRIDE;
+        *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
     }
     else {
         uint32_t kv_idx = kv_idx_base + warp_idx * 8 + lane_idx / 4;
@@ -433,8 +444,8 @@ __device__ __forceinline__ void produce_kv_impl_cuda_(
         static_assert(NUM_MMA_KV * 2 % NUM_WARPS_Q == 0);
 #pragma unroll
         for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
-            smem.load_128b_async<fill_mode>(*smem_offset, *gptr,
-                                            kv_idx < kv_len);
+            smem.template load_128b_async<fill_mode>(*smem_offset, *gptr,
+                                                     kv_idx < kv_len);
             *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 8,
                                                                UPCAST_STRIDE>(
                 *smem_offset);
@@ -560,11 +571,6 @@ __device__ __forceinline__ void produce_kv(
     const dim3 tid = threadIdx)
 {
     // NOTE: for fp8, this function doesn't work for head_dim = 64 at the moment
-    constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
-    constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
-    constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
-    constexpr uint32_t UPCAST_STRIDE =
-        produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
     const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z),
                    lane_idx = tid.x;
 
