@@ -2212,13 +2212,21 @@ SinglePrefillWithKVCacheDevice(const Params params,
                          (lane_idx % KV_THR_LAYOUT_COL) *
                              upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
 
+#if defined(PLATFORM_HIP_DEVICE)
         uint32_t k_smem_offset_r =
-                     k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
-                         get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
-                             HALF_ELEMS_PER_THREAD * (lane_idx / 16) +
-                             lane_idx % HALF_ELEMS_PER_THREAD,
-                         (lane_idx % 16) / HALF_ELEMS_PER_THREAD),
-                 v_smem_offset_r =
+            k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
+                get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
+                    lane_idx % 16,
+                (lane_idx / 16));
+#elif defined(PLATFORM_CUDA_DEVICE)
+    uint32_t k_smem_offset_r =
+        k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
+            get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
+                8 * (lane_idx / 16) + lane_idx % 8,
+            (lane_idx % 16) / 8);
+#endif
+
+        uint32_t v_smem_offset_r =
                      v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
                          get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
                              lane_idx % 16,
@@ -2267,17 +2275,24 @@ SinglePrefillWithKVCacheDevice(const Params params,
         //     q_smem_offset_r = qo_smem.template advance_offset_by_column<4>(
         //         q_smem_offset_r, 0);
         // }
-        uint32_t b_frag[KTraits::INT32_ELEMS_PER_THREAD];
-        k_smem.load_fragment(k_smem_offset_r, b_frag);
+        if (global_idx == 0) {
 
-        if (global_idx == 4) {
-            auto frag_T = reinterpret_cast<__half *>(b_frag);
-            // printf("DEBUG: K Frag in permuted_smem for mma_kv %lu \n",
-            //     mma_kv);
-            for (auto i = 0ul; i < 4; ++i) {
-                printf("%f ", (float)(*(frag_T + i)));
+            for (auto j = 0; j < 64; ++j) {
+                uint32_t k_smem_offset_r_test =
+                    k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
+                        get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
+                            j % 16,
+                        (j / 16));
+                uint32_t b_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                k_smem.load_fragment(k_smem_offset_r_test, b_frag);
+                auto frag_T = reinterpret_cast<__half *>(b_frag);
+                // printf("DEBUG: K Frag in permuted_smem for mma_kv %lu \n",
+                //     mma_kv);
+                for (auto i = 0ul; i < 4; ++i) {
+                    printf("%f ", (float)(*(frag_T + i)));
+                }
+                printf("\n");
             }
-            printf("\n");
         }
 #endif
 

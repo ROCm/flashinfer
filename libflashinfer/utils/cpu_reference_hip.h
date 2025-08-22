@@ -172,9 +172,14 @@ single_mha(const std::vector<dtype_q> &q,
         // std::cout << std::endl;
 
         std::cout << "DEBUG K (CPU): " << '\n';
-        for (auto i = 0ul; i < 4; ++i) {
-            //  k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)
-            std::cout << (float)k[info.get_kv_elem_offset(4, 0, i)] << " ";
+        for (auto j = 0ul; j < 16; ++j) {
+            for (auto i = 0ul; i < 64; ++i) {
+                //  k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)
+                // std::cout << (float)k[info.get_kv_elem_offset(15, 0, j * 4 +
+                // i)]
+                std::cout << (float)k[info.get_kv_elem_offset(j, 0, i)] << " ";
+            }
+            std::cout << '\n';
         }
         std::cout << std::endl;
 #endif
