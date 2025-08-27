@@ -58,6 +58,57 @@ exclusive_prefix_sum(const T *input, size_t batch_size, size_t d)
 }
 
 template <typename T>
+inline std::vector<float> apply_llama_rope_debug(const T *input,
+                                                 size_t D,
+                                                 size_t offset,
+                                                 float rope_scale,
+                                                 float rope_theta)
+{
+    std::vector<float> rst(D);
+    std::vector<float> permuted_input(D);
+    // Print the input parameters
+    // Only print for first position to avoid flood
+    if (offset == 134) { // First position in your log
+        std::cout << "=== CPU ROPE DEBUG ===\n";
+        std::cout << "D: " << D << ", offset: " << offset
+                  << ", rope_scale: " << rope_scale
+                  << ", rope_theta: " << rope_theta << std::endl;
+
+        std::cout << "CPU Frequencies vs GPU comparison:\n";
+        for (size_t k = 0; k < min(4ul, D); ++k) {
+            float freq_base = float(2 * (k % (D / 2))) / float(D);
+            float frequency =
+                1.0f / std::pow(rope_theta, freq_base); // This should match GPU
+            float angle =
+                (offset / rope_scale) / std::pow(rope_theta, freq_base);
+
+            std::cout << "CPU: feature[" << k << "] freq_base=" << freq_base
+                      << " frequency=" << frequency << " angle=" << angle
+                      << std::endl;
+        }
+    }
+
+    for (size_t k = 0; k < D; ++k) {
+        permuted_input[k] =
+            (k < D / 2) ? -fi::con::explicit_casting<T, float>(input[k + D / 2])
+                        : fi::con::explicit_casting<T, float>(input[k - D / 2]);
+    }
+
+    for (size_t k = 0; k < D; ++k) {
+        float inv_freq =
+            (offset / rope_scale) /
+            (std::pow(rope_theta, float(2 * (k % (D / 2))) / float(D)));
+        float cos = std::cos(inv_freq);
+        float sin = std::sin(inv_freq);
+
+        if (std::is_same_v<T, half>)
+            rst[k] = cos * fi::con::explicit_casting<T, float>(input[k]) +
+                     sin * permuted_input[k];
+    }
+    return rst;
+}
+
+template <typename T>
 inline std::vector<float> apply_llama_rope(const T *input,
                                            size_t D,
                                            size_t offset,
@@ -164,22 +215,45 @@ single_mha(const std::vector<dtype_q> &q,
         tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads,
                            kv_layout, HEAD_DIM);
 #if Debug
-        // std::cout << "DEBUG Q (CPU): " << '\n';
-        // for (auto i = 0ul; i < 64; ++i) {
-        //     //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
-        //     std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
+        std::cout << "DEBUG: Original Q (CPU): " << '\n';
+        for (auto i = 0ul; i < 4; ++i) {
+            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
+            std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
+        }
+        std::cout << std::endl;
+
+        // std::cout << "DEBUG K (CPU): " << '\n';
+        // for (auto j = 0ul; j < 16; ++j) {
+        //     for (auto i = 0ul; i < 64; ++i) {
+        //         //  k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)
+        //         // std::cout << (float)k[info.get_kv_elem_offset(15, 0, j * 4
+        //         +
+        //         // i)]
+        //         std::cout << (float)k[info.get_kv_elem_offset(j, 0, i)] << "
+        //         ";
+        //     }
+        //     std::cout << '\n';
         // }
         // std::cout << std::endl;
-
-        std::cout << "DEBUG K (CPU): " << '\n';
-        for (auto j = 0ul; j < 16; ++j) {
-            for (auto i = 0ul; i < 64; ++i) {
-                //  k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)
-                // std::cout << (float)k[info.get_kv_elem_offset(15, 0, j * 4 +
-                // i)]
-                std::cout << (float)k[info.get_kv_elem_offset(j, 0, i)] << " ";
+        std::cout << "num_qo_heads " << num_qo_heads << '\n';
+        std::cout << "qo_len " << qo_len << '\n';
+        for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx)
+        {
+            for (size_t q_idx = 0; q_idx < qo_len; ++q_idx) {
+                q_rotary_local =
+                    std::move(cpu_reference::apply_llama_rope_debug(
+                        q.data() +
+                            info.get_q_elem_offset(q_idx, qo_head_idx, 0),
+                        head_dim, q_idx + kv_len - qo_len, rope_scale,
+                        rope_theta));
             }
-            std::cout << '\n';
+        }
+
+        std::cout << "DEBUG: LLAMA Rope Transformed Q (CPU): " << '\n';
+        for (auto i = 0ul; i < 4; ++i) {
+            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
+            std::cout << (float)q_rotary_local[info.get_q_elem_offset(0, 0, i)]
+                      << " ";
         }
         std::cout << std::endl;
 #endif

@@ -556,7 +556,7 @@ int main(int argc, char **argv)
     size_t num_heads = 1;
     size_t head_dim = 64;
     bool causal = false;
-    size_t pos_encoding_mode = 0;
+    size_t pos_encoding_mode = 1; // 1 == kRopeLLama
     size_t kv_layout = 0;
 
     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(

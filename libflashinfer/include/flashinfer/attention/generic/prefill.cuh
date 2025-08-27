@@ -336,26 +336,47 @@ q_frag_apply_llama_rope(T *x_first_half,
                         const uint32_t qo_packed_offset,
                         const uint_fastdiv group_size)
 {
+
+#if Debug
+    int global_idx = (blockIdx.z * gridDim.y * gridDim.x +
+                      blockIdx.y * gridDim.x + blockIdx.x) *
+                         (blockDim.z * blockDim.y * blockDim.x) +
+                     (threadIdx.z * blockDim.y * blockDim.x +
+                      threadIdx.y * blockDim.x + threadIdx.x);
+
+    if (global_idx == 0) {
+        printf("=== Q_FRAG_APPLY_LLAMA_ROPE DEBUG ===\n");
+        printf("qo_packed_offset=%u, group_size=%u, HALF_ELEMS_PER_THREAD=%u\n",
+               qo_packed_offset, (uint32_t)group_size, HALF_ELEMS_PER_THREAD);
+        printf("Input frequencies: %f %f %f %f\n", rope_freq[0], rope_freq[1],
+               rope_freq[2], rope_freq[3]);
+    }
+#endif
+
 #pragma unroll
     for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
         float cos, sin, tmp;
+#if defined(PLATFORM_HIP_DEVICE)
+        uint32_t freq_idx = reg_id;
+        uint32_t position = qo_packed_offset;
+#else
         // 0 1 | 4 5
         // ---------
         // 2 3 | 6 7
-#if defined(PLATFORM_HIP_DEVICE)
-        // // Same sequence for all 4 features
-        // uint32_t i = 0;
-        // Direct mapping to frequency array
-        uint32_t freq_idx = reg_id;
-        // Same position for this thread's sequence
-        uint32_t position = qo_packed_offset;
-#else
         uint32_t i = ((reg_id % 4) / 2), j = (reg_id / 4);
         uint32_t freq_idx = 2 * j + reg_id % 2;
         uint32_t position = qo_packed_offset + 8 * i;
 #endif
         __sincosf(float(position / group_size) * rope_freq[freq_idx], &sin,
                   &cos);
+#if Debug
+        if (global_idx == 0) {
+            printf("reg_id=%u: freq_idx=%u, position=%u, angle=%f\n", reg_id,
+                   freq_idx, position,
+                   float(position / group_size) * rope_freq[freq_idx]);
+        }
+#endif
+
         tmp = x_first_half[reg_id];
         x_first_half[reg_id] = (tmp * cos - (float)x_second_half[reg_id] * sin);
         x_second_half[reg_id] =
@@ -662,7 +683,10 @@ __device__ __forceinline__ void page_produce_kv(
     }
 }
 
-__device__ __forceinline__ uint32_t get_feature_index(uint32_t j)
+template <uint32_t HEAD_DIM>
+__device__ __forceinline__ uint32_t get_feature_index(uint32_t mma_d,
+                                                      uint32_t lane_idx,
+                                                      uint32_t j)
 {
 #if defined(PLATFORM_HIP_DEVICE)
     // CDNA3 A-matrix MMA tile to thread mapping for a 64-thread wavefront:
@@ -693,7 +717,6 @@ __device__ __forceinline__ uint32_t get_feature_index(uint32_t j)
         ((mma_d * 16 + (j / 2) * 8 + (lane_idx % 4) * 2 + (j % 2)) %
          (HEAD_DIM / 2));
 #endif
-
     return feature_index;
 }
 
@@ -711,10 +734,11 @@ init_rope_freq(float (*rope_freq)[4],
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO / 2; ++mma_d) {
 #pragma unroll
         for (uint32_t j = 0; j < 4; ++j) {
+            uint32_t feature_index =
+                get_feature_index<HEAD_DIM>(mma_d, lane_idx, j);
+            float freq_base = float(2 * feature_index) / float(HEAD_DIM);
             rope_freq[mma_d][j] =
-                rope_rcp_scale *
-                __powf(rope_rcp_theta,
-                       float(2 * get_feature_index(j)) / float(HEAD_DIM));
+                rope_rcp_scale * __powf(rope_rcp_theta, freq_base);
         }
     }
 }
@@ -834,55 +858,60 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary(
     float (*rope_freq)[4],
     const dim3 tid = threadIdx)
 {
-    if (get_warp_idx_kv<KTraits>(tid.z) == 0) {
-        constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
-        const uint32_t lane_idx = tid.x;
-        uint32_t q_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
-        static_assert(KTraits::NUM_MMA_D_QK % 4 == 0,
-                      "NUM_MMA_D_QK must be a multiple of 4");
+    if (get_warp_idx_kv<KTraits>(tid.z) != 0)
+        return;
+
+    constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
+    constexpr uint32_t COL_ADVANCE_TO_NEXT =
+        16 / KTraits::HALF_ELEMS_PER_THREAD;
+
 #if defined(PLATFORM_HIP_DEVICE)
-        constexpr uint32_t LAST_HALF_OFFSET = KTraits::NUM_MMA_D_QK * 2;
-        constexpr uint32_t FIRST_HALF_OFFSET = KTraits::NUM_MMA_D_QK;
-        const uint32_t SEQ_ID = lane_idx % 16;
+    constexpr uint32_t COL_ADVANCE_TO_LAST_HALF = KTraits::NUM_MMA_D_QK * 2;
 #elif defined(PLATFORM_CUDA_DEVICE)
-        constexpr uint32_t LAST_HALF_OFFSET = KTraits::NUM_MMA_D_QK;
-        constexpr uint32_t FIRST_HALF_OFFSET = KTraits::NUM_MMA_D_QK / 2;
-        const uint32_t SEQ_ID = lane_idx / KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t COL_ADVANCE_TO_LAST_HALF = KTraits::NUM_MMA_D_QK;
 #endif
 
+    const uint32_t lane_idx = tid.x;
+    uint32_t q_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
+    static_assert(KTraits::NUM_MMA_D_QK % 4 == 0,
+                  "NUM_MMA_D_QK must be a multiple of 4");
 #pragma unroll
-        for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
-            uint32_t q_smem_offset_r_first_half = *q_smem_offset_r;
+    for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
+        uint32_t q_smem_offset_r_first_half = *q_smem_offset_r;
+#if defined(PLATFORM_HIP_DEVICE)
+        const uint32_t seq_id = q_packed_idx + kv_len * group_size -
+                                qo_len * group_size + mma_q * 16 +
+                                lane_idx % 16;
+#elif defined(PLATFORM_CUDA_DEVICE)
+        const uint32_t seq_id = q_packed_idx + kv_len * group_size -
+                                qo_len * group_size + mma_q * 16 + lane_idx / 4;
+#endif
 #pragma unroll
-            for (uint32_t mma_di = 0; mma_di < FIRST_HALF_OFFSET; ++mma_di) {
-                q_smem->template load_fragment(q_smem_offset_r_first_half,
-                                               q_frag_local[0]);
-                uint32_t q_smem_offset_r_last_half =
-                    q_smem->template advance_offset_by_column<LAST_HALF_OFFSET>(
-                        q_smem_offset_r_first_half, 0);
-                q_smem->template load_fragment(q_smem_offset_r_last_half,
-                                               q_frag_local[1]);
-                q_frag_apply_llama_rope<typename KTraits::DTypeQ,
-                                        KTraits::HALF_ELEMS_PER_THREAD>(
-                    (typename KTraits::DTypeQ *)q_frag_local[0],
-                    (typename KTraits::DTypeQ *)q_frag_local[1],
-                    rope_freq[mma_di],
-                    q_packed_idx + kv_len * group_size - qo_len * group_size +
-                        mma_q * 16 + SEQ_ID,
-                    group_size);
-                q_smem->template store_fragment(q_smem_offset_r_last_half,
-                                                q_frag_local[1]);
-                q_smem->template store_fragment(q_smem_offset_r_first_half,
-                                                q_frag_local[0]);
-                q_smem_offset_r_first_half =
-                    q_smem
-                        ->template advance_offset_by_column<FIRST_HALF_OFFSET>(
-                            q_smem_offset_r_first_half, mma_di);
-            }
-            *q_smem_offset_r += 16 * UPCAST_STRIDE_Q;
+        for (uint32_t mma_di = 0; mma_di < KTraits::NUM_MMA_D_QK / 2; ++mma_di)
+        {
+            q_smem->template load_fragment(q_smem_offset_r_first_half,
+                                           q_frag_local[0]);
+            uint32_t q_smem_offset_r_last_half =
+                q_smem->template advance_offset_by_column<
+                    COL_ADVANCE_TO_LAST_HALF>(q_smem_offset_r_first_half, 0);
+            q_smem->template load_fragment(q_smem_offset_r_last_half,
+                                           q_frag_local[1]);
+            q_frag_apply_llama_rope<typename KTraits::DTypeQ,
+                                    KTraits::HALF_ELEMS_PER_THREAD>(
+                (typename KTraits::DTypeQ *)q_frag_local[0],
+                (typename KTraits::DTypeQ *)q_frag_local[1], rope_freq[mma_di],
+                seq_id, group_size);
+            q_smem->template store_fragment(q_smem_offset_r_last_half,
+                                            q_frag_local[1]);
+            q_smem->template store_fragment(q_smem_offset_r_first_half,
+                                            q_frag_local[0]);
+            q_smem_offset_r_first_half =
+                q_smem->template advance_offset_by_column<COL_ADVANCE_TO_NEXT>(
+                    q_smem_offset_r_first_half, mma_di);
         }
-        *q_smem_offset_r -= KTraits::NUM_MMA_Q * 16 * UPCAST_STRIDE_Q;
+        *q_smem_offset_r += 16 * UPCAST_STRIDE_Q;
     }
+    *q_smem_offset_r -= KTraits::NUM_MMA_Q * 16 * UPCAST_STRIDE_Q;
 }
 
 template <typename KTraits>
