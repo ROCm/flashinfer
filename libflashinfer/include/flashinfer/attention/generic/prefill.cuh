@@ -709,7 +709,7 @@ __device__ __forceinline__ uint32_t get_feature_index(uint32_t mma_d,
     //      row 0 --> T0, T1, T2, T3
     //      row 1 --> T4, T5, T6, T7
     //      ...
-    //      row 7 --> T28, T29, T30, T31.
+    //      row 7 --> T28, T29, T30, T31
     // The full data to thread mapping repeats again for the next set of 16
     // rows. Thereby, forming a 16x16 MMA tile dubdivided into four 8x8
     // quadrants.
