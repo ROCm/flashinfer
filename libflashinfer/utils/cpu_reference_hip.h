@@ -216,9 +216,23 @@ single_mha(const std::vector<dtype_q> &q,
                            kv_layout, HEAD_DIM);
 #if Debug
         std::cout << "DEBUG: Original Q (CPU): " << '\n';
-        for (auto i = 0ul; i < 4; ++i) {
+        for (auto i = 0ul; i < 16; ++i) {
+            for (int j = 0; j < 16; ++j) {
+                std::cout << (float)q[info.get_q_elem_offset(i, 0, j)] << " ";
+            }
+            std::cout << std::endl;
             //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
-            std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
+            // std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
+        }
+        std::cout << std::endl;
+
+        std::cout << "DEBUG: Original K (CPU): " << '\n';
+        for (auto i = 0ul; i < 16; ++i) {
+            for (int j = 0ul; j < 16; ++j) {
+                std::cout << (float)k[info.get_kv_elem_offset(i, 0, j)] << " ";
+            }
+            std::cout << std::endl;
+            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
         }
         std::cout << std::endl;
 
@@ -227,35 +241,38 @@ single_mha(const std::vector<dtype_q> &q,
         //     for (auto i = 0ul; i < 64; ++i) {
         //         //  k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)
         //         // std::cout << (float)k[info.get_kv_elem_offset(15, 0, j * 4
-        //         +
+        //         // +
         //         // i)]
-        //         std::cout << (float)k[info.get_kv_elem_offset(j, 0, i)] << "
+        //         std::cout << (float)k[info.get_kv_elem_offset(j, 0, i)] <<"
         //         ";
         //     }
         //     std::cout << '\n';
         // }
-        // std::cout << std::endl;
-        std::cout << "num_qo_heads " << num_qo_heads << '\n';
-        std::cout << "qo_len " << qo_len << '\n';
-        for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx)
-        {
-            for (size_t q_idx = 0; q_idx < qo_len; ++q_idx) {
-                q_rotary_local =
-                    std::move(cpu_reference::apply_llama_rope_debug(
-                        q.data() +
-                            info.get_q_elem_offset(q_idx, qo_head_idx, 0),
-                        head_dim, q_idx + kv_len - qo_len, rope_scale,
-                        rope_theta));
-            }
-        }
 
-        std::cout << "DEBUG: LLAMA Rope Transformed Q (CPU): " << '\n';
-        for (auto i = 0ul; i < 4; ++i) {
-            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
-            std::cout << (float)q_rotary_local[info.get_q_elem_offset(0, 0, i)]
-                      << " ";
-        }
-        std::cout << std::endl;
+        // std::cout << std::endl;
+        // std::cout << "num_qo_heads " << num_qo_heads << '\n';
+        // std::cout << "qo_len " << qo_len << '\n';
+        // for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads;
+        // ++qo_head_idx)
+        // {
+        //     for (size_t q_idx = 0; q_idx < qo_len; ++q_idx) {
+        //         q_rotary_local =
+        //             std::move(cpu_reference::apply_llama_rope_debug(
+        //                 q.data() +
+        //                     info.get_q_elem_offset(q_idx, qo_head_idx, 0),
+        //                 head_dim, q_idx + kv_len - qo_len, rope_scale,
+        //                 rope_theta));
+        //     }
+        // }
+
+        // std::cout << "DEBUG: LLAMA Rope Transformed Q (CPU): " << '\n';
+        // for (auto i = 0ul; i < 4; ++i) {
+        //     //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
+        //     std::cout << (float)q_rotary_local[info.get_q_elem_offset(0, 0,
+        //     i)]
+        //               << " ";
+        // }
+        // std::cout << std::endl;
 #endif
         for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx)
         {
@@ -274,6 +291,9 @@ single_mha(const std::vector<dtype_q> &q,
                     switch (pos_encoding_mode) {
                     case PosEncodingMode::kNone:
                     {
+#if Debug
+                        sm_scale = 1.0f;
+#endif
                         for (size_t feat_idx = 0; feat_idx < head_dim;
                              ++feat_idx)
                         {
@@ -310,12 +330,15 @@ single_mha(const std::vector<dtype_q> &q,
                         FLASHINFER_ERROR(err_msg.str());
                     }
                     }
-                    // apply mask
+// apply mask
+#if 0
                     if (causal && kv_idx > kv_len + q_idx - qo_len) {
                         att[kv_idx] = -5e4;
                     }
+#endif
                     max_val = std::max(max_val, att[kv_idx]);
                 }
+
                 // exp minus max
                 float denom = 0;
                 for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {

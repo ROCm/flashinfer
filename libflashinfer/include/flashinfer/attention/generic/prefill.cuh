@@ -267,7 +267,9 @@ debug_printer(uint32_t threadid, const char *var_name, T val)
                      (threadIdx.z * blockDim.y * blockDim.x +
                       threadIdx.y * blockDim.x + threadIdx.x);
 
-    if (global_idx == threadid) {
+    if (global_idx == 0 || global_idx == 16 || global_idx == 32 ||
+        global_idx == 48)
+    {
         if constexpr (std::is_integral_v<T>) {
             printf("%s : %d\n", var_name, (int)val);
         }
@@ -1094,8 +1096,14 @@ __device__ __forceinline__ void compute_qk(
             *q_smem_offset_r =
                 q_smem->template advance_offset_by_row<16, UPCAST_STRIDE_Q>(
                     *q_smem_offset_r);
-            printf("---------------------->\n");
-            debug_printer<float>(0, "a_frag: ", float(a_frag[mma_q][0]));
+
+            // __half* a_frag_half = reinterpret_cast<__half*>(a_frag[mma_q]);
+            // debug_printer<float>(0, "a_frag_half_0: ",
+            // float(a_frag_half[0])); debug_printer<float>(0, "a_frag_half_1:
+            // ", float(a_frag_half[1])); debug_printer<float>(0,
+            // "a_frag_half_2: ", float(a_frag_half[2]));
+            // debug_printer<float>(0, "a_frag_half_3: ",
+            // float(a_frag_half[3]));
         }
 
         *q_smem_offset_r =
@@ -1133,6 +1141,15 @@ __device__ __forceinline__ void compute_qk(
                 k_smem->load_fragment(*k_smem_offset_r, b_frag);
 #endif
             }
+
+            // __half* b_frag_half = reinterpret_cast<__half*>(b_frag);
+            // debug_printer<float>(0, "b_frag_half_0: ",
+            // float(b_frag_half[0])); debug_printer<float>(0, "b_frag_half_1:
+            // ", float(b_frag_half[1])); debug_printer<float>(0,
+            // "b_frag_half_2: ", float(b_frag_half[2]));
+            // debug_printer<float>(0, "b_frag_half_3: ",
+            // float(b_frag_half[3]));
+
             *k_smem_offset_r =
                 k_smem->template advance_offset_by_row<16, UPCAST_STRIDE_K>(
                     *k_smem_offset_r);
@@ -1152,7 +1169,49 @@ __device__ __forceinline__ void compute_qk(
                             typename KTraits::DTypeQ>(s_frag[mma_q][mma_kv],
                                                       a_frag[mma_q], b_frag);
                     }
+
+#if Debug
+                    if (mma_q == 0) {
+                        __half *a_frag_half =
+                            reinterpret_cast<__half *>(a_frag[mma_q]);
+                        debug_printer<float>(
+                            0, "a_frag_half_0: ", float(a_frag_half[0]));
+                        debug_printer<float>(
+                            0, "a_frag_half_1: ", float(a_frag_half[1]));
+                        debug_printer<float>(
+                            0, "a_frag_half_2: ", float(a_frag_half[2]));
+                        debug_printer<float>(
+                            0, "a_frag_half_3: ", float(a_frag_half[3]));
+
+                        __syncthreads();
+
+                        // __half* b_frag_half =
+                        // reinterpret_cast<__half*>(b_frag);
+                        // debug_printer<float>(0, "b_frag_half_0: ",
+                        // float(b_frag_half[0])); debug_printer<float>(0,
+                        // "b_frag_half_1: ", float(b_frag_half[1]));
+                        // debug_printer<float>(0, "b_frag_half_2: ",
+                        // float(b_frag_half[2])); debug_printer<float>(0,
+                        // "b_frag_half_3: ", float(b_frag_half[3]));
+
+                        //  __syncthreads();
+
+                        __half *s_frag_half =
+                            reinterpret_cast<__half *>(s_frag[mma_q][mma_kv]);
+                        debug_printer<float>(
+                            0, "s_frag_half: ", float(s_frag_half[0]));
+                        debug_printer<float>(
+                            0, "s_frag_half: ", float(s_frag_half[1]));
+                        debug_printer<float>(
+                            0, "s_frag_half: ", float(s_frag_half[2]));
+                        debug_printer<float>(
+                            0, "s_frag_half: ", float(s_frag_half[3]));
+
+                        __syncthreads();
+                    }
+#endif
                 }
+
                 else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
 #if defined(PLATFORM_HIP_DEVICE)
                     static_assert(
@@ -2326,36 +2385,35 @@ SinglePrefillWithKVCacheDevice(const Params params,
                          (threadIdx.z * blockDim.y * blockDim.x +
                           threadIdx.y * blockDim.x + threadIdx.x);
 
-        if (global_idx == 0) {
-            printf("partition_kv : %d\n", partition_kv);
-            printf("kv_len : %d\n", kv_len);
-            printf("max_chunk_size : %d\n", max_chunk_size);
-            printf("chunk_end : %d\n", chunk_end);
-            printf("chunk_start : %d\n", chunk_start);
-        }
+        // if (global_idx == 0) {
+        //     printf("partition_kv : %d\n", partition_kv);
+        //     printf("kv_len : %d\n", kv_len);
+        //     printf("max_chunk_size : %d\n", max_chunk_size);
+        //     printf("chunk_end : %d\n", chunk_end);
+        //     printf("chunk_start : %d\n", chunk_start);
+        // }
         // Test Q
-        //  if (global_idx == 0) {
-        //      uint32_t q_smem_offset_r_debug;
-        //      //for (auto i = 0; i < 4; ++i) {
-        //          for (auto j = 0; j < 16; ++j) {
-        //              uint32_t q_smem_offset_r_debug =
-        //                  qo_smem.template
-        //                  get_permuted_offset<UPCAST_STRIDE_Q>(
-        //                      get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16
-        //                      + (j) % 16, (j) / 16);
-        //              uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-        //              k_smem.load_fragment(q_smem_offset_r_debug, a_frag);
-        //              auto frag_T = reinterpret_cast<__half *>(a_frag);
-        //              for (auto i = 0ul; i < 4; ++i) {
-        //                  printf("%f ", (float)(*(frag_T + i)));
-        //              }
-        //              printf("\n");
-        //          }
-        //      //     q_smem_offset_r_debug = qo_smem.template
-        //      advance_offset_by_column<4>(
-        //      //     q_smem_offset_r_debug, 0);
-        //      // }
-        //  }
+
+        if (global_idx == 0) {
+            printf("\n DEBUG Q ORIGINAL (HIP):\n");
+            uint32_t q_smem_offset_r_debug;
+            for (auto i = 0; i < 16; ++i) {
+                for (auto j = 0; j < 4; ++j) {
+                    uint32_t q_smem_offset_r_debug =
+                        qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
+                            i, j);
+                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                    qo_smem.load_fragment(q_smem_offset_r_debug, a_frag);
+                    auto frag_T = reinterpret_cast<__half *>(a_frag);
+                    for (auto i = 0ul; i < 4; ++i) {
+                        printf("%f ", (float)(*(frag_T + i)));
+                    }
+                }
+                printf("\n");
+                qo_smem.template advance_offset_by_row<
+                    16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r);
+            }
+        }
 
         // for (auto mma_q = 0ul; mma_q < 4; ++mma_q) {
         //     uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
@@ -2373,54 +2431,58 @@ SinglePrefillWithKVCacheDevice(const Params params,
         //         q_smem_offset_r, 0);
         // }
 
-        uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-        qo_smem.load_fragment(q_smem_offset_r, a_frag);
-        if (global_idx == 0) {
-            auto frag_T = reinterpret_cast<__half *>(a_frag);
-            printf("DEBUG: Q Frag \n");
-            for (auto i = 0ul; i < 4; ++i) {
-                printf("%f ", (float)(*(frag_T + i)));
-            }
-            printf("\n");
-        }
-
-        memory::wait_group<0>();
-        block.sync();
-        q_smem_inplace_apply_rotary<KTraits>(qo_packed_idx_base, qo_len, kv_len,
-                                             group_size, &qo_smem,
-                                             &q_smem_offset_r, rope_freq, tid);
-        block.sync();
-
-        qo_smem.load_fragment(q_smem_offset_r, a_frag);
-        if (global_idx == 0) {
-            auto frag_T = reinterpret_cast<__half *>(a_frag);
-            printf("DEBUG: LLAMA Rope transformed Q Frag \n");
-            for (auto i = 0ul; i < 4; ++i) {
-                printf("%f ", (float)(*(frag_T + i)));
-            }
-            printf("\n");
-        }
-
-        // // Test K loads
+        // uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+        // qo_smem.load_fragment(q_smem_offset_r, a_frag);
         // if (global_idx == 0) {
-
-        //     for (auto j = 0; j < 64; ++j) {
-        //         uint32_t k_smem_offset_r_test =
-        //             k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
-        //                 get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
-        //                     j % 16,
-        //                 (j / 16));
-        //         uint32_t b_frag[KTraits::INT32_ELEMS_PER_THREAD];
-        //         k_smem.load_fragment(k_smem_offset_r_test, b_frag);
-        //         auto frag_T = reinterpret_cast<__half *>(b_frag);
-        //         // printf("DEBUG: K Frag in permuted_smem for mma_kv %lu \n",
-        //         //     mma_kv);
-        //         for (auto i = 0ul; i < 4; ++i) {
-        //             printf("%f ", (float)(*(frag_T + i)));
-        //         }
-        //         printf("\n");
+        //     auto frag_T = reinterpret_cast<__half *>(a_frag);
+        //     printf("DEBUG: Q Frag \n");
+        //     for (auto i = 0ul; i < 4; ++i) {
+        //         printf("%f ", (float)(*(frag_T + i)));
         //     }
+        //     printf("\n");
         // }
+
+        // memory::wait_group<0>();
+        // block.sync();
+        // q_smem_inplace_apply_rotary<KTraits>(qo_packed_idx_base, qo_len,
+        // kv_len,
+        //                                      group_size, &qo_smem,
+        //                                      &q_smem_offset_r, rope_freq,
+        //                                      tid);
+        // block.sync();
+
+        // qo_smem.load_fragment(q_smem_offset_r, a_frag);
+        // if (global_idx == 0) {
+        //     auto frag_T = reinterpret_cast<__half *>(a_frag);
+        //     printf("DEBUG: LLAMA Rope transformed Q Frag \n");
+        //     for (auto i = 0ul; i < 4; ++i) {
+        //         printf("%f ", (float)(*(frag_T + i)));
+        //     }
+        //     printf("\n");
+        // }
+
+        // Test K loads
+        if (global_idx == 0) {
+            printf("\n DEBUG K ORIGINAL (HIP):\n");
+            uint32_t k_smem_offset_r_debug;
+            for (auto i = 0; i < 16; ++i) {
+                for (auto j = 0; j < 4; ++j) {
+                    uint32_t k_smem_offset_r_debug =
+                        k_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(i,
+                                                                             j);
+                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                    k_smem.load_fragment(k_smem_offset_r_debug, a_frag);
+                    auto frag_T = reinterpret_cast<__half *>(a_frag);
+                    for (auto i = 0ul; i < 4; ++i) {
+                        printf("%f ", (float)(*(frag_T + i)));
+                    }
+                }
+                printf("\n");
+                k_smem.template advance_offset_by_row<16,
+                                                      KTraits::UPCAST_STRIDE_K>(
+                    k_smem_offset_r);
+            }
+        }
 
         // if (global_idx == 0) {
         //     printf("DEBUG Q ORIGINAL (HIP):\n");
@@ -2512,8 +2574,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
             }
 
             // compute attention score
-            compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
-                                &k_smem_offset_r, s_frag);
+            // compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
+            //                     &k_smem_offset_r, s_frag);
 
             logits_transform<KTraits>(
                 params, variant, /*batch_idx=*/0, qo_packed_idx_base,

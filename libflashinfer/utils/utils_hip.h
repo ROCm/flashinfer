@@ -96,7 +96,7 @@ template <typename T>
 void vec_normal_(std::vector<T> &vec, float mean = 0.f, float std = 1.f)
 {
     std::random_device rd{};
-    std::mt19937 gen{rd()};
+    std::mt19937 gen{1234};
     std::normal_distribution d{mean, std};
     for (size_t i = 0; i < vec.size(); ++i) {
         float value = static_cast<float>(d(gen));
@@ -108,7 +108,7 @@ template <typename T>
 void vec_uniform_(std::vector<T> &vec, float a = 0.f, float b = 1.f)
 {
     std::random_device rd{};
-    std::mt19937 gen{rd()};
+    std::mt19937 gen{1234};
     std::uniform_real_distribution d{a, b};
     for (size_t i = 0; i < vec.size(); ++i) {
         float value = static_cast<float>(d(gen));
@@ -130,7 +130,7 @@ template <typename T> void vec_fill_(std::vector<T> &vec, T val)
 template <typename T> void vec_randint_(std::vector<T> &vec, int low, int high)
 {
     std::random_device rd{};
-    std::mt19937 gen{rd()};
+    std::mt19937 gen{1234};
     std::uniform_int_distribution d{low, high};
     for (size_t i = 0; i < vec.size(); ++i) {
         float value = static_cast<float>(d(gen));

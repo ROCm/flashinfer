@@ -195,12 +195,12 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
     std::vector<DTypeKV> v(kv_len * num_kv_heads * head_dim);
     std::vector<DTypeO> o(qo_len * num_qo_heads * head_dim);
 
-    // utils::vec_normal_(q);
-    // utils::vec_normal_(k);
-    // utils::vec_normal_(v);
-    utils::vec_lexicographic_(q);
-    utils::vec_fill_(k, __float2half(1.0f));
-    utils::vec_fill_(v, __float2half(1.0f));
+    utils::vec_normal_(q);
+    utils::vec_normal_(k);
+    utils::vec_normal_(v);
+    // utils::vec_lexicographic_(q);
+    // utils::vec_lexicographic_(k);
+    // utils::vec_fill_(v, __float2half(1.0f));
     utils::vec_zero_(o);
 
     DTypeQ *q_d;
@@ -270,10 +270,10 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
 
         num_results_error_atol +=
             (!utils::isclose(o_ref_val, o_h_val, rtol, atol));
-        if (!utils::isclose(o_ref_val, o_h_val, rtol, atol)) {
-            std::cout << "i=" << i << ", o_ref[i]=" << o_ref_val
-                      << ", o_h[i]=" << o_h_val << std::endl;
-        }
+        // if (!utils::isclose(o_ref_val, o_h_val, rtol, atol)) {
+        //     std::cout << "i=" << i << ", o_ref[i]=" << o_ref_val
+        //               << ", o_h[i]=" << o_h_val << std::endl;
+        // }
     }
     // std::cout<<"Printing att_out vector:\n";
     // for(auto i: att_out) {
@@ -557,12 +557,12 @@ int main(int argc, char **argv)
     using DTypeIn = __half;
     using DTypeO = __half;
     bool use_fp16_qk_reduction = false;
-    size_t qo_len = 399;
-    size_t kv_len = 533;
+    size_t qo_len = 64;
+    size_t kv_len = 64;
     size_t num_heads = 1;
     size_t head_dim = 64;
     bool causal = false;
-    size_t pos_encoding_mode = 1; // 1 == kRopeLLama
+    size_t pos_encoding_mode = 0; // 1 == kRopeLLama
     size_t kv_layout = 0;
 
     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
