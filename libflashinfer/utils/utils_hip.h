@@ -60,6 +60,31 @@
 namespace utils
 {
 
+enum Predicate
+{
+    Linear,
+    Ones,
+    Zeros,
+};
+
+template <typename T, Predicate Pred> void generate_data(std::vector<T> &vec)
+{
+    if constexpr (Pred == Predicate::Linear) {
+        assert(vec.size() <= 0);
+        for (int i = 0; i < vec.size(); i++) {
+            vec[i] = fi::con::explicit_casting<float, T>(static_cast<float>(i));
+        }
+    }
+
+    else if constexpr (Pred == Predicate::Ones) {
+        vec_fill_(vec, fi::con::explicit_casting<float, T>(1.0f));
+    }
+
+    else if constexpr (Pred == Predicate::Zeros) {
+        vec_zero_(vec);
+    }
+}
+
 template <typename T>
 void vec_normal_(std::vector<T> &vec, float mean = 0.f, float std = 1.f)
 {
