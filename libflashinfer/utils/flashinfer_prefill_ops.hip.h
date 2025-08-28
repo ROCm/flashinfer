@@ -7,11 +7,12 @@
 
 #include "utils_hip.h"
 
-#include "compute_qk_stub.cuh"
+// #include "compute_qk_stub.cuh"
 #include "flashinfer/attention/generic/allocator.h"
 #include "flashinfer/attention/generic/default_prefill_params.cuh"
 #include "flashinfer/attention/generic/exception.h"
-#include "flashinfer/attention/generic/prefill.cuh"
+// #include "flashinfer/attention/generic/prefill.cuh"
+#include "flashinfer/attention/generic/prefill_tester.cuh"
 #include "flashinfer/attention/generic/scheduler.cuh"
 #include "flashinfer/attention/generic/variants.cuh"
 
@@ -165,63 +166,66 @@ hipError_t SinglePrefillWithKVCache(
     return hipSuccess;
 }
 
-template <typename DTypeQ, typename DTypeKV, typename DTypeO>
-hipError_t
-ComputeQKStubCaller(DTypeQ *q,
-                    DTypeKV *k,
-                    DTypeKV *v,
-                    DTypeO *o,
-                    DTypeO *tmp,
-                    float *lse,
-                    float *qk_scores_output,
-                    uint32_t num_qo_heads,
-                    uint32_t num_kv_heads,
-                    uint32_t qo_len,
-                    uint32_t kv_len,
-                    uint32_t head_dim,
-                    bool causal = true,
-                    QKVLayout kv_layout = QKVLayout::kNHD,
-                    PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
-                    bool use_fp16_qk_reduction = false,
-                    std::optional<float> maybe_sm_scale = std::nullopt,
-                    float rope_scale = 1.f,
-                    float rope_theta = 1e4,
-                    hipStream_t stream = nullptr)
-{
-    const float sm_scale =
-        maybe_sm_scale.value_or(1.f / std::sqrt(float(head_dim)));
-    const MaskMode mask_mode = causal ? MaskMode::kCausal : MaskMode::kNone;
-    auto [qo_stride_n, qo_stride_h, kv_stride_n, kv_stride_h] = get_qkv_strides(
-        kv_layout, kv_len, num_qo_heads, num_kv_heads, head_dim);
-    DISPATCH_use_fp16_qk_reduction(
-        static_cast<int>(use_fp16_qk_reduction), USE_FP16_QK_REDUCTION,
-        {DISPATCH_mask_mode(
-            mask_mode, MASK_MODE,
-            {DISPATCH_head_dim(
-                head_dim, HEAD_DIM,
-                {DISPATCH_pos_encoding_mode(
-                    pos_encoding_mode, POS_ENCODING_MODE, {
-                        using Params =
-                            SinglePrefillParams<DTypeQ, DTypeKV, DTypeO>;
-                        using AttentionVariant = DefaultAttention<
-                            /*use_custom_mask=*/(MASK_MODE ==
-                                                 MaskMode::kCustom),
-                            /*use_sliding_window=*/false,
-                            /*use_logits_soft_cap=*/false, /*use_alibi=*/false>;
-                        Params params(q, k, v, /*custom_mask=*/nullptr, o, lse,
-                                      /*alibi_slopes=*/nullptr, num_qo_heads,
-                                      num_kv_heads, qo_len, kv_len, qo_stride_n,
-                                      qo_stride_h, kv_stride_n, kv_stride_h,
-                                      head_dim,
-                                      /*window_left=*/-1,
-                                      /*logits_soft_cap=*/0.f, sm_scale,
-                                      rope_scale, rope_theta);
-                        return ComputeQKStubDispatched<
-                            HEAD_DIM, HEAD_DIM, POS_ENCODING_MODE,
-                            USE_FP16_QK_REDUCTION, MASK_MODE, AttentionVariant,
-                            Params>(params, tmp, qk_scores_output, stream);
-                    })})})});
-    return hipSuccess;
-}
+// template <typename DTypeQ, typename DTypeKV, typename DTypeO>
+// hipError_t
+// ComputeQKStubCaller(DTypeQ *q,
+//                     DTypeKV *k,
+//                     DTypeKV *v,
+//                     DTypeO *o,
+//                     DTypeO *tmp,
+//                     float *lse,
+//                     float *qk_scores_output,
+//                     uint32_t num_qo_heads,
+//                     uint32_t num_kv_heads,
+//                     uint32_t qo_len,
+//                     uint32_t kv_len,
+//                     uint32_t head_dim,
+//                     bool causal = true,
+//                     QKVLayout kv_layout = QKVLayout::kNHD,
+//                     PosEncodingMode pos_encoding_mode =
+//                     PosEncodingMode::kNone, bool use_fp16_qk_reduction =
+//                     false, std::optional<float> maybe_sm_scale =
+//                     std::nullopt, float rope_scale = 1.f, float rope_theta =
+//                     1e4, hipStream_t stream = nullptr)
+// {
+//     const float sm_scale =
+//         maybe_sm_scale.value_or(1.f / std::sqrt(float(head_dim)));
+//     const MaskMode mask_mode = causal ? MaskMode::kCausal : MaskMode::kNone;
+//     auto [qo_stride_n, qo_stride_h, kv_stride_n, kv_stride_h] =
+//     get_qkv_strides(
+//         kv_layout, kv_len, num_qo_heads, num_kv_heads, head_dim);
+//     DISPATCH_use_fp16_qk_reduction(
+//         static_cast<int>(use_fp16_qk_reduction), USE_FP16_QK_REDUCTION,
+//         {DISPATCH_mask_mode(
+//             mask_mode, MASK_MODE,
+//             {DISPATCH_head_dim(
+//                 head_dim, HEAD_DIM,
+//                 {DISPATCH_pos_encoding_mode(
+//                     pos_encoding_mode, POS_ENCODING_MODE, {
+//                         using Params =
+//                             SinglePrefillParams<DTypeQ, DTypeKV, DTypeO>;
+//                         using AttentionVariant = DefaultAttention<
+//                             /*use_custom_mask=*/(MASK_MODE ==
+//                                                  MaskMode::kCustom),
+//                             /*use_sliding_window=*/false,
+//                             /*use_logits_soft_cap=*/false,
+//                             /*use_alibi=*/false>;
+//                         Params params(q, k, v, /*custom_mask=*/nullptr, o,
+//                         lse,
+//                                       /*alibi_slopes=*/nullptr, num_qo_heads,
+//                                       num_kv_heads, qo_len, kv_len,
+//                                       qo_stride_n, qo_stride_h, kv_stride_n,
+//                                       kv_stride_h, head_dim,
+//                                       /*window_left=*/-1,
+//                                       /*logits_soft_cap=*/0.f, sm_scale,
+//                                       rope_scale, rope_theta);
+//                         return ComputeQKStubDispatched<
+//                             HEAD_DIM, HEAD_DIM, POS_ENCODING_MODE,
+//                             USE_FP16_QK_REDUCTION, MASK_MODE,
+//                             AttentionVariant, Params>(params, tmp,
+//                             qk_scores_output, stream);
+//                     })})})});
+//     return hipSuccess;
+// }
 
 } // namespace flashinfer
