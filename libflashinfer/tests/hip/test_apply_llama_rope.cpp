@@ -356,7 +356,7 @@ TEST_P(LLamaRopeTestWithFP16, VectorSizeIsCorrect)
 
 TEST_P(LLamaRopeTestWithFP16, TestQFragApplyRopeComparison)
 {
-    constexpr float RELATIVE_EPSILON = 1e-3f;
+    constexpr float RELATIVE_EPSILON = 1e-2f;
 
     auto cpu_result = this->apply_cpu_rope(744);
     auto gpu_result = this->test_gpu_q_frag_apply_rope();

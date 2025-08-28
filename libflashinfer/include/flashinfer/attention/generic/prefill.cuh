@@ -163,7 +163,7 @@ struct KernelTraits
     // in attention score computation and cross-warp synchronization.
     // CUDA: 4 threads (each thread handles 2 elements from same row group)
     // CDNA3: 16 threads (each thread handles 1 element from same row group)
-    static constexpr uint32_t THREADS_PER_MATRIX_ROW_SET = 16;
+    static constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET = 16;
     // controls the indexing stride used in logits-related functions
     // (logits_transform, logits_mask, and LSE writing).
     static constexpr uint32_t LOGITS_INDEX_STRIDE = 4;
@@ -193,7 +193,7 @@ struct KernelTraits
     // Refer:
     // https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-i8-f8
     static constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = 2;
-    static constexpr uint32_t THREADS_PER_MATRIX_ROW_SET = 4;
+    static constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET = 4;
     static constexpr uint32_t LOGITS_INDEX_STRIDE = 8;
 #endif
     static constexpr uint32_t UPCAST_STRIDE_Q =
@@ -336,23 +336,6 @@ q_frag_apply_llama_rope(T *x_first_half,
                         const uint32_t qo_packed_offset,
                         const uint_fastdiv group_size)
 {
-
-#if Debug
-    int global_idx = (blockIdx.z * gridDim.y * gridDim.x +
-                      blockIdx.y * gridDim.x + blockIdx.x) *
-                         (blockDim.z * blockDim.y * blockDim.x) +
-                     (threadIdx.z * blockDim.y * blockDim.x +
-                      threadIdx.y * blockDim.x + threadIdx.x);
-
-    if (global_idx == 0) {
-        printf("=== Q_FRAG_APPLY_LLAMA_ROPE DEBUG ===\n");
-        printf("qo_packed_offset=%u, group_size=%u, HALF_ELEMS_PER_THREAD=%u\n",
-               qo_packed_offset, (uint32_t)group_size, HALF_ELEMS_PER_THREAD);
-        printf("Input frequencies: %f %f %f %f\n", rope_freq[0], rope_freq[1],
-               rope_freq[2], rope_freq[3]);
-    }
-#endif
-
 #pragma unroll
     for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
         float cos, sin, tmp;
@@ -369,14 +352,6 @@ q_frag_apply_llama_rope(T *x_first_half,
 #endif
         __sincosf(float(position / group_size) * rope_freq[freq_idx], &sin,
                   &cos);
-#if Debug
-        if (global_idx == 0) {
-            printf("reg_id=%u: freq_idx=%u, position=%u, angle=%f\n", reg_id,
-                   freq_idx, position,
-                   float(position / group_size) * rope_freq[freq_idx]);
-        }
-#endif
-
         tmp = x_first_half[reg_id];
         x_first_half[reg_id] = (tmp * cos - (float)x_second_half[reg_id] * sin);
         x_second_half[reg_id] =
@@ -951,7 +926,7 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary_with_pos(
                     (typename KTraits::DTypeQ *)q_frag_local[1],
                     rope_freq[mma_di],
                     q_packed_idx_base + mma_q * 16 +
-                        lane_idx / KTraits::THREADS_PER_MATRIX_ROW_SET,
+                        lane_idx / KTraits::THREADS_PER_BMATRIX_ROW_SET,
                     group_size, q_rope_offset);
                 q_smem->store_fragment(q_smem_offset_r_last_half,
                                        q_frag_local[1]);
@@ -978,8 +953,8 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
     using DTypeKV = typename KTraits::DTypeKV;
     static_assert(sizeof(DTypeKV) == 2);
     constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
-    constexpr uint32_t THREADS_PER_MATRIX_ROW_SET =
-        KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET =
+        KTraits::THREADS_PER_BMATRIX_ROW_SET;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     uint32_t k_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
     const uint32_t lane_idx = tid.x;
@@ -995,7 +970,7 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
             KTraits::NUM_MMA_KV % 2 == 0,
             "when NUM_MMA_D_QK == 4, NUM_MMA_KV must be a multiple of 2");
         uint32_t kv_idx = kv_idx_base + (warp_idx / 2) * 16 +
-                          lane_idx / THREADS_PER_MATRIX_ROW_SET;
+                          lane_idx / THREADS_PER_BMATRIX_ROW_SET;
         *k_smem_offset_r = (*k_smem_offset_r ^ (0x2 * (warp_idx % 2))) +
                            (warp_idx / 2) * 16 * UPCAST_STRIDE_K;
 #pragma unroll
@@ -1032,7 +1007,7 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
         // ...
         uint32_t kv_idx = kv_idx_base +
                           (warp_idx_z * KTraits::NUM_MMA_KV * 16) +
-                          lane_idx / THREADS_PER_MATRIX_ROW_SET;
+                          lane_idx / THREADS_PER_BMATRIX_ROW_SET;
         *k_smem_offset_r = *k_smem_offset_r ^ (0x2 * warp_idx_x);
 #pragma unroll
         for (uint32_t i = 0; i < KTraits::NUM_MMA_KV; ++i) {
@@ -1205,7 +1180,7 @@ __device__ __forceinline__ void logits_transform(
     const dim3 tid = threadIdx,
     const uint32_t kv_head_idx = blockIdx.z)
 {
-    constexpr uint32_t TPR = KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
     constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     constexpr uint32_t LIS = KTraits::LOGITS_INDEX_STRIDE;
 
@@ -1301,7 +1276,7 @@ logits_mask(const Params &params,
     constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
     constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
     constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
-    constexpr uint32_t TPR = KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
     constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     constexpr uint32_t LIS = KTraits::LOGITS_INDEX_STRIDE;
 
@@ -1751,11 +1726,11 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
     const uint32_t lane_idx,
     const dim3 tid = threadIdx)
 {
-    constexpr uint32_t TPR = KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
     constexpr uint32_t NARPT = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
 
     static_assert(WARP_SIZE % TPR == 0,
-                  "THREADS_PER_MATRIX_ROW_SET must divide WARP_SIZE");
+                  "THREADS_PER_BMATRIX_ROW_SET must divide WARP_SIZE");
     constexpr uint32_t GROUPS_PER_WARP = WARP_SIZE / TPR;
     const uint32_t lane_group_idx = lane_idx / TPR;
 
@@ -1928,7 +1903,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
 {
     using DTypeO = typename KTraits::DTypeO;
     constexpr uint32_t UPCAST_STRIDE_O = KTraits::UPCAST_STRIDE_O;
-    constexpr uint32_t TPR = KTraits::THREADS_PER_MATRIX_ROW_SET;
+    constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
     constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
@@ -2149,8 +2124,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
             KTraits::NUM_ACCUM_ROWS_PER_THREAD;
         [[maybe_unused]] constexpr uint32_t LOGITS_INDEX_STRIDE =
             KTraits::LOGITS_INDEX_STRIDE;
-        [[maybe_unused]] constexpr uint32_t THREADS_PER_MATRIX_ROW_SET =
-            KTraits::THREADS_PER_MATRIX_ROW_SET;
+        [[maybe_unused]] constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET =
+            KTraits::THREADS_PER_BMATRIX_ROW_SET;
         [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH =
             KTraits::VECTOR_BIT_WIDTH;
 
@@ -2584,7 +2559,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
                             uint32_t q, r;
                             group_size.divmod(
                                 qo_packed_idx_base +
-                                    lane_idx / THREADS_PER_MATRIX_ROW_SET +
+                                    lane_idx / THREADS_PER_BMATRIX_ROW_SET +
                                     j * LOGITS_INDEX_STRIDE + mma_q * 16,
                                 q, r);
                             const uint32_t qo_head_idx =
