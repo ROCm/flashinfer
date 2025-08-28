@@ -11,8 +11,8 @@
 #include "flashinfer/attention/generic/allocator.h"
 #include "flashinfer/attention/generic/default_prefill_params.cuh"
 #include "flashinfer/attention/generic/exception.h"
-// #include "flashinfer/attention/generic/prefill.cuh"
-#include "flashinfer/attention/generic/prefill_tester.cuh"
+#include "flashinfer/attention/generic/prefill.cuh"
+// #include "flashinfer/attention/generic/prefill_tester.cuh"
 #include "flashinfer/attention/generic/scheduler.cuh"
 #include "flashinfer/attention/generic/variants.cuh"
 

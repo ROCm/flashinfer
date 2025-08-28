@@ -85,6 +85,13 @@ template <typename T, Predicate Pred> void generate_data(std::vector<T> &vec)
     }
 }
 
+template <typename T> void vec_lexicographic_(std::vector<T> &vec)
+{
+    for (int i = 0; i < vec.size(); i++) {
+        vec[i] = fi::con::explicit_casting<float, T>(static_cast<float>(i));
+    }
+}
+
 template <typename T>
 void vec_normal_(std::vector<T> &vec, float mean = 0.f, float std = 1.f)
 {

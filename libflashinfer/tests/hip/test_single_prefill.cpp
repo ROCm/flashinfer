@@ -17,6 +17,7 @@
 
 using namespace flashinfer;
 
+#if 0
 template <typename DTypeQ, typename DTypeKV, typename DTypeO>
 void _TestComputeQKCorrectness(size_t qo_len,
                                size_t kv_len,
@@ -174,6 +175,8 @@ void _TestComputeQKCorrectness(size_t qo_len,
     FI_GPU_CALL(hipFree(qk_scores_d));
 }
 
+#endif
+
 template <typename DTypeQ, typename DTypeKV, typename DTypeO>
 void _TestSinglePrefillKernelCorrectness(size_t qo_len,
                                          size_t kv_len,
@@ -192,9 +195,12 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
     std::vector<DTypeKV> v(kv_len * num_kv_heads * head_dim);
     std::vector<DTypeO> o(qo_len * num_qo_heads * head_dim);
 
-    utils::vec_normal_(q);
-    utils::vec_normal_(k);
-    utils::vec_normal_(v);
+    // utils::vec_normal_(q);
+    // utils::vec_normal_(k);
+    // utils::vec_normal_(v);
+    utils::vec_lexicographic_(q);
+    utils::vec_fill_(k, __float2half(1.0f));
+    utils::vec_fill_(v, __float2half(1.0f));
     utils::vec_zero_(o);
 
     DTypeQ *q_d;

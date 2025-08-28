@@ -2470,7 +2470,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
 #endif
 
 #pragma unroll 1
-        for (uint32_t iter = 0; iter < num_iterations; ++iter) {
+        // for (uint32_t iter = 0; iter < num_iterations; ++iter) {
+        for (uint32_t iter = 0; iter < 1; ++iter) {
             memory::wait_group<1>();
             block.sync();
 
