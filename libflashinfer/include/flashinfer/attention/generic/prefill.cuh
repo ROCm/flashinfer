@@ -25,6 +25,8 @@
 #include "pos_enc.cuh"
 #include "variants.cuh"
 
+#include <type_traits>
+
 namespace flashinfer
 {
 
@@ -254,6 +256,29 @@ struct KernelTraits
 
 namespace
 {
+
+template <typename T>
+__device__ __forceinline__ void
+debug_printer(uint32_t threadid, const char *var_name, T val)
+{
+    int global_idx = (blockIdx.z * gridDim.y * gridDim.x +
+                      blockIdx.y * gridDim.x + blockIdx.x) *
+                         (blockDim.z * blockDim.y * blockDim.x) +
+                     (threadIdx.z * blockDim.y * blockDim.x +
+                      threadIdx.y * blockDim.x + threadIdx.x);
+
+    if (global_idx == threadid) {
+        if constexpr (std::is_integral_v<T>) {
+            printf("%s : %d\n", var_name, (int)val);
+        }
+        else if constexpr (std::is_floating_point_v<T>) {
+            printf("%s : %f\n", var_name, (float)val);
+        }
+        else {
+            printf("%s : (unsupported type)\n", var_name);
+        }
+    }
+}
 
 template <typename KTraits>
 __device__ __forceinline__ uint32_t
@@ -1069,6 +1094,8 @@ __device__ __forceinline__ void compute_qk(
             *q_smem_offset_r =
                 q_smem->template advance_offset_by_row<16, UPCAST_STRIDE_Q>(
                     *q_smem_offset_r);
+            printf("---------------------->\n");
+            debug_printer<float>(0, "a_frag: ", float(a_frag[mma_q][0]));
         }
 
         *q_smem_offset_r =
