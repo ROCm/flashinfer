@@ -83,6 +83,9 @@ struct SharedStorageQKVO
         {
             alignas(16) DTypeQ q_smem[CTA_TILE_Q * HEAD_DIM_QK];
             alignas(16) DTypeKV k_smem[CTA_TILE_KV * HEAD_DIM_QK];
+#if Debug
+            alignas(16) DTypeKV qk_scratch[CTA_TILE_KV * HEAD_DIM_QK];
+#endif
             alignas(16) DTypeKV v_smem[CTA_TILE_KV * HEAD_DIM_VO];
         };
         struct
@@ -2398,8 +2401,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
             printf("\n DEBUG Q ORIGINAL (HIP):\n");
             uint32_t q_smem_offset_r_debug;
             for (auto i = 0; i < 16; ++i) {
-                for (auto j = 0; j < 4; ++j) {
-                    uint32_t q_smem_offset_r_debug =
+                for (auto j = 0; j < 16; ++j) {
+                    q_smem_offset_r_debug =
                         qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
                             i, j);
                     uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
@@ -2411,7 +2414,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
                 }
                 printf("\n");
                 qo_smem.template advance_offset_by_row<
-                    16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r);
+                    16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r_debug);
             }
         }
 
@@ -2465,9 +2468,9 @@ SinglePrefillWithKVCacheDevice(const Params params,
         if (global_idx == 0) {
             printf("\n DEBUG K ORIGINAL (HIP):\n");
             uint32_t k_smem_offset_r_debug;
-            for (auto i = 0; i < 16; ++i) {
-                for (auto j = 0; j < 4; ++j) {
-                    uint32_t k_smem_offset_r_debug =
+            for (auto i = 0; i < 128; ++i) {
+                for (auto j = 0; j < 16; ++j) {
+                    k_smem_offset_r_debug =
                         k_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(i,
                                                                              j);
                     uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
@@ -2480,7 +2483,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
                 printf("\n");
                 k_smem.template advance_offset_by_row<16,
                                                       KTraits::UPCAST_STRIDE_K>(
-                    k_smem_offset_r);
+                    k_smem_offset_r_debug);
             }
         }
 

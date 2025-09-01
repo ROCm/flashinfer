@@ -217,7 +217,7 @@ single_mha(const std::vector<dtype_q> &q,
 #if Debug
         std::cout << "DEBUG: Original Q (CPU): " << '\n';
         for (auto i = 0ul; i < 16; ++i) {
-            for (int j = 0; j < 16; ++j) {
+            for (int j = 0; j < 64; ++j) {
                 std::cout << (float)q[info.get_q_elem_offset(i, 0, j)] << " ";
             }
             std::cout << std::endl;
@@ -227,8 +227,8 @@ single_mha(const std::vector<dtype_q> &q,
         std::cout << std::endl;
 
         std::cout << "DEBUG: Original K (CPU): " << '\n';
-        for (auto i = 0ul; i < 16; ++i) {
-            for (int j = 0ul; j < 16; ++j) {
+        for (auto i = 0ul; i < 128; ++i) {
+            for (int j = 0ul; j < 64; ++j) {
                 std::cout << (float)k[info.get_kv_elem_offset(i, 0, j)] << " ";
             }
             std::cout << std::endl;
