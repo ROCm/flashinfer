@@ -536,35 +536,34 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
 
         // CDNA3: Load complete 16×HEAD_DIM tile per i iteration
 #pragma unroll
-        for (uint32_t k = 0; k < THREAD_GROUPS_PER_MMA_TILE; ++k)
-        { // 4 sequence groups
-#pragma unroll
-            for (uint32_t j = 0; j < FEATURE_CHUNKS_PER_THREAD_GROUP; ++j)
-            { // Feature chunks
-                smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
-                                                           kv_idx < kv_len);
+        for (uint32_t k = 0; k < 4; ++k) { // 4 sequence groups
+                                           // #pragma unroll
+            //  for (uint32_t j = 0; j < 4; ++j)
+            //  { // Feature chunks
+            smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
+                                                       kv_idx < kv_len);
 
-                // Advance to next feature chunk (same sequence group)
-                *smem_offset =
-                    smem.template advance_offset_by_column<KV_THR_LAYOUT_COL>(
-                        *smem_offset, j);
-                *gptr += KV_THR_LAYOUT_COL *
-                         upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
-            }
+            // Advance to next feature chunk (same sequence group)
+            *smem_offset =
+                smem.template advance_offset_by_row<4, UPCAST_STRIDE>(
+                    *smem_offset);
+            *gptr += 4 * 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+            //}
 
             // Advance to next sequence group within same MMA tile
-            if (k < THREAD_GROUPS_PER_MMA_TILE - 1)
-            { // Don't advance after last group
-                kv_idx += NUM_WARPS * KV_THR_LAYOUT_ROW;
-                *smem_offset =
-                    smem.template advance_offset_by_row<
-                        NUM_WARPS * KV_THR_LAYOUT_ROW, UPCAST_STRIDE>(
-                        *smem_offset) -
-                    COLUMN_RESET_OFFSET;
-                *gptr += NUM_WARPS * KV_THR_LAYOUT_ROW * stride_n -
-                         FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL *
-                             upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
-            }
+            // if (k < THREAD_GROUPS_PER_MMA_TILE - 1)
+            // { // Don't advance after last group
+            //     kv_idx += NUM_WARPS * KV_THR_LAYOUT_ROW;
+            //     *smem_offset =
+            //         smem.template advance_offset_by_row<
+            //             NUM_WARPS * KV_THR_LAYOUT_ROW, UPCAST_STRIDE>(
+            //             *smem_offset) -
+            //         COLUMN_RESET_OFFSET;
+            //     *gptr += NUM_WARPS * KV_THR_LAYOUT_ROW * stride_n -
+            //              FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL
+            //              *
+            //                  upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+            // }
         }
 
         // Final advance to next MMA tile
@@ -576,6 +575,11 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
         *gptr += NUM_WARPS * KV_THR_LAYOUT_ROW * stride_n -
                  FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL *
                      upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+
+        // *smem_offset =
+        //     smem.template advance_offset_by_row<KV_THR_LAYOUT_ROW,
+        //                                         UPCAST_STRIDE>(*smem_offset);
+        //         *gptr += 4*16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
     }
     *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
 }
@@ -2282,14 +2286,14 @@ SinglePrefillWithKVCacheDevice(const Params params,
                                        (kv_head_idx * group_size) * o_stride_h
                                  : o + (kv_head_idx * group_size) * o_stride_h;
 
+        load_q_global_smem<KTraits>(qo_packed_idx_base, qo_len, q_ptr_base,
+                                    q_stride_n, q_stride_h, group_size,
+                                    &qo_smem, tid);
+
         uint32_t q_smem_offset_r =
             qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
                 get_warp_idx_q<KTraits>(tid.y) * NUM_MMA_Q * 16 + lane_idx % 16,
                 lane_idx / 16);
-
-        load_q_global_smem<KTraits>(qo_packed_idx_base, qo_len, q_ptr_base,
-                                    q_stride_n, q_stride_h, group_size,
-                                    &qo_smem, tid);
 
         memory::commit_group();
         if constexpr (KTraits::POS_ENCODING_MODE == PosEncodingMode::kRoPELlama)
@@ -2395,28 +2399,29 @@ SinglePrefillWithKVCacheDevice(const Params params,
         //     printf("chunk_end : %d\n", chunk_end);
         //     printf("chunk_start : %d\n", chunk_start);
         // }
-        // Test Q
 
-        if (global_idx == 0) {
-            printf("\n DEBUG Q ORIGINAL (HIP):\n");
-            uint32_t q_smem_offset_r_debug;
-            for (auto i = 0; i < 16; ++i) {
-                for (auto j = 0; j < 16; ++j) {
-                    q_smem_offset_r_debug =
-                        qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
-                            i, j);
-                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-                    qo_smem.load_fragment(q_smem_offset_r_debug, a_frag);
-                    auto frag_T = reinterpret_cast<__half *>(a_frag);
-                    for (auto i = 0ul; i < 4; ++i) {
-                        printf("%f ", (float)(*(frag_T + i)));
-                    }
-                }
-                printf("\n");
-                qo_smem.template advance_offset_by_row<
-                    16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r_debug);
-            }
-        }
+        // // Test Q
+        // if (global_idx == 0) {
+        //     printf("\n DEBUG Q ORIGINAL (HIP):\n");
+        //     uint32_t q_smem_offset_r_debug;
+        //     for (auto i = 0; i < 16; ++i) {
+        //         for (auto j = 0; j < 16; ++j) {
+        //             q_smem_offset_r_debug =
+        //                 qo_smem.template
+        //                 get_permuted_offset<UPCAST_STRIDE_Q>(
+        //                     i, j);
+        //             uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+        //             qo_smem.load_fragment(q_smem_offset_r_debug, a_frag);
+        //             auto frag_T = reinterpret_cast<__half *>(a_frag);
+        //             for (auto i = 0ul; i < 4; ++i) {
+        //                 printf("%f ", (float)(*(frag_T + i)));
+        //             }
+        //         }
+        //         printf("\n");
+        //         qo_smem.template advance_offset_by_row<
+        //             16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r_debug);
+        //     }
+        // }
 
         // for (auto mma_q = 0ul; mma_q < 4; ++mma_q) {
         //     uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
@@ -2464,28 +2469,52 @@ SinglePrefillWithKVCacheDevice(const Params params,
         //     printf("\n");
         // }
 
-        // Test K loads
+        // Test K Global values
         if (global_idx == 0) {
-            printf("\n DEBUG K ORIGINAL (HIP):\n");
-            uint32_t k_smem_offset_r_debug;
+            printf("\n DEBUG K Global (HIP):\n");
+            printf("k_stride_n : %d\n", k_stride_n);
+            printf("k_stride_h : %d\n", k_stride_h);
+            printf("kv_head_idx : %d\n", kv_head_idx);
+            DTypeKV *k_ptr_tmp = k +
+                                 (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
+                                  lane_idx / KV_THR_LAYOUT_COL) *
+                                     k_stride_n +
+                                 kv_head_idx * k_stride_h +
+                                 (lane_idx % KV_THR_LAYOUT_COL) *
+                                     upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
             for (auto i = 0; i < 128; ++i) {
-                for (auto j = 0; j < 16; ++j) {
-                    k_smem_offset_r_debug =
-                        k_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(i,
-                                                                             j);
-                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-                    k_smem.load_fragment(k_smem_offset_r_debug, a_frag);
-                    auto frag_T = reinterpret_cast<__half *>(a_frag);
-                    for (auto i = 0ul; i < 4; ++i) {
-                        printf("%f ", (float)(*(frag_T + i)));
-                    }
+                for (auto j = 0; j < 64; ++j) {
+                    auto fKval = (float)*(k_ptr_tmp);
+                    k_ptr_tmp += 1;
+                    printf("%f ", fKval);
                 }
                 printf("\n");
-                k_smem.template advance_offset_by_row<16,
-                                                      KTraits::UPCAST_STRIDE_K>(
-                    k_smem_offset_r_debug);
             }
         }
+
+        // Test K loads
+        // if (global_idx == 0) {
+        //     printf("\n DEBUG K ORIGINAL (HIP):\n");
+        //     uint32_t k_smem_offset_r_debug;
+        //     for (auto i = 0; i < 128; ++i) {
+        //         for (auto j = 0; j < 16; ++j) {
+        //             k_smem_offset_r_debug =
+        //                 k_smem.template
+        //                 get_permuted_offset<UPCAST_STRIDE_Q>(i,
+        //                                                                      j);
+        //             uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+        //             k_smem.load_fragment(k_smem_offset_r_debug, a_frag);
+        //             auto frag_T = reinterpret_cast<__half *>(a_frag);
+        //             for (auto i = 0ul; i < 4; ++i) {
+        //                 printf("%f ", (float)(*(frag_T + i)));
+        //             }
+        //         }
+        //         printf("\n");
+        //         k_smem.template advance_offset_by_row<16,
+        //                                               KTraits::UPCAST_STRIDE_K>(
+        //             k_smem_offset_r_debug);
+        //     }
+        // }
 
         // if (global_idx == 0) {
         //     printf("DEBUG Q ORIGINAL (HIP):\n");
