@@ -511,18 +511,9 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
     constexpr uint32_t UPCAST_STRIDE =
         produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
     constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
-    constexpr uint32_t HALF_ELEMS_PER_THREAD =
-        KTraits::HALF_ELEMS_PER_THREAD; // 4
-
-    // CDNA3-specific constants
-    constexpr uint32_t SEQUENCES_PER_MMA_TILE = 16;
-    constexpr uint32_t SEQUENCES_PER_THREAD_GROUP = KV_THR_LAYOUT_ROW; // 4
-    constexpr uint32_t THREAD_GROUPS_PER_MMA_TILE =
-        SEQUENCES_PER_MMA_TILE / SEQUENCES_PER_THREAD_GROUP; // 4
-    constexpr uint32_t FEATURE_CHUNKS_PER_THREAD_GROUP =
-        NUM_MMA_D / HALF_ELEMS_PER_THREAD; // NUM_MMA_D/4
-    constexpr uint32_t COLUMN_RESET_OFFSET =
-        FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+    constexpr uint32_t FEATURES_PER_THREAD_ROW =
+        HALF_ELEMS_PER_THREAD * KV_THR_LAYOUT_COL;
 
     uint32_t row = lane_idx / KV_THR_LAYOUT_COL;
     uint32_t kv_idx = kv_idx_base + warp_idx * KV_THR_LAYOUT_ROW + row;
@@ -531,55 +522,36 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
     static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
 
 #pragma unroll
-    for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i)
-    { // MMA tile iterations
-
-        // CDNA3: Load complete 16×HEAD_DIM tile per i iteration
+    for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
+        for (uint32_t j = 0; j < KTraits::HEAD_DIM_QK / FEATURES_PER_THREAD_ROW;
+             ++j)
+        {
 #pragma unroll
-        for (uint32_t k = 0; k < 4; ++k) { // 4 sequence groups
-                                           // #pragma unroll
-            //  for (uint32_t j = 0; j < 4; ++j)
-            //  { // Feature chunks
-            smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
-                                                       kv_idx < kv_len);
-
-            // Advance to next feature chunk (same sequence group)
+            for (uint32_t k = 0; k < FEATURES_PER_THREAD_ROW; ++k) {
+                smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
+                                                           kv_idx < kv_len);
+                *smem_offset =
+                    smem.template advance_offset_by_row<4, UPCAST_STRIDE>(
+                        *smem_offset);
+                // FIXME: The below logic will not handle cases where HEAD_DIMS
+                // > 64
+                *gptr += 64 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+            }
             *smem_offset =
-                smem.template advance_offset_by_row<4, UPCAST_STRIDE>(
+                smem.template advance_offset_by_row<64, UPCAST_STRIDE>(
                     *smem_offset);
-            *gptr += 4 * 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
-            //}
-
-            // Advance to next sequence group within same MMA tile
-            // if (k < THREAD_GROUPS_PER_MMA_TILE - 1)
-            // { // Don't advance after last group
-            //     kv_idx += NUM_WARPS * KV_THR_LAYOUT_ROW;
-            //     *smem_offset =
-            //         smem.template advance_offset_by_row<
-            //             NUM_WARPS * KV_THR_LAYOUT_ROW, UPCAST_STRIDE>(
-            //             *smem_offset) -
-            //         COLUMN_RESET_OFFSET;
-            //     *gptr += NUM_WARPS * KV_THR_LAYOUT_ROW * stride_n -
-            //              FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL
-            //              *
-            //                  upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
-            // }
         }
 
         // Final advance to next MMA tile
         kv_idx += NUM_WARPS * KV_THR_LAYOUT_ROW;
-        *smem_offset =
-            smem.template advance_offset_by_row<NUM_WARPS * KV_THR_LAYOUT_ROW,
-                                                UPCAST_STRIDE>(*smem_offset) -
-            COLUMN_RESET_OFFSET;
-        *gptr += NUM_WARPS * KV_THR_LAYOUT_ROW * stride_n -
-                 FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL *
-                     upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
-
-        // *smem_offset =
-        //     smem.template advance_offset_by_row<KV_THR_LAYOUT_ROW,
-        //                                         UPCAST_STRIDE>(*smem_offset);
-        //         *gptr += 4*16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+        *smem_offset = smem.template advance_offset_by_row<4, UPCAST_STRIDE>(
+                           *smem_offset) -
+                       64;
+        // *gptr += NUM_WARPS * KV_THR_LAYOUT_ROW * stride_n -
+        // FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL *
+        //              upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+        // FIXME: The below logic will not handle cases where HEAD_DIMS > 64
+        *gptr += 64 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
     }
     *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
 }
@@ -2475,6 +2447,10 @@ SinglePrefillWithKVCacheDevice(const Params params,
             printf("k_stride_n : %d\n", k_stride_n);
             printf("k_stride_h : %d\n", k_stride_h);
             printf("kv_head_idx : %d\n", kv_head_idx);
+            printf("num_qo_heads : %d\n", num_qo_heads);
+            printf("num_kv_heads : %d\n", num_kv_heads);
+            printf("k_stride_n : %d\n", k_stride_n);
+
             DTypeKV *k_ptr_tmp = k +
                                  (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
                                   lane_idx / KV_THR_LAYOUT_COL) *
@@ -2493,28 +2469,27 @@ SinglePrefillWithKVCacheDevice(const Params params,
         }
 
         // Test K loads
-        // if (global_idx == 0) {
-        //     printf("\n DEBUG K ORIGINAL (HIP):\n");
-        //     uint32_t k_smem_offset_r_debug;
-        //     for (auto i = 0; i < 128; ++i) {
-        //         for (auto j = 0; j < 16; ++j) {
-        //             k_smem_offset_r_debug =
-        //                 k_smem.template
-        //                 get_permuted_offset<UPCAST_STRIDE_Q>(i,
-        //                                                                      j);
-        //             uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-        //             k_smem.load_fragment(k_smem_offset_r_debug, a_frag);
-        //             auto frag_T = reinterpret_cast<__half *>(a_frag);
-        //             for (auto i = 0ul; i < 4; ++i) {
-        //                 printf("%f ", (float)(*(frag_T + i)));
-        //             }
-        //         }
-        //         printf("\n");
-        //         k_smem.template advance_offset_by_row<16,
-        //                                               KTraits::UPCAST_STRIDE_K>(
-        //             k_smem_offset_r_debug);
-        //     }
-        // }
+        if (global_idx == 0) {
+            printf("\n DEBUG K LDS ORIGINAL (HIP):\n");
+            uint32_t k_smem_offset_r_debug;
+            for (auto i = 0; i < 128; ++i) {
+                for (auto j = 0; j < 16; ++j) {
+                    k_smem_offset_r_debug =
+                        k_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(i,
+                                                                             j);
+                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                    k_smem.load_fragment(k_smem_offset_r_debug, a_frag);
+                    auto frag_T = reinterpret_cast<__half *>(a_frag);
+                    for (auto i = 0ul; i < 4; ++i) {
+                        printf("%f ", (float)(*(frag_T + i)));
+                    }
+                }
+                printf("\n");
+                k_smem.template advance_offset_by_row<16,
+                                                      KTraits::UPCAST_STRIDE_K>(
+                    k_smem_offset_r_debug);
+            }
+        }
 
         // if (global_idx == 0) {
         //     printf("DEBUG Q ORIGINAL (HIP):\n");

@@ -557,8 +557,8 @@ int main(int argc, char **argv)
     using DTypeIn = __half;
     using DTypeO = __half;
     bool use_fp16_qk_reduction = false;
-    size_t qo_len = 64;
-    size_t kv_len = 64;
+    size_t qo_len = 128;
+    size_t kv_len = 128;
     size_t num_heads = 1;
     size_t head_dim = 64;
     bool causal = false;
