@@ -471,8 +471,7 @@ __device__ __forceinline__ void produce_kv_impl_cuda_(
     }
     else {
         uint32_t kv_idx = kv_idx_base + warp_idx * 8 + lane_idx / 4;
-        // NOTE: NUM_MMA_KV * 2 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 2 /
-        // num_warps
+        // NOTE: NUM_MMA_KV * 2 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 2 / num_warps
         static_assert(NUM_MMA_KV * 2 % NUM_WARPS_Q == 0);
 #pragma unroll
         for (uint32_t i = 0; i < NUM_MMA_KV * 2 / NUM_WARPS_Q; ++i) {
@@ -512,46 +511,31 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
         produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
     constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
-    constexpr uint32_t FEATURES_PER_THREAD_ROW =
-        HALF_ELEMS_PER_THREAD * KV_THR_LAYOUT_COL;
-
-    uint32_t row = lane_idx / KV_THR_LAYOUT_COL;
-    uint32_t kv_idx = kv_idx_base + warp_idx * KV_THR_LAYOUT_ROW + row;
 
     // NOTE: NUM_MMA_KV*4/NUM_WARPS_Q = NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
     static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
 
+    uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / KV_THR_LAYOUT_COL;
+    // NOTE: NUM_MMA_KV * 4 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 4 / num_warps
+    static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
 #pragma unroll
     for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
-        for (uint32_t j = 0; j < KTraits::HEAD_DIM_QK / FEATURES_PER_THREAD_ROW;
-             ++j)
-        {
 #pragma unroll
-            for (uint32_t k = 0; k < FEATURES_PER_THREAD_ROW; ++k) {
-                smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
-                                                           kv_idx < kv_len);
-                *smem_offset =
-                    smem.template advance_offset_by_row<4, UPCAST_STRIDE>(
-                        *smem_offset);
-                // FIXME: The below logic will not handle cases where HEAD_DIMS
-                // > 64
-                *gptr += 64 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
-            }
+        for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
+            smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
+                                                        kv_idx < kv_len);
             *smem_offset =
-                smem.template advance_offset_by_row<64, UPCAST_STRIDE>(
-                    *smem_offset);
+                smem.template advance_offset_by_column<16>(*smem_offset, j);
+            *gptr += 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
         }
-
-        // Final advance to next MMA tile
-        kv_idx += NUM_WARPS * KV_THR_LAYOUT_ROW;
-        *smem_offset = smem.template advance_offset_by_row<4, UPCAST_STRIDE>(
-                           *smem_offset) -
-                       64;
-        // *gptr += NUM_WARPS * KV_THR_LAYOUT_ROW * stride_n -
-        // FEATURE_CHUNKS_PER_THREAD_GROUP * KV_THR_LAYOUT_COL *
-        //              upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
-        // FIXME: The below logic will not handle cases where HEAD_DIMS > 64
-        *gptr += 64 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+        kv_idx += NUM_WARPS * 4;
+        *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4,
+                                                            UPCAST_STRIDE>(
+                            *smem_offset) -
+                        sizeof(DTypeKV) * NUM_MMA_D;
+        *gptr += NUM_WARPS * 4 * stride_n -
+                    sizeof(DTypeKV) * NUM_MMA_D *
+                        upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
     }
     *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
 }
@@ -2450,6 +2434,9 @@ SinglePrefillWithKVCacheDevice(const Params params,
             printf("num_qo_heads : %d\n", num_qo_heads);
             printf("num_kv_heads : %d\n", num_kv_heads);
             printf("k_stride_n : %d\n", k_stride_n);
+            printf("KTraits::NUM_MMA_D_QK : %d\n", KTraits::NUM_MMA_D_QK);
+            printf("NUM_MMA_KV : %d\n", NUM_MMA_KV);
+            printf("NUM_MMA_Q : %d\n", NUM_MMA_Q);
 
             DTypeKV *k_ptr_tmp = k +
                                  (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
