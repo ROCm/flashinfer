@@ -517,15 +517,31 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
     static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
 
     uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / KV_THR_LAYOUT_COL;
-    // NOTE: NUM_MMA_KV * 4 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 4 /
-    // num_warps
+    // NOTE: NUM_MMA_KV * 4 / NUM_WARPS_Q = NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
     static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
 #pragma unroll
     for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
 #pragma unroll
         for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
+#if Debug1
+            if (warp_idx == 0 && lane_idx == 0) {
+                printf("Gptr deref : %f\n", (float)(*(*gptr)));
+            }
+#endif
             smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
                                                        kv_idx < kv_len);
+#if Debug1
+            if (warp_idx == 0 && lane_idx == 0) {
+                uint32_t tmp[KTraits::INT32_ELEMS_PER_THREAD];
+                smem.load_fragment(*smem_offset, tmp);
+                auto frag_T = reinterpret_cast<__half *>(tmp);
+                printf("==============\n");
+                for (auto i = 0ul; i < 4; ++i) {
+                    printf("Shared %f \n", (float)(*(frag_T + i)));
+                }
+                printf("==============\n");
+            }
+#endif
             *smem_offset =
                 smem.template advance_offset_by_column<16>(*smem_offset, j);
             *gptr += 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
@@ -1245,9 +1261,8 @@ __device__ __forceinline__ void logits_transform(
                 const uint32_t q_idx = q[mma_q][reg_id % NAPTR];
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][reg_id % NAPTR];
-                const uint32_t kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % TPR) +
-                                        8 * (reg_id / 2) + reg_id % 2;
+                const uint32_t kv_idx =
+                    kv_idx_base + mma_kv * 16 + (lane_idx % TPR);
 #else
                 const uint32_t q_idx = q[mma_q][(reg_id % 4) / 2],
                                kv_idx = kv_idx_base + mma_kv * 16 +
@@ -1335,10 +1350,9 @@ logits_mask(const Params &params,
                  ++reg_id)
             {
 #if defined(PLATFORM_HIP_DEVICE)
-                const uint32_t q_idx = q[mma_q][(reg_id % NAPTR)],
-                               kv_idx = kv_idx_base + mma_kv * 16 +
-                                        2 * (lane_idx % TPR) +
-                                        8 * (reg_id / 2) + reg_id % 2;
+                const uint32_t q_idx = q[mma_q][(reg_id % NAPTR)];
+                const uint32_t kv_idx =
+                    kv_idx_base + mma_kv * 16 + (lane_idx % TPR);
                 const uint32_t qo_head_idx =
                     kv_head_idx * group_size + r[mma_q][(reg_id % NAPTR)];
 #else
@@ -2328,13 +2342,9 @@ SinglePrefillWithKVCacheDevice(const Params params,
         memory::commit_group();
 
 #if Debug
-        int global_idx = (blockIdx.z * gridDim.y * gridDim.x +
-                          blockIdx.y * gridDim.x + blockIdx.x) *
-                             (blockDim.z * blockDim.y * blockDim.x) +
-                         (threadIdx.z * blockDim.y * blockDim.x +
-                          threadIdx.y * blockDim.x + threadIdx.x);
+        __syncthreads();
 
-        if (global_idx == 0) {
+        if (warp_idx == 0 && lane_idx == 0) {
             printf("partition_kv : %d\n", partition_kv);
             printf("kv_len : %d\n", kv_len);
             printf("max_chunk_size : %d\n", max_chunk_size);
@@ -2367,7 +2377,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
 
         // Test K Global values:
         // Prints the (NUM_MMA_KV*16) x (NUM_MMA_D*16) matrix from global mem.
-        if (global_idx == 0) {
+        if (warp_idx == 0 && lane_idx == 0) {
             printf("\n DEBUG K Global (HIP):\n");
             printf("k_stride_n : %d\n", k_stride_n);
             printf("k_stride_h : %d\n", k_stride_h);
@@ -2401,7 +2411,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
         // Note that LDS is loaded collaboratively by all warps and not each
         // warp accesses the whole K matrix loaded into LDS. Each warp will
         // only access 1/4 of the K values loaded into LDS>
-        if (global_idx == 0) {
+        if (warp_idx == 0 && lane_idx == 0) {
             printf("\n DEBUG K LDS ORIGINAL (HIP):\n");
             uint32_t k_smem_offset_r_debug;
             for (auto i = 0; i < NUM_MMA_KV * 16; ++i) {
