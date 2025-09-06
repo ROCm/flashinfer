@@ -84,7 +84,7 @@ struct SharedStorageQKVO
             alignas(16) DTypeQ q_smem[CTA_TILE_Q * HEAD_DIM_QK];
             alignas(16) DTypeKV k_smem[CTA_TILE_KV * HEAD_DIM_QK];
 #if Debug
-            alignas(16) DTypeKV qk_scratch[CTA_TILE_KV * HEAD_DIM_QK];
+            alignas(16) DTypeKV qk_scratch[CTA_TILE_Q * CTA_TILE_KV];
 #endif
             alignas(16) DTypeKV v_smem[CTA_TILE_KV * HEAD_DIM_VO];
         };
@@ -523,25 +523,8 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
     for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
 #pragma unroll
         for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
-#if Debug1
-            if (warp_idx == 0 && lane_idx == 0) {
-                printf("Gptr deref : %f\n", (float)(*(*gptr)));
-            }
-#endif
             smem.template load_vector_async<fill_mode>(*smem_offset, *gptr,
                                                        kv_idx < kv_len);
-#if Debug1
-            if (warp_idx == 0 && lane_idx == 0) {
-                uint32_t tmp[KTraits::INT32_ELEMS_PER_THREAD];
-                smem.load_fragment(*smem_offset, tmp);
-                auto frag_T = reinterpret_cast<__half *>(tmp);
-                printf("==============\n");
-                for (auto i = 0ul; i < 4; ++i) {
-                    printf("Shared %f \n", (float)(*(frag_T + i)));
-                }
-                printf("==============\n");
-            }
-#endif
             *smem_offset =
                 smem.template advance_offset_by_column<16>(*smem_offset, j);
             *gptr += 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
@@ -550,9 +533,9 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
         *smem_offset =
             smem.template advance_offset_by_row<NUM_WARPS * 4, UPCAST_STRIDE>(
                 *smem_offset) -
-            sizeof(DTypeKV) * NUM_MMA_D;
+            (sizeof(DTypeKV) * NUM_MMA_D * 2);
         *gptr += NUM_WARPS * 4 * stride_n -
-                 sizeof(DTypeKV) * NUM_MMA_D *
+                 sizeof(DTypeKV) * NUM_MMA_D * 2 *
                      upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
     }
     *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
@@ -623,8 +606,7 @@ __device__ __forceinline__ void page_produce_kv(
                    lane_idx = tid.x;
     if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
         uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / 8;
-        // NOTE: NUM_MMA_KV * 4 / NUM_WARPS_Q = NUM_WARPS_KV * NUM_MMA_KV * 4 /
-        // num_warps
+        // NOTE: NUM_MMA_KV * 4/NUM_WARPS_Q=NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
         static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
 #pragma unroll
         for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
@@ -1134,47 +1116,6 @@ __device__ __forceinline__ void compute_qk(
                             typename KTraits::DTypeQ>(s_frag[mma_q][mma_kv],
                                                       a_frag[mma_q], b_frag);
                     }
-
-#if Debug
-                    if (mma_q == 0) {
-                        __half *a_frag_half =
-                            reinterpret_cast<__half *>(a_frag[mma_q]);
-                        debug_printer<float>(
-                            0, "a_frag_half_0: ", float(a_frag_half[0]));
-                        debug_printer<float>(
-                            0, "a_frag_half_1: ", float(a_frag_half[1]));
-                        debug_printer<float>(
-                            0, "a_frag_half_2: ", float(a_frag_half[2]));
-                        debug_printer<float>(
-                            0, "a_frag_half_3: ", float(a_frag_half[3]));
-
-                        __syncthreads();
-
-                        // __half* b_frag_half =
-                        // reinterpret_cast<__half*>(b_frag);
-                        // debug_printer<float>(0, "b_frag_half_0: ",
-                        // float(b_frag_half[0])); debug_printer<float>(0,
-                        // "b_frag_half_1: ", float(b_frag_half[1]));
-                        // debug_printer<float>(0, "b_frag_half_2: ",
-                        // float(b_frag_half[2])); debug_printer<float>(0,
-                        // "b_frag_half_3: ", float(b_frag_half[3]));
-
-                        //  __syncthreads();
-
-                        __half *s_frag_half =
-                            reinterpret_cast<__half *>(s_frag[mma_q][mma_kv]);
-                        debug_printer<float>(
-                            0, "s_frag_half: ", float(s_frag_half[0]));
-                        debug_printer<float>(
-                            0, "s_frag_half: ", float(s_frag_half[1]));
-                        debug_printer<float>(
-                            0, "s_frag_half: ", float(s_frag_half[2]));
-                        debug_printer<float>(
-                            0, "s_frag_half: ", float(s_frag_half[3]));
-
-                        __syncthreads();
-                    }
-#endif
                 }
 
                 else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
@@ -2318,7 +2259,6 @@ SinglePrefillWithKVCacheDevice(const Params params,
                 8 * (lane_idx / 16) + lane_idx % 8,
             (lane_idx % 16) / 8);
 #endif
-
         uint32_t v_smem_offset_r =
                      v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
                          get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 +
@@ -2342,8 +2282,6 @@ SinglePrefillWithKVCacheDevice(const Params params,
         memory::commit_group();
 
 #if Debug
-        __syncthreads();
-
         if (warp_idx == 0 && lane_idx == 0) {
             printf("partition_kv : %d\n", partition_kv);
             printf("kv_len : %d\n", kv_len);
@@ -2450,8 +2388,24 @@ SinglePrefillWithKVCacheDevice(const Params params,
             }
 
             // compute attention score
-            // compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
-            //                     &k_smem_offset_r, s_frag);
+            compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
+                                &k_smem_offset_r, s_frag);
+#if DEBUG
+
+            smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> scratch(
+                smem_storage.qk_scratch);
+            // copy sfrag into scratch
+            for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
+                for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
+                    for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
+                         ++reg_id)
+                    {
+                        auto tmp = s_frag[mma_q][mma_kv];
+                        // store into scratch
+                    }
+                }
+            }
+#endif
 
             logits_transform<KTraits>(
                 params, variant, /*batch_idx=*/0, qo_packed_idx_base,
