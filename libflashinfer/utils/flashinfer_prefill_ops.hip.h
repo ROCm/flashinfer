@@ -149,14 +149,14 @@ hipError_t SinglePrefillWithKVCache(
                             /*use_custom_mask=*/(MASK_MODE ==
                                                  MaskMode::kCustom),
                             /*use_sliding_window=*/false,
-                            /*use_logits_soft_cap=*/false, /*use_alibi=*/false>;
+                            /*use_logits_soft_cap=*/true, /*use_alibi=*/false>;
                         Params params(q, k, v, /*custom_mask=*/nullptr, o, lse,
                                       /*alibi_slopes=*/nullptr, num_qo_heads,
                                       num_kv_heads, qo_len, kv_len, qo_stride_n,
                                       qo_stride_h, kv_stride_n, kv_stride_h,
                                       head_dim,
                                       /*window_left=*/-1,
-                                      /*logits_soft_cap=*/0.f, sm_scale,
+                                      /*logits_soft_cap=*/8.f, sm_scale,
                                       rope_scale, rope_theta);
                         return SinglePrefillWithKVCacheDispatched<
                             HEAD_DIM, HEAD_DIM, POS_ENCODING_MODE,

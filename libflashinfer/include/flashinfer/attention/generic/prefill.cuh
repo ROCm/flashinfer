@@ -1231,6 +1231,15 @@ __device__ __forceinline__ void logits_transform(
                 logitsTransformed =
                     variant.LogitsTransform(params, logits, batch_idx, q_idx,
                                             kv_idx, qo_head_idx, kv_head_idx);
+#if Debug
+                const uint32_t lane_idx = tid.x,
+                               warp_idx = get_warp_idx<KTraits>(tid.y, tid.z);
+
+                if (warp_idx == 0 && lane_idx == 0) {
+                    printf("logits : %f logitsTransformed: %f\n", float(logits),
+                           float(logitsTransformed));
+                }
+#endif
 #ifdef FP16_QK_REDUCTION_SUPPORTED
                 if constexpr (std::is_same<DTypeQKAccum, __half>::value) {
                     s_frag[mma_q][mma_kv][reg_id] = std::bit_cast<half>(
@@ -2281,7 +2290,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
             v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, 0, chunk_size, tid);
         memory::commit_group();
 
-#if Debug
+#if Debug1
         if (warp_idx == 0 && lane_idx == 0) {
             printf("partition_kv : %d\n", partition_kv);
             printf("kv_len : %d\n", kv_len);
@@ -2290,28 +2299,27 @@ SinglePrefillWithKVCacheDevice(const Params params,
             printf("chunk_start : %d\n", chunk_start);
         }
 
-        // // Test Q
-        // if (global_idx == 0) {
-        //     printf("\n DEBUG Q ORIGINAL (HIP):\n");
-        //     uint32_t q_smem_offset_r_debug;
-        //     for (auto i = 0; i < 16; ++i) {
-        //         for (auto j = 0; j < 16; ++j) {
-        //             q_smem_offset_r_debug =
-        //                 qo_smem.template
-        //                 get_permuted_offset<UPCAST_STRIDE_Q>(
-        //                     i, j);
-        //             uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-        //             qo_smem.load_fragment(q_smem_offset_r_debug, a_frag);
-        //             auto frag_T = reinterpret_cast<__half *>(a_frag);
-        //             for (auto i = 0ul; i < 4; ++i) {
-        //                 printf("%f ", (float)(*(frag_T + i)));
-        //             }
-        //         }
-        //         printf("\n");
-        //         qo_smem.template advance_offset_by_row<
-        //             16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r_debug);
-        //     }
-        // }
+        // Test Q
+        if (warp_idx == 0 && lane_idx == 0) {
+            printf("\n DEBUG Q ORIGINAL (HIP):\n");
+            uint32_t q_smem_offset_r_debug;
+            for (auto i = 0; i < NUM_MMA_Q * 16; ++i) {
+                for (auto j = 0; j < NUM_MMA_D_QK * 4; ++j) {
+                    q_smem_offset_r_debug =
+                        qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
+                            i, j);
+                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                    qo_smem.load_fragment(q_smem_offset_r_debug, a_frag);
+                    auto frag_T = reinterpret_cast<__half *>(a_frag);
+                    for (auto i = 0ul; i < 4; ++i) {
+                        printf("%f ", (float)(*(frag_T + i)));
+                    }
+                }
+                printf("\n");
+                qo_smem.template advance_offset_by_row<
+                    16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r_debug);
+            }
+        }
 
         // Test K Global values:
         // Prints the (NUM_MMA_KV*16) x (NUM_MMA_D*16) matrix from global mem.
@@ -2373,8 +2381,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
 #endif
 
 #pragma unroll 1
-        // for (uint32_t iter = 0; iter < num_iterations; ++iter) {
-        for (uint32_t iter = 0; iter < 1; ++iter) {
+        for (uint32_t iter = 0; iter < num_iterations; ++iter) {
+            // for (uint32_t iter = 0; iter < 1; ++iter) {
             memory::wait_group<1>();
             block.sync();
 
@@ -2390,21 +2398,56 @@ SinglePrefillWithKVCacheDevice(const Params params,
             // compute attention score
             compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
                                 &k_smem_offset_r, s_frag);
-#if DEBUG
-
+#if Debug
             smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> scratch(
                 smem_storage.qk_scratch);
             // copy sfrag into scratch
-            for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
-                for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
-                    for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
-                         ++reg_id)
-                    {
+            if (warp_idx == 0) {
+                for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
+                    for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
                         auto tmp = s_frag[mma_q][mma_kv];
-                        // store into scratch
+                        auto col = lane_idx % 16;
+                        auto row = lane_idx / 16;
+                        auto scratch_offset =
+                            scratch
+                                .template get_permuted_offset<UPCAST_STRIDE_Q>(
+                                    row, col);
+                        scratch.template store_fragment(scratch_offset, tmp);
                     }
                 }
             }
+
+            if (warp_idx == 0 && lane_idx == 0) {
+                auto _hScratch = reinterpret_cast<__half *>(scratch.base);
+                printf("compute_qk results (Warp 0): \n");
+
+                for (auto k = 0ul; k < 4; ++k) {
+                    for (auto i = 0ul; i < 16; ++i) {
+                        for (auto j = 0ul; j < 16; ++j) {
+                            printf("%f ", float(_hScratch[k * 64 + i + j * 4]));
+                        }
+                        printf("\n");
+                    }
+                }
+            }
+
+            // if (warp_idx == 0 && lane_idx == 0) {
+            //     printf("s_frag results: \n");
+            //     for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
+            //         for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
+            //             for (auto reg_id = 0ul; reg_id <
+            //             HALF_ELEMS_PER_THREAD;
+            //                  ++reg_id)
+            //             {
+            //                 auto tmp = s_frag[mma_q][mma_kv][reg_id];
+            //                 printf("s_frag[%lu][%lu][%lu] : %f ", mma_q,
+            //                 mma_kv,
+            //                        reg_id, float(tmp));
+            //             }
+            //             printf("\n");
+            //         }
+            //     }
+            // }
 #endif
 
             logits_transform<KTraits>(
@@ -2426,7 +2469,37 @@ SinglePrefillWithKVCacheDevice(const Params params,
                     qo_len, kv_len, chunk_end, group_size, s_frag, tid,
                     kv_head_idx);
             }
-
+#if Debug
+            // TODO:
+            // smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> scratch(
+            //     smem_storage.qk_scratch);
+            // // copy sfrag into scratch
+            // for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
+            //     for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
+            //         for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
+            //              ++reg_id)
+            //         {
+            //             auto tmp = s_frag[mma_q][mma_kv];
+            //             // store into scratch
+            //         }
+            //     }
+            // }
+            if (warp_idx == 0 && lane_idx == 0) {
+                printf("s_frag after logits transform and masking : \n");
+                for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
+                    for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
+                        for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
+                             ++reg_id)
+                        {
+                            auto tmp = s_frag[mma_q][mma_kv][reg_id];
+                            printf("s_frag[%lu][%lu][%lu] : %f ", mma_q, mma_kv,
+                                   reg_id, float(tmp));
+                        }
+                        printf("\n");
+                    }
+                }
+            }
+#endif
             // compute m,d states in online softmax
             update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
 

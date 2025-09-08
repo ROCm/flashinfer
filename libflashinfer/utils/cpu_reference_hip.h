@@ -12,6 +12,7 @@
 
 #include "utils_hip.h"
 
+#include <cmath>
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
 #include <iostream>
@@ -201,20 +202,26 @@ single_mha(const std::vector<dtype_q> &q,
            bool causal = true,
            QKVLayout kv_layout = QKVLayout::kHND,
            PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
+           float logits_soft_cap = 8.0f,
            float rope_scale = 1.f,
-           float rope_theta = 1e4)
+           float rope_theta = 1e4,
+           bool use_soft_cap = true)
 {
     assert(qo_len <= kv_len);
     assert(num_qo_heads % num_kv_heads == 0);
     float sm_scale = 1.f / std::sqrt(float(head_dim));
+    // float sm_scale = 1.0;
     std::vector<dtype_out> o(qo_len * num_qo_heads * head_dim);
     std::vector<float> att(kv_len);
     std::vector<float> q_rotary_local(head_dim);
     std::vector<float> k_rotary_local(head_dim);
+
+    float soft_cap_pre_tanh_scale = sm_scale / logits_soft_cap;
+
     DISPATCH_head_dim(head_dim, HEAD_DIM, {
         tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads,
                            kv_layout, HEAD_DIM);
-#if Debug
+#if Debug1
         std::cout << "DEBUG: Original Q (CPU): " << '\n';
         for (auto i = 0ul; i < 16; ++i) {
             for (int j = 0; j < 64; ++j) {
@@ -235,44 +242,6 @@ single_mha(const std::vector<dtype_q> &q,
             //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
         }
         std::cout << std::endl;
-
-        // std::cout << "DEBUG K (CPU): " << '\n';
-        // for (auto j = 0ul; j < 16; ++j) {
-        //     for (auto i = 0ul; i < 64; ++i) {
-        //         //  k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)
-        //         // std::cout << (float)k[info.get_kv_elem_offset(15, 0, j * 4
-        //         // +
-        //         // i)]
-        //         std::cout << (float)k[info.get_kv_elem_offset(j, 0, i)] <<"
-        //         ";
-        //     }
-        //     std::cout << '\n';
-        // }
-
-        // std::cout << std::endl;
-        // std::cout << "num_qo_heads " << num_qo_heads << '\n';
-        // std::cout << "qo_len " << qo_len << '\n';
-        // for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads;
-        // ++qo_head_idx)
-        // {
-        //     for (size_t q_idx = 0; q_idx < qo_len; ++q_idx) {
-        //         q_rotary_local =
-        //             std::move(cpu_reference::apply_llama_rope_debug(
-        //                 q.data() +
-        //                     info.get_q_elem_offset(q_idx, qo_head_idx, 0),
-        //                 head_dim, q_idx + kv_len - qo_len, rope_scale,
-        //                 rope_theta));
-        //     }
-        // }
-
-        // std::cout << "DEBUG: LLAMA Rope Transformed Q (CPU): " << '\n';
-        // for (auto i = 0ul; i < 4; ++i) {
-        //     //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
-        //     std::cout << (float)q_rotary_local[info.get_q_elem_offset(0, 0,
-        //     i)]
-        //               << " ";
-        // }
-        // std::cout << std::endl;
 #endif
         for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx)
         {
@@ -291,20 +260,50 @@ single_mha(const std::vector<dtype_q> &q,
                     switch (pos_encoding_mode) {
                     case PosEncodingMode::kNone:
                     {
-#if Debug
-                        sm_scale = 1.0f;
-#endif
                         for (size_t feat_idx = 0; feat_idx < head_dim;
                              ++feat_idx)
                         {
-                            att[kv_idx] +=
-                                fi::con::explicit_casting<dtype_q, float>(
-                                    q[info.get_q_elem_offset(q_idx, qo_head_idx,
-                                                             feat_idx)]) *
-                                fi::con::explicit_casting<dtype_kv, float>(
-                                    k[info.get_kv_elem_offset(
-                                        kv_idx, kv_head_idx, feat_idx)]) *
-                                sm_scale;
+                            if (use_soft_cap) {
+                                auto score =
+                                    fi::con::explicit_casting<dtype_q, float>(
+                                        q[info.get_q_elem_offset(
+                                            q_idx, qo_head_idx, feat_idx)]) *
+                                    fi::con::explicit_casting<dtype_kv, float>(
+                                        k[info.get_kv_elem_offset(
+                                            kv_idx, kv_head_idx, feat_idx)]);
+                                auto tscore = float(
+                                    std::tanh(score * soft_cap_pre_tanh_scale));
+                                att[kv_idx] += tscore;
+#if Debug1
+                                if (qo_head_idx == 0 && q_idx == 0 &&
+                                    kv_idx < 16)
+                                {
+                                    std::cout << "score: " << score
+                                              << " Transformed : " << tscore
+                                              << " Final : " << att[kv_idx]
+                                              << '\n';
+                                }
+#endif
+                            }
+                            else {
+                                att[kv_idx] +=
+                                    fi::con::explicit_casting<dtype_q, float>(
+                                        q[info.get_q_elem_offset(
+                                            q_idx, qo_head_idx, feat_idx)]) *
+                                    fi::con::explicit_casting<dtype_kv, float>(
+                                        k[info.get_kv_elem_offset(
+                                            kv_idx, kv_head_idx, feat_idx)]) *
+                                    sm_scale;
+#if Debug1
+                                if (qo_head_idx == 0 && q_idx == 0 &&
+                                    kv_idx < 16)
+                                {
+                                    std::cout
+                                        << "Post-transform: " << att[kv_idx]
+                                        << '\n';
+                                }
+#endif
+                            }
                         }
                         break;
                     }
@@ -318,8 +317,17 @@ single_mha(const std::vector<dtype_q> &q,
                         for (size_t feat_idx = 0; feat_idx < head_dim;
                              ++feat_idx)
                         {
-                            att[kv_idx] += q_rotary_local[feat_idx] *
-                                           k_rotary_local[feat_idx] * sm_scale;
+                            if (use_soft_cap) {
+                                att[kv_idx] += q_rotary_local[feat_idx] *
+                                               k_rotary_local[feat_idx];
+                                att[kv_idx] = std::tanh(
+                                    att[kv_idx] * soft_cap_pre_tanh_scale);
+                            }
+                            else {
+                                att[kv_idx] += q_rotary_local[feat_idx] *
+                                               k_rotary_local[feat_idx] *
+                                               sm_scale;
+                            }
                         }
                         break;
                     }
@@ -330,15 +338,20 @@ single_mha(const std::vector<dtype_q> &q,
                         FLASHINFER_ERROR(err_msg.str());
                     }
                     }
-// apply mask
-#if 0
+                    // apply mask
                     if (causal && kv_idx > kv_len + q_idx - qo_len) {
                         att[kv_idx] = -5e4;
                     }
-#endif
                     max_val = std::max(max_val, att[kv_idx]);
                 }
 
+#if Debug1
+                if (qo_head_idx == 0) {
+                    for (auto i = 0ul; i < 16; ++i) {
+                        std::cout << att[i] << '\n';
+                    }
+                }
+#endif
                 // exp minus max
                 float denom = 0;
                 for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {

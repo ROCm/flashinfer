@@ -242,12 +242,13 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
                           hipMemcpyDeviceToHost));
 
     // Print the first 10 elements of the output vector for debugging
-    // std::cout << "Output vector (first 10 elements):";
-    // std::cout << "[" << std::endl;
-    // for (int i = 0; i < 10; ++i) {
-    //     std::cout << fi::con::explicit_casting<DTypeO, float>(o_h[i]) << " ";
-    // }
-    // std::cout << "]" << std::endl;
+    //  std::cout << "Output vector (first 10 elements):";
+    //  std::cout << "[" << std::endl;
+    //  for (int i = 0; i < 10; ++i) {
+    //      std::cout << fi::con::explicit_casting<DTypeO, float>(o_h[i]) << "
+    //      ";
+    //  }
+    //  std::cout << "]" << std::endl;
 
     bool isEmpty = o_h.empty();
     EXPECT_EQ(isEmpty, false) << "Output vector is empty";
