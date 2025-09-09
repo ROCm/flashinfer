@@ -205,12 +205,12 @@ single_mha(const std::vector<dtype_q> &q,
            float logits_soft_cap = 8.0f,
            float rope_scale = 1.f,
            float rope_theta = 1e4,
-           bool use_soft_cap = true)
+           bool use_soft_cap = false)
 {
     assert(qo_len <= kv_len);
     assert(num_qo_heads % num_kv_heads == 0);
     float sm_scale = 1.f / std::sqrt(float(head_dim));
-    // float sm_scale = 1.0;
+    //float sm_scale = 1.0;
     std::vector<dtype_out> o(qo_len * num_qo_heads * head_dim);
     std::vector<float> att(kv_len);
     std::vector<float> q_rotary_local(head_dim);
@@ -260,50 +260,16 @@ single_mha(const std::vector<dtype_q> &q,
                     switch (pos_encoding_mode) {
                     case PosEncodingMode::kNone:
                     {
-                        for (size_t feat_idx = 0; feat_idx < head_dim;
-                             ++feat_idx)
+                        for (size_t feat_idx = 0; feat_idx < head_dim; ++feat_idx)
                         {
-                            if (use_soft_cap) {
-                                auto score =
-                                    fi::con::explicit_casting<dtype_q, float>(
-                                        q[info.get_q_elem_offset(
-                                            q_idx, qo_head_idx, feat_idx)]) *
-                                    fi::con::explicit_casting<dtype_kv, float>(
-                                        k[info.get_kv_elem_offset(
-                                            kv_idx, kv_head_idx, feat_idx)]);
-                                auto tscore = float(
-                                    std::tanh(score * soft_cap_pre_tanh_scale));
-                                att[kv_idx] += tscore;
-#if Debug1
-                                if (qo_head_idx == 0 && q_idx == 0 &&
-                                    kv_idx < 16)
-                                {
-                                    std::cout << "score: " << score
-                                              << " Transformed : " << tscore
-                                              << " Final : " << att[kv_idx]
-                                              << '\n';
-                                }
-#endif
-                            }
-                            else {
-                                att[kv_idx] +=
-                                    fi::con::explicit_casting<dtype_q, float>(
-                                        q[info.get_q_elem_offset(
-                                            q_idx, qo_head_idx, feat_idx)]) *
-                                    fi::con::explicit_casting<dtype_kv, float>(
-                                        k[info.get_kv_elem_offset(
-                                            kv_idx, kv_head_idx, feat_idx)]) *
-                                    sm_scale;
-#if Debug1
-                                if (qo_head_idx == 0 && q_idx == 0 &&
-                                    kv_idx < 16)
-                                {
-                                    std::cout
-                                        << "Post-transform: " << att[kv_idx]
-                                        << '\n';
-                                }
-#endif
-                            }
+                            att[kv_idx] +=
+                                fi::con::explicit_casting<dtype_q, float>(
+                                    q[info.get_q_elem_offset(
+                                        q_idx, qo_head_idx, feat_idx)]) *
+                                fi::con::explicit_casting<dtype_kv, float>(
+                                    k[info.get_kv_elem_offset(
+                                        kv_idx, kv_head_idx, feat_idx)]) *
+                                sm_scale;
                         }
                         break;
                     }
@@ -317,17 +283,9 @@ single_mha(const std::vector<dtype_q> &q,
                         for (size_t feat_idx = 0; feat_idx < head_dim;
                              ++feat_idx)
                         {
-                            if (use_soft_cap) {
-                                att[kv_idx] += q_rotary_local[feat_idx] *
-                                               k_rotary_local[feat_idx];
-                                att[kv_idx] = std::tanh(
-                                    att[kv_idx] * soft_cap_pre_tanh_scale);
-                            }
-                            else {
-                                att[kv_idx] += q_rotary_local[feat_idx] *
-                                               k_rotary_local[feat_idx] *
-                                               sm_scale;
-                            }
+                            att[kv_idx] += q_rotary_local[feat_idx] *
+                                            k_rotary_local[feat_idx] *
+                                            sm_scale;
                         }
                         break;
                     }
@@ -345,13 +303,17 @@ single_mha(const std::vector<dtype_q> &q,
                     max_val = std::max(max_val, att[kv_idx]);
                 }
 
-#if Debug1
-                if (qo_head_idx == 0) {
-                    for (auto i = 0ul; i < 16; ++i) {
-                        std::cout << att[i] << '\n';
+#if Debug       
+                if (qo_head_idx == 0 && q_idx == 0) {
+                    // for qo_len = 128, each warp on the GPU will store 128/4,
+                    // that is, 32 attention scores. For CDNA3, these 32 scores
+                    // are spread across 4 threads.
+                    for(auto i = 0ul; i < 32; ++i) {
+                        std::cout << " >>>>> scaled att " << att[i] << '\n';
                     }
+                    std::cout << "Max value for warp 0 = " << *std::max_element(att.begin(),att.begin()+32) << '\n';
                 }
-#endif
+#endif                
                 // exp minus max
                 float denom = 0;
                 for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {

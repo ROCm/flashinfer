@@ -89,8 +89,11 @@ struct DefaultAttention : AttentionVariantBase
                              float(int(kv_idx) - int(qo_idx));
             }
             if constexpr (use_logits_soft_cap) {
-                logits = float(
-                    gpu_iface::math::tanh(logits * soft_cap_pre_tanh_scale));
+#if Debug
+                logits = float(logits * soft_cap_pre_tanh_scale);
+#else
+                logits = float(gpu_iface::math::tanh(logits * soft_cap_pre_tanh_scale));
+#endif
             }
             return logits;
         })

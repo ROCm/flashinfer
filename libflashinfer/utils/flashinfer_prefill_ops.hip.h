@@ -56,8 +56,7 @@ hipError_t SinglePrefillWithKVCacheCustomMask(
     float rope_theta = 1e4,
     hipStream_t stream = nullptr)
 {
-    const float sm_scale =
-        maybe_sm_scale.value_or(1.f / std::sqrt(float(head_dim)));
+    const float sm_scale = 1.f;
     auto [qo_stride_n, qo_stride_h, kv_stride_n, kv_stride_h] = get_qkv_strides(
         kv_layout, kv_len, num_qo_heads, num_kv_heads, head_dim);
     DISPATCH_use_fp16_qk_reduction(
@@ -130,8 +129,7 @@ hipError_t SinglePrefillWithKVCache(
     float rope_theta = 1e4,
     hipStream_t stream = nullptr)
 {
-    const float sm_scale =
-        maybe_sm_scale.value_or(1.f / std::sqrt(float(head_dim)));
+    const float sm_scale = 1.f;
     const MaskMode mask_mode = causal ? MaskMode::kCausal : MaskMode::kNone;
     auto [qo_stride_n, qo_stride_h, kv_stride_n, kv_stride_h] = get_qkv_strides(
         kv_layout, kv_len, num_qo_heads, num_kv_heads, head_dim);
