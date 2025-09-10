@@ -210,7 +210,7 @@ single_mha(const std::vector<dtype_q> &q,
     assert(qo_len <= kv_len);
     assert(num_qo_heads % num_kv_heads == 0);
     float sm_scale = 1.f / std::sqrt(float(head_dim));
-    //float sm_scale = 1.0;
+    // float sm_scale = 1.0;
     std::vector<dtype_out> o(qo_len * num_qo_heads * head_dim);
     std::vector<float> att(kv_len);
     std::vector<float> q_rotary_local(head_dim);
@@ -260,12 +260,13 @@ single_mha(const std::vector<dtype_q> &q,
                     switch (pos_encoding_mode) {
                     case PosEncodingMode::kNone:
                     {
-                        for (size_t feat_idx = 0; feat_idx < head_dim; ++feat_idx)
+                        for (size_t feat_idx = 0; feat_idx < head_dim;
+                             ++feat_idx)
                         {
                             att[kv_idx] +=
                                 fi::con::explicit_casting<dtype_q, float>(
-                                    q[info.get_q_elem_offset(
-                                        q_idx, qo_head_idx, feat_idx)]) *
+                                    q[info.get_q_elem_offset(q_idx, qo_head_idx,
+                                                             feat_idx)]) *
                                 fi::con::explicit_casting<dtype_kv, float>(
                                     k[info.get_kv_elem_offset(
                                         kv_idx, kv_head_idx, feat_idx)]) *
@@ -284,8 +285,7 @@ single_mha(const std::vector<dtype_q> &q,
                              ++feat_idx)
                         {
                             att[kv_idx] += q_rotary_local[feat_idx] *
-                                            k_rotary_local[feat_idx] *
-                                            sm_scale;
+                                           k_rotary_local[feat_idx] * sm_scale;
                         }
                         break;
                     }
@@ -303,23 +303,38 @@ single_mha(const std::vector<dtype_q> &q,
                     max_val = std::max(max_val, att[kv_idx]);
                 }
 
-#if Debug       
-                if (qo_head_idx == 0 && q_idx == 0) {
+#if Debug
+                if (qo_head_idx == 0) {
                     // for qo_len = 128, each warp on the GPU will store 128/4,
                     // that is, 32 attention scores. For CDNA3, these 32 scores
                     // are spread across 4 threads.
-                    for(auto i = 0ul; i < 32; ++i) {
-                        std::cout << " >>>>> scaled att " << att[i] << '\n';
+                    for (auto i = 0ul; i < 128; ++i) {
+                        std::cout << att[i] << " ";
                     }
-                    std::cout << "Max value for warp 0 = " << *std::max_element(att.begin(),att.begin()+32) << '\n';
+                    std::cout << std::endl;
                 }
-#endif                
+#endif
                 // exp minus max
                 float denom = 0;
                 for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {
                     att[kv_idx] = std::exp(att[kv_idx] - max_val);
                     denom += att[kv_idx];
                 }
+
+#if Debug1
+                if (qo_head_idx == 0 && q_idx == 1) {
+                    std::cout << "D vaulued CPU q0 " << denom << '\n';
+                }
+                if (qo_head_idx == 0 && q_idx == 0) {
+                    // for qo_len = 128, each warp on the GPU will store 128/4,
+                    // that is, 32 attention scores. For CDNA3, these 32 scores
+                    // are spread across 4 threads.
+                    for (auto i = 0ul; i < 64; ++i) {
+                        std::cout << " >>>>> after exp - max att " << att[i]
+                                  << '\n';
+                    }
+                }
+#endif
 
                 // divide by denom
                 for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {

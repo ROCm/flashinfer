@@ -159,10 +159,10 @@ struct KernelTraits
     // Presently we use 16x4 thread layout for all cases.
     static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
     static constexpr uint32_t KV_THR_LAYOUT_COL = WARP_THREAD_COLS;
-    // FIXME: [The comment is not correct] The constant is defined based on the matrix layout of the "D/C"
-    // accumulator matrix in a D = A*B+C computation. On CDNA3 the D/C matrices
-    // are distributed as four 4x16 bands across the 64 threads. Each thread
-    // owns one element from four different rows.
+    // FIXME: [The comment is not correct] The constant is defined based on the
+    // matrix layout of the "D/C" accumulator matrix in a D = A*B+C computation.
+    // On CDNA3 the D/C matrices are distributed as four 4x16 bands across the
+    // 64 threads. Each thread owns one element from four different rows.
     static constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = 1;
     // Number of threads that collaboratively handle the same set of matrix rows
     // in attention score computation and cross-warp synchronization.
@@ -259,31 +259,6 @@ struct KernelTraits
 
 namespace
 {
-
-template <typename T>
-__device__ __forceinline__ void
-debug_printer(uint32_t threadid, const char *var_name, T val)
-{
-    int global_idx = (blockIdx.z * gridDim.y * gridDim.x +
-                      blockIdx.y * gridDim.x + blockIdx.x) *
-                         (blockDim.z * blockDim.y * blockDim.x) +
-                     (threadIdx.z * blockDim.y * blockDim.x +
-                      threadIdx.y * blockDim.x + threadIdx.x);
-
-    if (global_idx == 0 || global_idx == 16 || global_idx == 32 ||
-        global_idx == 48)
-    {
-        if constexpr (std::is_integral_v<T>) {
-            printf("%s : %d\n", var_name, (int)val);
-        }
-        else if constexpr (std::is_floating_point_v<T>) {
-            printf("%s : %f\n", var_name, (float)val);
-        }
-        else {
-            printf("%s : (unsupported type)\n", var_name);
-        }
-    }
-}
 
 template <typename KTraits>
 __device__ __forceinline__ uint32_t
@@ -1331,14 +1306,18 @@ logits_mask(const Params &params,
 template <typename KTraits>
 __device__ __forceinline__ void update_mdo_states(
     typename KTraits::AttentionVariant variant,
-    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
+    typename KTraits::DTypeQKAccum (
+        *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
     typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
+    uint32_t warp_idx = 0,
+    uint32_t lane_idx = 0)
 {
     using DTypeQKAccum = typename KTraits::DTypeQKAccum;
     using AttentionVariant = typename KTraits::AttentionVariant;
-    constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
+    constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
+        KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     constexpr bool use_softmax = AttentionVariant::use_softmax;
 
     if constexpr (use_softmax) {
@@ -1350,29 +1329,40 @@ __device__ __forceinline__ void update_mdo_states(
                 for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j) {
                     float m_prev = m[mma_q][j];
 #pragma unroll
-                    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv)
+                    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV;
+                         ++mma_kv)
                     {
 #if defined(PLATFORM_HIP_DEVICE)
-                        m[mma_q][j]  = max(max(s_frag[mma_q][mma_kv][0], s_frag[mma_q][mma_kv][1]),
-                                           max(s_frag[mma_q][mma_kv][2], s_frag[mma_q][mma_kv][3]));
+                        auto m_local = max(max(s_frag[mma_q][mma_kv][0],
+                                               s_frag[mma_q][mma_kv][1]),
+                                           max(s_frag[mma_q][mma_kv][2],
+                                               s_frag[mma_q][mma_kv][3]));
+                        m[mma_q][j] = max(m[mma_q][j], m_local);
 #else
                         float m_local =
-                            max(max(s_frag[mma_q][mma_kv][j * 2 + 0], s_frag[mma_q][mma_kv][j * 2 + 1]),
-                                max(s_frag[mma_q][mma_kv][j * 2 + 4], s_frag[mma_q][mma_kv][j * 2 + 5]));
+                            max(max(s_frag[mma_q][mma_kv][j * 2 + 0],
+                                    s_frag[mma_q][mma_kv][j * 2 + 1]),
+                                max(s_frag[mma_q][mma_kv][j * 2 + 4],
+                                    s_frag[mma_q][mma_kv][j * 2 + 5]));
                         m[mma_q][j] = max(m[mma_q][j], m_local);
 #endif
                     }
 #if defined(PLATFORM_HIP_DEVICE)
-                    // Butterfly reduction across all threads in the band 
-                    m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x10)); // 32 apart
-                    m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x8)); // 16 apart
-
-                    float o_scale = gpu_iface::math::ptx_exp2(m_prev * sm_scale - m[mma_q][j] * sm_scale);
+                    // Butterfly reduction across all threads in the band
+                    m[mma_q][j] =
+                        max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(
+                                             m[mma_q][j], 0x10)); // 32 apart
+                    m[mma_q][j] =
+                        max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(
+                                             m[mma_q][j], 0x8)); // 16 apart
+                    float o_scale = gpu_iface::math::ptx_exp2(
+                        m_prev * sm_scale - m[mma_q][j] * sm_scale);
                     d[mma_q][j] *= o_scale;
 
                     // Scale output fragments for this specific row
 #pragma unroll
-                    for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d)
+                    for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO;
+                         ++mma_d)
                     {
                         o_frag[mma_q][mma_d][0] *= o_scale;
                         o_frag[mma_q][mma_d][1] *= o_scale;
@@ -1382,24 +1372,35 @@ __device__ __forceinline__ void update_mdo_states(
 
                     // Convert logits to probabilities for this row
 #pragma unroll
-                    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv)
+                    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV;
+                         ++mma_kv)
                     {
                         s_frag[mma_q][mma_kv][0] = gpu_iface::math::ptx_exp2(
-                            s_frag[mma_q][mma_kv][0] * sm_scale - m[mma_q][j] * sm_scale);
+                            s_frag[mma_q][mma_kv][0] * sm_scale -
+                            m[mma_q][j] * sm_scale);
                         s_frag[mma_q][mma_kv][1] = gpu_iface::math::ptx_exp2(
-                            s_frag[mma_q][mma_kv][1] * sm_scale - m[mma_q][j] * sm_scale);
+                            s_frag[mma_q][mma_kv][1] * sm_scale -
+                            m[mma_q][j] * sm_scale);
                         s_frag[mma_q][mma_kv][2] = gpu_iface::math::ptx_exp2(
-                            s_frag[mma_q][mma_kv][2] * sm_scale - m[mma_q][j] * sm_scale);
+                            s_frag[mma_q][mma_kv][2] * sm_scale -
+                            m[mma_q][j] * sm_scale);
                         s_frag[mma_q][mma_kv][3] = gpu_iface::math::ptx_exp2(
-                            s_frag[mma_q][mma_kv][3] * sm_scale - m[mma_q][j] * sm_scale);
+                            s_frag[mma_q][mma_kv][3] * sm_scale -
+                            m[mma_q][j] * sm_scale);
                     }
-#else
-                    m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x2));
-                    m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x1));
-                    float o_scale = gpu_iface::math::ptx_exp2(m_prev * sm_scale - m[mma_q][j] * sm_scale);
+#else // CUDA PATH
+                    m[mma_q][j] =
+                        max(m[mma_q][j],
+                            gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x2));
+                    m[mma_q][j] =
+                        max(m[mma_q][j],
+                            gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x1));
+                    float o_scale = gpu_iface::math::ptx_exp2(
+                        m_prev * sm_scale - m[mma_q][j] * sm_scale);
                     d[mma_q][j] *= o_scale;
 #pragma unroll
-                    for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d)
+                    for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO;
+                         ++mma_d)
                     {
                         o_frag[mma_q][mma_d][j * 2 + 0] *= o_scale;
                         o_frag[mma_q][mma_d][j * 2 + 1] *= o_scale;
@@ -1407,10 +1408,15 @@ __device__ __forceinline__ void update_mdo_states(
                         o_frag[mma_q][mma_d][j * 2 + 5] *= o_scale;
                     }
 #pragma unroll
-                    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv)
+                    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV;
+                         ++mma_kv)
                     {
-                        s_frag[mma_q][mma_kv][j * 2 + 0] = gpu_iface::math::ptx_exp2(s_frag[mma_q][mma_kv][j * 2 + 0] * sm_scale - m[mma_q][j] * sm_scale);
-                        s_frag[mma_q][mma_kv][j * 2 + 1] = gpu_iface::math::ptx_exp2(
+                        s_frag[mma_q][mma_kv][j * 2 + 0] =
+                            gpu_iface::math::ptx_exp2(
+                                s_frag[mma_q][mma_kv][j * 2 + 0] * sm_scale -
+                                m[mma_q][j] * sm_scale);
+                        s_frag[mma_q][mma_kv][j * 2 + 1] =
+                            gpu_iface::math::ptx_exp2(
                                 s_frag[mma_q][mma_kv][j * 2 + 1] * sm_scale -
                                 m[mma_q][j] * sm_scale);
                         s_frag[mma_q][mma_kv][j * 2 + 4] =
@@ -1500,12 +1506,13 @@ __device__ __forceinline__ void compute_sfm_v(
     typename KTraits::DTypeQKAccum (
         *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD])
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
+    uint32_t warp_idx = 0,
+    uint32_t lane_idx = 0)
 {
     constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
     constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
-
     constexpr uint32_t V_SMEM_COLUMN_ADVANCE =
         16 / KTraits::HALF_ELEMS_PER_THREAD;
 
@@ -1533,6 +1540,9 @@ __device__ __forceinline__ void compute_sfm_v(
                 {
                     mma::m16k16_rowsum_f16f16f32(d[mma_q],
                                                  s_frag_f16[mma_q][mma_kv]);
+                    if (warp_idx == 0 && lane_idx == 1) {
+                        printf("D values : %f\n", *d[mma_q]);
+                    }
                 }
                 else {
 #if defined(PLATFORM_HIP_DEVICE)
@@ -2018,6 +2028,74 @@ __device__ __forceinline__ void write_o_reg_gmem(
 
 } // namespace
 
+template <typename KTraits>
+__device__ __forceinline__ void debug_write_sfrag_to_scratch(
+    typename KTraits::DTypeQKAccum (
+        *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
+    smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> *scratch,
+    const dim3 tid = threadIdx)
+{
+    using DTypeQKAccum = typename KTraits::DTypeQKAccum;
+    constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
+    constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
+    constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+    const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z),
+                   lane_idx = tid.x;
+
+    // For CDNA3 with 16×4 thread layout:
+    uint32_t row = lane_idx % 16;
+    uint32_t col = lane_idx / 16;
+
+    // Total matrix dimensions
+    constexpr uint32_t total_cols = NUM_MMA_KV * 16;
+    uint32_t offset =
+        scratch->template get_permuted_offset<total_cols>(row, col);
+    auto halfCastedBase = reinterpret_cast<__half *>(scratch->base);
+
+    // Write all thread's fragments to shared memory
+    for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
+        for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
+
+            // if(lane_idx == 0 && warp_idx == 0) {
+            //     printf("debug_write_sfrag_to_scratch..............\n");
+            //     for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
+            //     ++reg_id)
+            //     {
+            //         auto tmp = s_frag[mma_q][mma_kv][reg_id];
+            //         printf("s_frag[%u][%u][%lu] : %f ", mma_q, mma_kv,
+            //         reg_id, float(tmp));
+            //     }
+            //     printf("\n");
+            // }
+
+            for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
+                auto tmp = s_frag[mma_q][mma_kv][reg_id];
+                *(halfCastedBase + offset * 4 + reg_id) = tmp;
+            }
+
+            // if(lane_idx == 0 && warp_idx == 0) {
+            //     uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+            //     scratch->load_fragment(offset, a_frag);
+            //     auto frag_T = reinterpret_cast<__half *>(a_frag);
+            //     for (auto i = 0ul; i < 4; ++i) {
+            //         printf("----scratch-----> %f \n", (float)(*(frag_T +
+            //         i)));
+            //     }
+
+            //     printf("KTraits::UPCAST_STRIDE_O %d\n",
+            //     KTraits::UPCAST_STRIDE_O);
+            // }
+            offset =
+                scratch->template advance_offset_by_column<4>(offset, mma_kv);
+        }
+        offset =
+            scratch
+                ->template advance_offset_by_row<16, KTraits::UPCAST_STRIDE_O>(
+                    offset);
+    }
+    __syncthreads();
+}
+
 /*!
  * \brief FlashAttention prefill CUDA kernel for a single request.
  * \tparam partition_kv Whether to split kv_len into chunks.
@@ -2141,7 +2219,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
         const uint32_t window_left = variant.window_left;
 
         DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][HALF_ELEMS_PER_THREAD];
-        alignas(16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
+        alignas(
+            16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
         DTypeQKAccum m[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
         float d[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
         float rope_freq[NUM_MMA_D_QK / 2][4];
@@ -2267,6 +2346,10 @@ SinglePrefillWithKVCacheDevice(const Params params,
         memory::commit_group();
 
 #if Debug
+
+        smem_t<SwizzleMode::kLinear, typename KTraits::SmemBasePtrTy> scratch(
+            smem_storage.qk_scratch);
+
         if (warp_idx == 0 && lane_idx == 0) {
             printf("partition_kv : %d\n", partition_kv);
             printf("kv_len : %d\n", kv_len);
@@ -2274,7 +2357,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
             printf("chunk_end : %d\n", chunk_end);
             printf("chunk_start : %d\n", chunk_start);
         }
-
+#if 0
         // Test Q
         if (warp_idx == 0 && lane_idx == 0) {
             printf("\n DEBUG Q ORIGINAL (HIP):\n");
@@ -2296,7 +2379,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
                     16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r_debug);
             }
         }
-
+#endif
         // Test K Global values:
         // Prints the (NUM_MMA_KV*16) x (NUM_MMA_D*16) matrix from global mem.
 
@@ -2335,10 +2418,11 @@ SinglePrefillWithKVCacheDevice(const Params params,
         // Note that LDS is loaded collaboratively by all warps and not each
         // warp accesses the whole K matrix loaded into LDS. Each warp will
         // only access 1/4 of the K values loaded into LDS.
+#if 0
         if (warp_idx == 0 && lane_idx == 0) {
             printf("\n DEBUG K LDS ORIGINAL (HIP):\n");
             uint32_t k_smem_offset_r_debug;
-            for (auto i = 0; i < NUM_MMA_KV * 16 * 2; ++i) {
+            for (auto i = 0; i < NUM_MMA_KV * 16; ++i) {
                 for (auto j = 0; j < NUM_MMA_D_QK * 4; ++j) {
                     k_smem_offset_r_debug =
                         k_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(i,
@@ -2355,6 +2439,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
                     k_smem_offset_r_debug);
             }
         }
+#endif
 #endif
 
 #pragma unroll 1
@@ -2375,20 +2460,47 @@ SinglePrefillWithKVCacheDevice(const Params params,
             // compute attention score
             compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
                                 &k_smem_offset_r, s_frag);
-#if Debug
+#if Debug1
+            debug_write_sfrag_to_scratch<KTraits>(s_frag, &scratch, tid);
+
             if (warp_idx == 0 && lane_idx == 0) {
                 printf("s_frag results after compute_qk: \n");
-                for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
-                    for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
-                        for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id)
-                        {
-                            auto tmp = s_frag[mma_q][mma_kv][reg_id];
-                            printf("s_frag[%lu][%lu][%lu] : %f ", mma_q, mma_kv, reg_id, float(tmp));
+                uint32_t scratch_offset_r_debug;
+                for (auto i = 0; i < NUM_MMA_KV * 16 * 2; ++i) {
+                    for (auto j = 0; j < NUM_MMA_D_QK * 4; ++j) {
+                        scratch_offset_r_debug =
+                            scratch
+                                .template get_permuted_offset<UPCAST_STRIDE_Q>(
+                                    i, j);
+                        uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                        scratch.load_fragment(scratch_offset_r_debug, a_frag);
+                        auto frag_T = reinterpret_cast<__half *>(a_frag);
+                        for (auto i = 0ul; i < 4; ++i) {
+                            printf("%f ", (float)(*(frag_T + i)));
                         }
-                        printf("\n");
                     }
+                    printf("\n");
+                    scratch.template advance_offset_by_row<
+                        16, KTraits::UPCAST_STRIDE_K>(scratch_offset_r_debug);
                 }
             }
+
+            // if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
+            //     printf("s_frag results after compute_qk: \n");
+            //     for (auto mma_q = 0ul; mma_q < NUM_MMA_Q * 16 * 4; ++mma_q) {
+            //         for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV*4; ++mma_kv)
+            //         {
+            //             for (auto reg_id = 0ul; reg_id <
+            //             HALF_ELEMS_PER_THREAD; ++reg_id)
+            //             {
+            //                 auto tmp = s_frag[mma_q][mma_kv][reg_id];
+            //                 printf("s_frag[%lu][%lu][%lu] : %f ", mma_q,
+            //                 mma_kv, reg_id, float(tmp));
+            //             }
+            //             printf("\n");
+            //         }
+            //     }
+            // }
 #endif
             logits_transform<KTraits>(
                 params, variant, /*batch_idx=*/0, qo_packed_idx_base,
@@ -2397,13 +2509,15 @@ SinglePrefillWithKVCacheDevice(const Params params,
                         NUM_MMA_KV * 16,
                 qo_len, kv_len, group_size, s_frag, tid, kv_head_idx);
 
-#if Debug
+#if Debug1
             float soft_cap_pre_tanh_scale =
                 params.sm_scale *
                 gpu_iface::math::ptx_rcp(params.logits_soft_cap);
-            if (warp_idx == 0 && lane_idx == 0) {
-                printf("params.sm_scale %f, params.logits_soft_cap %f\n", params.sm_scale, params.logits_soft_cap);
-                printf("s_frag after logits transform (scaled by %f) : \n", soft_cap_pre_tanh_scale);
+            if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
+                printf("params.sm_scale %f, params.logits_soft_cap %f\n",
+                       params.sm_scale, params.logits_soft_cap);
+                printf("s_frag after logits transform (scaled by %f) : \n",
+                       soft_cap_pre_tanh_scale);
                 for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
                     for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
                         for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
@@ -2415,6 +2529,37 @@ SinglePrefillWithKVCacheDevice(const Params params,
                         }
                         printf("\n");
                     }
+                }
+            }
+#endif
+
+#if Debug
+            debug_write_sfrag_to_scratch<KTraits>(s_frag, &scratch, tid);
+            if (warp_idx == 0 && lane_idx == 0) {
+                float soft_cap_pre_tanh_scale =
+                    params.sm_scale *
+                    gpu_iface::math::ptx_rcp(params.logits_soft_cap);
+                printf("params.sm_scale %f, params.logits_soft_cap %f\n",
+                       params.sm_scale, params.logits_soft_cap);
+                printf("s_frag after logits transform (scaled by %f) : \n",
+                       soft_cap_pre_tanh_scale);
+                uint32_t scratch_offset_r_debug;
+                for (auto i = 0; i < NUM_MMA_KV * 16 * 2; ++i) {
+                    for (auto j = 0; j < NUM_MMA_D_QK * 4; ++j) {
+                        scratch_offset_r_debug =
+                            scratch
+                                .template get_permuted_offset<UPCAST_STRIDE_Q>(
+                                    i, j);
+                        uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                        scratch.load_fragment(scratch_offset_r_debug, a_frag);
+                        auto frag_T = reinterpret_cast<__half *>(a_frag);
+                        for (auto i = 0ul; i < 4; ++i) {
+                            printf("%f ", (float)(*(frag_T + i)));
+                        }
+                    }
+                    printf("\n");
+                    scratch.template advance_offset_by_row<
+                        16, KTraits::UPCAST_STRIDE_K>(scratch_offset_r_debug);
                 }
             }
 #endif
@@ -2432,7 +2577,7 @@ SinglePrefillWithKVCacheDevice(const Params params,
             }
 
 #if Debug
-            if (warp_idx == 0 && lane_idx == 0) {
+            if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
                 printf("s_frag after logits masking\n");
                 for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
                     for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
@@ -2449,11 +2594,33 @@ SinglePrefillWithKVCacheDevice(const Params params,
             }
 #endif
             // compute m,d states in online softmax
-            update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
+            update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d, warp_idx,
+                                       lane_idx);
 
 #if Debug
-            if (warp_idx == 0 && lane_idx == 0) {
+            if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
                 printf("Max value for first 32 cols of row 0 %f\n", m[0][0]);
+                printf("D value for first 32 cols of row 0 %f\n", d[0][0]);
+            }
+#endif
+
+#if Debug
+            if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
+                printf("gpu_iface::math::ptx_exp2(0) = %f\n",
+                       gpu_iface::math::ptx_exp2(0.f));
+                printf("s_frag after exp - max att\n");
+                for (auto mma_q = 0ul; mma_q < NUM_MMA_Q; ++mma_q) {
+                    for (auto mma_kv = 0ul; mma_kv < NUM_MMA_KV; ++mma_kv) {
+                        for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
+                             ++reg_id)
+                        {
+                            auto tmp = s_frag[mma_q][mma_kv][reg_id];
+                            printf("s_frag[%lu][%lu][%lu] : %f ", mma_q, mma_kv,
+                                   reg_id, float(tmp));
+                        }
+                        printf("\n");
+                    }
+                }
             }
 #endif
 
@@ -2466,8 +2633,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
             block.sync();
 
             // compute sfm*v
-            compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag,
-                                   d);
+            compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d,
+                                   warp_idx, lane_idx);
 
             block.sync();
             produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
