@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include "pytorch_extension_utils.h"
-#include "single_prefill_config.inc"
+#include "single_prefill_config_hip.inc"
 
 void single_prefill_with_kv_cache(at::Tensor q,
                                   at::Tensor k,

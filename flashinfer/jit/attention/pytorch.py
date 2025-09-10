@@ -451,7 +451,7 @@ def gen_single_prefill_module(
     use_sliding_window: bool,
     use_logits_soft_cap: bool,
     use_fp16_qk_reduction: bool,
-):
+) -> JitSpec:
     uri = get_single_prefill_uri(
         backend,
         dtype_q,
@@ -998,13 +998,8 @@ def gen_customize_single_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            "single_prefill_hip.cu",
-            (
-                "single_prefill_jit_pybind_hip.cu"
-                if check_hip_availability()
-                else "single_prefill.cu"
-            ),
-            "single_prefill_jit_pybind.cu",
+            "single_prefill_hip.cu" if check_hip_availability() else "single_prefill.cu",
+            "single_prefill_jit_pybind_hip.cu" if check_hip_availability() else "single_prefill_jit_pybind.cu",
         ]:
             src_path = FLASHINFER_CSRC_DIR / filename
             dest_path = gen_directory / filename
@@ -1020,7 +1015,7 @@ def gen_customize_single_prefill_module(
         )
         write_if_different(generated_config_path, generated_inc_str)
 
-        return load_cuda_ops(uri, source_paths)
+        return gen_jit_spec(uri, source_paths)
     elif backend == "fa3":
         gen_directory = FLASHINFER_GEN_SRC_DIR / uri
 
@@ -1299,14 +1294,10 @@ def gen_customize_batch_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            "batch_prefill_hip.cu",
-            (
-                "batch_prefill_jit_pybind_hip.cu"
-                if check_hip_availability()
-                else "batch_prefill.cu"
-            ),
-            "batch_prefill_jit_pybind.cu",
+            "batch_prefill_hip.cu" if check_hip_availability() else "batch_prefill.cu",
+            "batch_prefill_jit_pybind_hip.cu" if check_hip_availability() else "batch_prefill_jit_pybind.cu",
         ]:
+
             src_path = FLASHINFER_CSRC_DIR / filename
             dest_path = gen_directory / filename
             source_paths.append(dest_path)
@@ -1320,7 +1311,7 @@ def gen_customize_batch_prefill_module(
             else gen_directory / "batch_prefill_config.inc"
         )
         write_if_different(generated_config_path, generated_inc_str)
-        return load_cuda_ops(
+        return build_jit_specs(
             uri,
             source_paths,
         )

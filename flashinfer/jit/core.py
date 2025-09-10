@@ -222,7 +222,6 @@ def build_jit_specs(
         write_if_different(ninja_path, "\n".join(lines))
         run_ninja(FLASHINFER_JIT_DIR, ninja_path, verbose)
 
-
 def load_cuda_ops(
     name: str,
     sources: List[Union[str, Path]],

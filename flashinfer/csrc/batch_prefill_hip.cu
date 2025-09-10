@@ -17,9 +17,9 @@
 #include "pytorch_conversion_utils.h"
 #include "pytorch_extension_utils.h"
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
-#include <flashinfer/attention/generic/mask.cuh>
+#include <gpu_iface/enums.hpp>
 #include <flashinfer/attention/generic/scheduler.cuh>
-#include <flashinfer/attention/pos_enc.cuh>
+#include <flashinfer/attention/generic/pos_enc.cuh>
 #include <optional>
 
 namespace flashinfer
