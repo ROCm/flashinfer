@@ -322,17 +322,14 @@ single_mha(const std::vector<dtype_q> &q,
                 }
 
 #if Debug1
-                if (qo_head_idx == 0 && q_idx == 1) {
-                    std::cout << "D vaulued CPU q0 " << denom << '\n';
-                }
-                if (qo_head_idx == 0 && q_idx == 0) {
+                if (qo_head_idx == 0) {
                     // for qo_len = 128, each warp on the GPU will store 128/4,
                     // that is, 32 attention scores. For CDNA3, these 32 scores
                     // are spread across 4 threads.
-                    for (auto i = 0ul; i < 64; ++i) {
-                        std::cout << " >>>>> after exp - max att " << att[i]
-                                  << '\n';
+                    for (auto i = 0ul; i < 128; ++i) {
+                        std::cout << att[i] << " ";
                     }
+                    std::cout << std::endl;
                 }
 #endif
 

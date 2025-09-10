@@ -2053,9 +2053,8 @@ __device__ __forceinline__ void debug_write_sfrag_to_scratch(
     auto halfCastedBase = reinterpret_cast<__half *>(scratch->base);
 
     // Write all thread's fragments to shared memory
-    for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
-        for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
-
+    for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
+        for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
             // if(lane_idx == 0 && warp_idx == 0) {
             //     printf("debug_write_sfrag_to_scratch..............\n");
             //     for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
