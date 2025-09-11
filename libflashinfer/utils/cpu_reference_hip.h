@@ -309,7 +309,7 @@ single_mha(const std::vector<dtype_q> &q,
                     // that is, 32 attention scores. For CDNA3, these 32 scores
                     // are spread across 4 threads.
                     for (auto i = 0ul; i < 128; ++i) {
-                        std::cout << att[i] << " ";
+                        std::cout << att[i] / sm_scale << " ";
                     }
                     std::cout << std::endl;
                 }

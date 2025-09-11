@@ -184,12 +184,12 @@ __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float *d, DType *s_frag)
     static_assert(sizeof(DType) == 2, "DType must be 16-bit type");
     f16x4 a = reinterpret_cast<const f16x4 *>(s_frag)[0];
     f16x4 b = {f16(1.0f), f16(1.0f), f16(1.0f), f16(1.0f)};
-    f32x4 c = {d[0], 0.f, 0.f, 0.f};
+    f32x4 c = {d[0], d[1], d[2], d[3]};
     f32x4 out = __builtin_amdgcn_mfma_f32_16x16x16f16(a, b, c, 0, 0, 0);
     d[0] = out.x;
-    // d[1] = out.y;
-    // d[2] = out.z;
-    // d[3] = out.w;
+    d[1] = out.y;
+    d[2] = out.z;
+    d[3] = out.w;
 }
 
 // TODO (rimaddur) : After release 2025.08
