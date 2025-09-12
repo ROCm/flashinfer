@@ -124,6 +124,7 @@ hipError_t SinglePrefillWithKVCache(
     QKVLayout kv_layout = QKVLayout::kNHD,
     PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
     bool use_fp16_qk_reduction = false,
+    uint32_t debug_thread_id = 0,
     std::optional<float> maybe_sm_scale = std::nullopt,
     float rope_scale = 1.f,
     float rope_theta = 1e4,
@@ -155,7 +156,7 @@ hipError_t SinglePrefillWithKVCache(
                                       head_dim,
                                       /*window_left=*/-1,
                                       /*logits_soft_cap=*/8.f, sm_scale,
-                                      rope_scale, rope_theta);
+                                      rope_scale, rope_theta, debug_thread_id);
                         return SinglePrefillWithKVCacheDispatched<
                             HEAD_DIM, HEAD_DIM, POS_ENCODING_MODE,
                             USE_FP16_QK_REDUCTION, MASK_MODE, AttentionVariant,

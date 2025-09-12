@@ -1529,9 +1529,6 @@ __device__ __forceinline__ void compute_sfm_v(
                 {
                     mma::m16k16_rowsum_f16f16f32(d[mma_q],
                                                  s_frag_f16[mma_q][mma_kv]);
-                    if (warp_idx == 0 && lane_idx == 1) {
-                        printf("D values : %f\n", *d[mma_q]);
-                    }
                 }
                 else {
 #if defined(PLATFORM_HIP_DEVICE)
@@ -2021,8 +2018,8 @@ template <typename KTraits>
 __device__ __forceinline__ void debug_write_sfrag_to_scratch(
     typename KTraits::DTypeQKAccum (
         *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
-    smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> *scratch,
-    const dim3 tid = threadIdx)
+    const dim3 tid = threadIdx,
+    uint32_t debug_thread_id = 0)
 {
     using DTypeQKAccum = typename KTraits::DTypeQKAccum;
     constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
@@ -2032,52 +2029,18 @@ __device__ __forceinline__ void debug_write_sfrag_to_scratch(
                    lane_idx = tid.x;
 
     // For CDNA3 with 16×4 thread layout:
-    uint32_t row = lane_idx % 16;
-    uint32_t col = lane_idx / 16;
-
-    // Total matrix dimensions
-    constexpr uint32_t total_cols = NUM_MMA_KV * 16;
-    uint32_t offset =
-        scratch->template get_permuted_offset<total_cols>(row, col);
-    auto halfCastedBase = reinterpret_cast<__half *>(scratch->base);
+    uint32_t row = lane_idx / 16;
+    uint32_t col = lane_idx % 16;
 
     // Write all thread's fragments to shared memory
     for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
         for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
-            if (lane_idx == 1 && warp_idx == 0) {
-                printf("debug_write_sfrag_to_scratch..............\n");
-                for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD;
-                     ++reg_id)
-                {
-                    auto tmp = s_frag[mma_q][mma_kv][reg_id];
-                    printf("s_frag[%u][%u][%lu] : %f ", mma_q, mma_kv, reg_id,
-                           float(tmp));
-                }
-                printf("\n");
+            if (lane_idx == debug_thread_id && warp_idx == 0) {
+                printf("%.6f %.6f %.6f %.6f\n", s_frag[mma_q][mma_kv][0],
+                       s_frag[mma_q][mma_kv][1], s_frag[mma_q][mma_kv][2],
+                       s_frag[mma_q][mma_kv][3]);
             }
-
-            for (auto reg_id = 0ul; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
-                auto tmp = s_frag[mma_q][mma_kv][reg_id];
-                *(halfCastedBase + offset * 4 + reg_id) = tmp;
-            }
-
-            if (lane_idx == 1 && warp_idx == 0) {
-                uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-                scratch->load_fragment(offset, a_frag);
-                auto frag_T = reinterpret_cast<__half *>(a_frag);
-                for (auto i = 0ul; i < 4; ++i) {
-                    printf("----scratch-----> %f \n", (float)(*(frag_T + i)));
-                }
-
-                printf("KTraits::UPCAST_STRIDE_O %d\n",
-                       KTraits::UPCAST_STRIDE_O);
-            }
-
-            offset = scratch->template advance_offset_by_row<
-                16, KTraits::UPCAST_STRIDE_O>(offset);
         }
-        offset = scratch->template advance_offset_by_column<4>(offset, mma_q) -
-                 16 * NUM_MMA_KV * KTraits::UPCAST_STRIDE_O;
     }
     __syncthreads();
 }
@@ -2336,13 +2299,13 @@ SinglePrefillWithKVCacheDevice(const Params params,
         smem_t<SwizzleMode::kLinear, typename KTraits::SmemBasePtrTy> scratch(
             smem_storage.qk_scratch);
 
-        if (warp_idx == 0 && lane_idx == 0) {
-            printf("partition_kv : %d\n", partition_kv);
-            printf("kv_len : %d\n", kv_len);
-            printf("max_chunk_size : %d\n", max_chunk_size);
-            printf("chunk_end : %d\n", chunk_end);
-            printf("chunk_start : %d\n", chunk_start);
-        }
+        // if (warp_idx == 0 && lane_idx == 0) {
+        //     printf("partition_kv : %d\n", partition_kv);
+        //     printf("kv_len : %d\n", kv_len);
+        //     printf("max_chunk_size : %d\n", max_chunk_size);
+        //     printf("chunk_end : %d\n", chunk_end);
+        //     printf("chunk_start : %d\n", chunk_start);
+        // }
 #if 0
         // Test Q
         if (warp_idx == 0 && lane_idx == 0) {
@@ -2370,16 +2333,16 @@ SinglePrefillWithKVCacheDevice(const Params params,
         // Prints the (NUM_MMA_KV*16) x (NUM_MMA_D*16) matrix from global mem.
 
         if (warp_idx == 0 && lane_idx == 0) {
-            printf("\n DEBUG K Global (HIP):\n");
-            printf("k_stride_n : %d\n", k_stride_n);
-            printf("k_stride_h : %d\n", k_stride_h);
-            printf("kv_head_idx : %d\n", kv_head_idx);
-            printf("num_qo_heads : %d\n", num_qo_heads);
-            printf("num_kv_heads : %d\n", num_kv_heads);
-            printf("k_stride_n : %d\n", k_stride_n);
-            printf("KTraits::NUM_MMA_D_QK : %d\n", KTraits::NUM_MMA_D_QK);
-            printf("NUM_MMA_KV : %d\n", NUM_MMA_KV);
-            printf("NUM_MMA_Q : %d\n", NUM_MMA_Q);
+            // printf("\n DEBUG K Global (HIP):\n");
+            // printf("k_stride_n : %d\n", k_stride_n);
+            // printf("k_stride_h : %d\n", k_stride_h);
+            // printf("kv_head_idx : %d\n", kv_head_idx);
+            // printf("num_qo_heads : %d\n", num_qo_heads);
+            // printf("num_kv_heads : %d\n", num_kv_heads);
+            // printf("k_stride_n : %d\n", k_stride_n);
+            // printf("KTraits::NUM_MMA_D_QK : %d\n", KTraits::NUM_MMA_D_QK);
+            // printf("NUM_MMA_KV : %d\n", NUM_MMA_KV);
+            // printf("NUM_MMA_Q : %d\n", NUM_MMA_Q);
 #if 0
             DTypeKV *k_ptr_tmp = k +
                                  (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
@@ -2447,29 +2410,32 @@ SinglePrefillWithKVCacheDevice(const Params params,
             compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
                                 &k_smem_offset_r, s_frag);
 #if Debug
-            debug_write_sfrag_to_scratch<KTraits>(s_frag, &scratch, tid);
+            debug_write_sfrag_to_scratch<KTraits>(s_frag, tid,
+                                                  params.debug_thread_id);
 
-            if (warp_idx == 0 && lane_idx == 0) {
-                printf("s_frag results after compute_qk: \n");
-                uint32_t scratch_offset_r_debug;
-                for (auto i = 0; i < NUM_MMA_KV * 16; ++i) {
-                    for (auto j = 0; j < NUM_MMA_D_QK * 2; ++j) {
-                        scratch_offset_r_debug =
-                            scratch
-                                .template get_permuted_offset<UPCAST_STRIDE_Q>(
-                                    i, j);
-                        uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
-                        scratch.load_fragment(scratch_offset_r_debug, a_frag);
-                        auto frag_T = reinterpret_cast<__half *>(a_frag);
-                        for (auto i = 0ul; i < 4; ++i) {
-                            printf("%f ", (float)(*(frag_T + i)));
-                        }
-                    }
-                    printf("\n");
-                    scratch.template advance_offset_by_row<
-                        16, KTraits::UPCAST_STRIDE_K>(scratch_offset_r_debug);
-                }
-            }
+            // if (warp_idx == 0 && lane_idx == 0) {
+            //     printf("s_frag results after compute_qk: \n");
+            //     uint32_t scratch_offset_r_debug;
+            //     for (auto i = 0; i < NUM_MMA_KV * 16; ++i) {
+            //         for (auto j = 0; j < NUM_MMA_D_QK * 2; ++j) {
+            //             scratch_offset_r_debug =
+            //                 scratch
+            //                     .template
+            //                     get_permuted_offset<UPCAST_STRIDE_Q>(
+            //                         i, j);
+            //             uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+            //             scratch.load_fragment(scratch_offset_r_debug,
+            //             a_frag); auto frag_T = reinterpret_cast<__half
+            //             *>(a_frag); for (auto i = 0ul; i < 4; ++i) {
+            //                 printf("%f ", (float)(*(frag_T + i)));
+            //             }
+            //         }
+            //         printf("\n");
+            //         scratch.template advance_offset_by_row<
+            //             16,
+            //             KTraits::UPCAST_STRIDE_K>(scratch_offset_r_debug);
+            //     }
+            // }
 
             // if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
             //     printf("s_frag results after compute_qk: \n");
@@ -2583,14 +2549,14 @@ SinglePrefillWithKVCacheDevice(const Params params,
             update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d, warp_idx,
                                        lane_idx);
 
-#if Debug
+#if Debug1
             if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
                 printf("Max value for first 32 cols of row 0 %f\n", m[0][0]);
                 printf("D value for first 32 cols of row 0 %f\n", d[0][0]);
             }
 #endif
 
-#if Debug
+#if Debug1
             if (warp_idx == 0 && lane_idx == 0 && iter == 0) {
                 printf("gpu_iface::math::ptx_exp2(0) = %f\n",
                        gpu_iface::math::ptx_exp2(0.f));

@@ -303,7 +303,7 @@ single_mha(const std::vector<dtype_q> &q,
                     max_val = std::max(max_val, att[kv_idx]);
                 }
 
-#if Debug
+#if Debug1
                 if (qo_head_idx == 0) {
                     // for qo_len = 128, each warp on the GPU will store 128/4,
                     // that is, 32 attention scores. For CDNA3, these 32 scores

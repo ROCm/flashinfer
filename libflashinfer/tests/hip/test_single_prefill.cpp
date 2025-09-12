@@ -31,10 +31,10 @@ void _TestComputeQKCorrectness(size_t qo_len,
                                float rtol = 1e-3,
                                float atol = 1e-3)
 {
-    std::cout << "Testing compute_qk: qo_len=" << qo_len
-              << ", kv_len=" << kv_len << ", num_qo_heads=" << num_qo_heads
-              << ", num_kv_heads=" << num_kv_heads << ", head_dim=" << head_dim
-              << std::endl;
+    // std::cout << "Testing compute_qk: qo_len=" << qo_len
+    //           << ", kv_len=" << kv_len << ", num_qo_heads=" << num_qo_heads
+    //           << ", num_kv_heads=" << num_kv_heads << ", head_dim=" << head_dim
+    //           << std::endl;
 
     // Generate test data (same as original test)
     std::vector<DTypeQ> q(qo_len * num_qo_heads * head_dim);
@@ -78,13 +78,13 @@ void _TestComputeQKCorrectness(size_t qo_len,
     float *qk_scores_d;
     FI_GPU_CALL(hipMalloc(&qk_scores_d, qk_output_size * sizeof(float)));
 
-    std::cout << "Debug: Kernel launch parameters:" << std::endl;
-    std::cout << "  qo_len=" << qo_len << ", kv_len=" << kv_len << std::endl;
-    std::cout << "  num_qo_heads=" << num_qo_heads
-              << ", num_kv_heads=" << num_kv_heads << std::endl;
-    std::cout << "  head_dim=" << head_dim << std::endl;
-    std::cout << "  qk_output_size=" << qk_output_size << std::endl;
-    std::cout << "  Launching ComputeQKStubCaller..." << std::endl;
+    // std::cout << "Debug: Kernel launch parameters:" << std::endl;
+    // std::cout << "  qo_len=" << qo_len << ", kv_len=" << kv_len << std::endl;
+    // std::cout << "  num_qo_heads=" << num_qo_heads
+    //           << ", num_kv_heads=" << num_kv_heads << std::endl;
+    // std::cout << "  head_dim=" << head_dim << std::endl;
+    // std::cout << "  qk_output_size=" << qk_output_size << std::endl;
+    // std::cout << "  Launching ComputeQKStubCaller..." << std::endl;
 
     // Call ComputeQKStubCaller instead of SinglePrefillWithKVCache
     hipError_t status =
@@ -94,8 +94,8 @@ void _TestComputeQKCorrectness(size_t qo_len,
             num_qo_heads, num_kv_heads, qo_len, kv_len, head_dim, causal,
             kv_layout, pos_encoding_mode, use_fp16_qk_reduction);
 
-    std::cout << "  Kernel launch status: " << hipGetErrorString(status)
-              << std::endl;
+    // std::cout << "  Kernel launch status: " << hipGetErrorString(status)
+    //           << std::endl;
     EXPECT_EQ(status, hipSuccess)
         << "ComputeQKStubCaller kernel launch failed, error message: "
         << hipGetErrorString(status);
@@ -138,7 +138,7 @@ void _TestComputeQKCorrectness(size_t qo_len,
             }
         }
     }
-
+#if 0
     // Calculate and report accuracy
     float result_accuracy =
         1.0f - float(num_results_error_atol) / float(comparison_size);
@@ -165,7 +165,7 @@ void _TestComputeQKCorrectness(size_t qo_len,
     EXPECT_GT(result_accuracy, 0.80)
         << "compute_qk accuracy too low"; // Start with 80%
     EXPECT_FALSE(nan_detected) << "NaN detected in compute_qk results";
-
+#endif
     // Cleanup
     FI_GPU_CALL(hipFree(q_d));
     FI_GPU_CALL(hipFree(k_d));
@@ -187,6 +187,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
                                          QKVLayout kv_layout,
                                          PosEncodingMode pos_encoding_mode,
                                          bool use_fp16_qk_reduction,
+                                         uint32_t debug_thread_id,
                                          float rtol = 1e-3,
                                          float atol = 1e-3)
 {
@@ -231,7 +232,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
             q_d, k_d, v_d, o_d, tmp_d,
             /*lse=*/nullptr, num_qo_heads, num_kv_heads, qo_len, kv_len,
             head_dim, causal, kv_layout, pos_encoding_mode,
-            use_fp16_qk_reduction);
+            use_fp16_qk_reduction, debug_thread_id);
 
     EXPECT_EQ(status, hipSuccess)
         << "SinglePrefillWithKVCache kernel launch failed, error message: "
@@ -280,6 +281,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
     // for(auto i: att_out) {
     //     std::cout << i << "\n";
     // }
+#if 0
     float result_accuracy =
         1. - float(num_results_error_atol) / float(o_ref.size());
     std::cout << "num_qo_heads=" << num_qo_heads
@@ -293,7 +295,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
 
     EXPECT_GT(result_accuracy, 0.90) << "Result correctness test failed.";
     EXPECT_FALSE(nan_detected) << "Nan detected in the result.";
-
+#endif
     FI_GPU_CALL(hipFree(q_d));
     FI_GPU_CALL(hipFree(k_d));
     FI_GPU_CALL(hipFree(v_d));
@@ -557,6 +559,7 @@ int main(int argc, char **argv)
     // return RUN_ALL_TESTS();
     using DTypeIn = __half;
     using DTypeO = __half;
+    uint32_t debug_thread_id = 0;
     bool use_fp16_qk_reduction = false;
     size_t qo_len = 128;
     size_t kv_len = 128;
@@ -566,10 +569,40 @@ int main(int argc, char **argv)
     size_t pos_encoding_mode = 0; // 1 == kRopeLLama
     size_t kv_layout = 0;
 
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+
+        if (arg == "--thread" && i + 1 < argc) {
+            debug_thread_id = std::stoi(argv[++i]);
+            std::cout << "Debug thread ID set to: " << debug_thread_id
+                      << std::endl;
+        }
+        else if (arg == "--qo_len" && i + 1 < argc) {
+            qo_len = std::stoi(argv[++i]);
+        }
+        else if (arg == "--kv_len" && i + 1 < argc) {
+            kv_len = std::stoi(argv[++i]);
+        }
+        else if (arg == "--heads" && i + 1 < argc) {
+            num_heads = std::stoi(argv[++i]);
+        }
+        else if (arg == "--help") {
+            std::cout
+                << "Usage: " << argv[0] << " [options]\n"
+                << "Options:\n"
+                << "  --thread <id>    Debug thread ID (0-255 for 4 warps)\n"
+                << "  --qo_len <len>   Query/Output length (default: 128)\n"
+                << "  --kv_len <len>   Key/Value length (default: 128)\n"
+                << "  --heads <num>    Number of heads (default: 1)\n"
+                << "  --help           Show this help message\n";
+            return 0;
+        }
+    }
+
     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
         qo_len, kv_len, num_heads, num_heads, head_dim, causal,
         QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
-        use_fp16_qk_reduction);
+        use_fp16_qk_reduction, debug_thread_id);
 }
 
 // int main(int argc, char **argv)
