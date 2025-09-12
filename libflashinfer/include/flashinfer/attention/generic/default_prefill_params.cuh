@@ -58,6 +58,7 @@ struct SinglePrefillParams
     float rope_rcp_scale;
     float rope_rcp_theta;
     uint32_t debug_thread_id;
+    uint32_t debug_warp_id;
 
     uint32_t partition_kv;
 
@@ -93,7 +94,8 @@ struct SinglePrefillParams
                                  float sm_scale,
                                  float rope_scale,
                                  float rope_theta,
-                                 uint32_t debug_thread_id)
+                                 uint32_t debug_thread_id,
+                                 uint32_t debug_warp_id)
         : q(q), k(k), v(v), maybe_custom_mask(maybe_custom_mask), o(o),
           lse(lse), maybe_alibi_slopes(maybe_alibi_slopes),
           group_size(num_qo_heads / num_kv_heads), num_qo_heads(num_qo_heads),
@@ -104,7 +106,7 @@ struct SinglePrefillParams
           window_left(window_left), logits_soft_cap(logits_soft_cap),
           sm_scale(sm_scale), rope_rcp_scale(1. / rope_scale),
           rope_rcp_theta(1. / rope_theta), debug_thread_id(debug_thread_id),
-          partition_kv(false)
+          debug_warp_id(debug_warp_id), partition_kv(false)
     {
     }
 

@@ -188,6 +188,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
                                          PosEncodingMode pos_encoding_mode,
                                          bool use_fp16_qk_reduction,
                                          uint32_t debug_thread_id,
+                                         uint32_t debug_warp_id,
                                          float rtol = 1e-3,
                                          float atol = 1e-3)
 {
@@ -232,7 +233,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len,
             q_d, k_d, v_d, o_d, tmp_d,
             /*lse=*/nullptr, num_qo_heads, num_kv_heads, qo_len, kv_len,
             head_dim, causal, kv_layout, pos_encoding_mode,
-            use_fp16_qk_reduction, debug_thread_id);
+            use_fp16_qk_reduction, debug_thread_id, debug_warp_id);
 
     EXPECT_EQ(status, hipSuccess)
         << "SinglePrefillWithKVCache kernel launch failed, error message: "
@@ -560,6 +561,7 @@ int main(int argc, char **argv)
     using DTypeIn = __half;
     using DTypeO = __half;
     uint32_t debug_thread_id = 0;
+    uint32_t debug_warp_id = 0;
     bool use_fp16_qk_reduction = false;
     size_t qo_len = 128;
     size_t kv_len = 128;
@@ -577,6 +579,10 @@ int main(int argc, char **argv)
             std::cout << "Debug thread ID set to: " << debug_thread_id
                       << std::endl;
         }
+        else if (arg == "--warp" && i + 1 < argc) {
+            debug_warp_id = std::stoi(argv[++i]);
+            std::cout << "Debug warp ID set to: " << debug_warp_id << std::endl;
+        }
         else if (arg == "--qo_len" && i + 1 < argc) {
             qo_len = std::stoi(argv[++i]);
         }
@@ -591,6 +597,7 @@ int main(int argc, char **argv)
                 << "Usage: " << argv[0] << " [options]\n"
                 << "Options:\n"
                 << "  --thread <id>    Debug thread ID (0-255 for 4 warps)\n"
+                << "  --warp   <id>    Debug warp ID (0-3 for 4 warps)\n"
                 << "  --qo_len <len>   Query/Output length (default: 128)\n"
                 << "  --kv_len <len>   Key/Value length (default: 128)\n"
                 << "  --heads <num>    Number of heads (default: 1)\n"
@@ -602,7 +609,7 @@ int main(int argc, char **argv)
     _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
         qo_len, kv_len, num_heads, num_heads, head_dim, causal,
         QKVLayout(kv_layout), PosEncodingMode(pos_encoding_mode),
-        use_fp16_qk_reduction, debug_thread_id);
+        use_fp16_qk_reduction, debug_thread_id, debug_warp_id);
 }
 
 // int main(int argc, char **argv)

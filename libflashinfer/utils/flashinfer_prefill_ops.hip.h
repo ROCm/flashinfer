@@ -125,6 +125,7 @@ hipError_t SinglePrefillWithKVCache(
     PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
     bool use_fp16_qk_reduction = false,
     uint32_t debug_thread_id = 0,
+    uint32_t debug_warp_id = 0,
     std::optional<float> maybe_sm_scale = std::nullopt,
     float rope_scale = 1.f,
     float rope_theta = 1e4,
@@ -149,14 +150,14 @@ hipError_t SinglePrefillWithKVCache(
                                                  MaskMode::kCustom),
                             /*use_sliding_window=*/false,
                             /*use_logits_soft_cap=*/true, /*use_alibi=*/false>;
-                        Params params(q, k, v, /*custom_mask=*/nullptr, o, lse,
-                                      /*alibi_slopes=*/nullptr, num_qo_heads,
-                                      num_kv_heads, qo_len, kv_len, qo_stride_n,
-                                      qo_stride_h, kv_stride_n, kv_stride_h,
-                                      head_dim,
-                                      /*window_left=*/-1,
-                                      /*logits_soft_cap=*/8.f, sm_scale,
-                                      rope_scale, rope_theta, debug_thread_id);
+                        Params params(
+                            q, k, v, /*custom_mask=*/nullptr, o, lse,
+                            /*alibi_slopes=*/nullptr, num_qo_heads,
+                            num_kv_heads, qo_len, kv_len, qo_stride_n,
+                            qo_stride_h, kv_stride_n, kv_stride_h, head_dim,
+                            /*window_left=*/-1,
+                            /*logits_soft_cap=*/8.f, sm_scale, rope_scale,
+                            rope_theta, debug_thread_id, debug_warp_id);
                         return SinglePrefillWithKVCacheDispatched<
                             HEAD_DIM, HEAD_DIM, POS_ENCODING_MODE,
                             USE_FP16_QK_REDUCTION, MASK_MODE, AttentionVariant,

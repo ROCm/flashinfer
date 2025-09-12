@@ -2019,7 +2019,8 @@ __device__ __forceinline__ void debug_write_sfrag_to_scratch(
     typename KTraits::DTypeQKAccum (
         *s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     const dim3 tid = threadIdx,
-    uint32_t debug_thread_id = 0)
+    uint32_t debug_thread_id = 0,
+    uint32_t debug_warp_id = 0)
 {
     using DTypeQKAccum = typename KTraits::DTypeQKAccum;
     constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
@@ -2035,7 +2036,7 @@ __device__ __forceinline__ void debug_write_sfrag_to_scratch(
     // Write all thread's fragments to shared memory
     for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
         for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
-            if (lane_idx == debug_thread_id && warp_idx == 0) {
+            if (lane_idx == debug_thread_id && warp_idx == debug_warp_id) {
                 printf("%.6f %.6f %.6f %.6f\n", s_frag[mma_q][mma_kv][0],
                        s_frag[mma_q][mma_kv][1], s_frag[mma_q][mma_kv][2],
                        s_frag[mma_q][mma_kv][3]);
@@ -2410,8 +2411,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
             compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
                                 &k_smem_offset_r, s_frag);
 #if Debug
-            debug_write_sfrag_to_scratch<KTraits>(s_frag, tid,
-                                                  params.debug_thread_id);
+            debug_write_sfrag_to_scratch<KTraits>(
+                s_frag, tid, params.debug_thread_id, params.debug_warp_id);
 
             // if (warp_idx == 0 && lane_idx == 0) {
             //     printf("s_frag results after compute_qk: \n");
