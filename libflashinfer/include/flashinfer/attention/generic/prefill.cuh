@@ -1065,11 +1065,7 @@ __device__ __forceinline__ void compute_qk(
 #endif
             }
             else {
-#if defined(PLATFORM_HIP_DEVICE)
                 k_smem->load_fragment(*k_smem_offset_r, b_frag);
-#else
-                k_smem->load_fragment(*k_smem_offset_r, b_frag);
-#endif
             }
 
             *k_smem_offset_r =
@@ -1129,8 +1125,13 @@ __device__ __forceinline__ void compute_qk(
         }
     }
     *q_smem_offset_r -= KTraits::NUM_MMA_D_QK * QK_SMEM_COLUMN_ADVANCE;
+
+#if defined(PLATFORM_HIP_DEVICE)
+    *k_smem_offset_r -= KTraits::NUM_MMA_D_QK * (QK_SMEM_COLUMN_ADVANCE);
+#elif defined(PLATFORM_CUDA_DEVICE)
     *k_smem_offset_r -=
         KTraits::NUM_MMA_D_QK * sizeof(typename KTraits::DTypeKV);
+#endif
 }
 
 template <typename KTraits, typename Params, typename DTypeQKAccum>
@@ -2363,9 +2364,27 @@ SinglePrefillWithKVCacheDevice(const Params params,
         // Note that LDS is loaded collaboratively by all warps and not each
         // warp accesses the whole K matrix loaded into LDS. Each warp will
         // only access 1/4 of the K values loaded into LDS.
+#endif
+
+#pragma unroll 1
+        for (uint32_t iter = 0; iter < num_iterations; ++iter) {
+            // for (uint32_t iter = 0; iter < 1; ++iter) {
+            memory::wait_group<1>();
+            block.sync();
+
+            if constexpr (KTraits::POS_ENCODING_MODE ==
+                          PosEncodingMode::kRoPELlama)
+            {
+                k_smem_inplace_apply_rotary<KTraits>(
+                    chunk_start + iter * CTA_TILE_KV, &k_smem, &k_smem_offset_r,
+                    rope_freq, tid);
+                block.sync();
+            }
+#if Debug1
+
 #if 0
         if (warp_idx == 0 && lane_idx == 0) {
-            printf("\n DEBUG K LDS ORIGINAL (HIP):\n");
+            printf("\n DEBUG K LDS ORIGINAL (HIP) Iter %d:\n", iter);
             uint32_t k_smem_offset_r_debug;
             for (auto i = 0; i < NUM_MMA_KV * 16; ++i) {
                 for (auto j = 0; j < NUM_MMA_D_QK * 4; ++j) {
@@ -2385,23 +2404,8 @@ SinglePrefillWithKVCacheDevice(const Params params,
             }
         }
 #endif
-#endif
 
-#pragma unroll 1
-        for (uint32_t iter = 0; iter < num_iterations; ++iter) {
-            // for (uint32_t iter = 0; iter < 1; ++iter) {
-            memory::wait_group<1>();
-            block.sync();
-
-            if constexpr (KTraits::POS_ENCODING_MODE ==
-                          PosEncodingMode::kRoPELlama)
-            {
-                k_smem_inplace_apply_rotary<KTraits>(
-                    chunk_start + iter * CTA_TILE_KV, &k_smem, &k_smem_offset_r,
-                    rope_freq, tid);
-                block.sync();
-            }
-#if Debug
+#if 1
             if (warp_idx == 0 && lane_idx == 0) {
                 uint32_t b_frag[KTraits::INT32_ELEMS_PER_THREAD];
                 k_smem.load_fragment(k_smem_offset_r, b_frag);
@@ -2411,13 +2415,23 @@ SinglePrefillWithKVCacheDevice(const Params params,
                         printf("%f ", (float)(*(frag_T + i)));
                     }
                 }
+                printf("\n------------\n");
+                k_smem.load_fragment(k_smem_offset_r, b_frag);
+                frag_T = reinterpret_cast<__half *>(b_frag);
+                for (auto reg_id = 0ul; reg_id < 4; ++reg_id) {
+                    for (auto i = 0ul; i < 4; ++i) {
+                        printf("%f ", (float)(*(frag_T + i)));
+                    }
+                }
+                printf("\n-----===============-------\n");
             }
+#endif
 #endif
 
             // compute attention score
             compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem,
                                 &k_smem_offset_r, s_frag);
-#if Debug1
+#if Debug
             debug_write_sfrag_to_scratch<KTraits>(
                 s_frag, tid, params.debug_thread_id, params.debug_warp_id);
 #endif
