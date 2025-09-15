@@ -965,11 +965,10 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
         static_assert(KTraits::NUM_MMA_D_QK % (2 * KTraits::NUM_WARPS_Q) == 0);
         // horizontal axis: y
         // vertical axis: z
-        // | (warp_idx_z, warp_idx_x)       | 1-16   | 16-32  | 32-48  | 48-64
-        // | ... | 1-16*NUM_MMA_KV                | (0, 0) | (0, 1) | (0, 2) |
-        // (0, 3) | ... | 16*NUM_MMA_KV-32*NUM_MMA_KV    | (1, 0) | (1, 1) | (1,
-        // 2) | (1, 3) | ...
-        // ...
+        // | (warp_idx_z, warp_idx_x)             | 1-16   | 16-32  | 32-48  | 48-64
+        // | ... | 1-16*NUM_MMA_KV                | (0, 0) | (0, 1) | (0, 2) | (0, 3) 
+        // | ... | 16*NUM_MMA_KV-32*NUM_MMA_KV    | (1, 0) | (1, 1) | (1, 2) | (1, 3) 
+        // | ...   ...
         uint32_t kv_idx = kv_idx_base +
                           (warp_idx_z * KTraits::NUM_MMA_KV * 16) +
                           lane_idx / THREADS_PER_BMATRIX_ROW_SET;
