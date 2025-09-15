@@ -228,8 +228,6 @@ single_mha(const std::vector<dtype_q> &q,
                 std::cout << (float)q[info.get_q_elem_offset(i, 0, j)] << " ";
             }
             std::cout << std::endl;
-            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
-            // std::cout << (float)q[info.get_q_elem_offset(0, 0, i)] << " ";
         }
         std::cout << std::endl;
 
@@ -239,7 +237,6 @@ single_mha(const std::vector<dtype_q> &q,
                 std::cout << (float)k[info.get_kv_elem_offset(i, 0, j)] << " ";
             }
             std::cout << std::endl;
-            //  q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)
         }
         std::cout << std::endl;
 #endif
@@ -328,6 +325,15 @@ single_mha(const std::vector<dtype_q> &q,
                     // are spread across 4 threads.
                     for (auto i = 0ul; i < 128; ++i) {
                         std::cout << att[i] << " ";
+                    }
+                    std::cout << std::endl;
+                }
+#endif
+
+#if Debug1
+                if (qo_head_idx == 0) {
+                    for (auto i = 0ul; i < 128; ++i) {
+                        std::cout << denom << " ";
                     }
                     std::cout << std::endl;
                 }
