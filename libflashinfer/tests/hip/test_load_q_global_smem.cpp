@@ -2,10 +2,11 @@
 //
 // SPDX - License - Identifier : Apache 2.0
 
-#include <cassert>
-#include <cmath>
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
+
+#include <cassert>
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -13,21 +14,19 @@
 #include "flashinfer/attention/generic/prefill.cuh"
 #include "flashinfer/attention/generic/variants.cuh"
 #include "utils/cpu_reference_hip.h"
-#include "utils/utils_hip.h" // vec_normal_
+#include "utils/utils_hip.h"  // vec_normal_
 
-namespace
-{
+namespace {
 constexpr uint32_t qo_len = 64;
 constexpr uint32_t num_qo_heads = 1;
 constexpr uint32_t head_dim = 64;
-} // namespace
+}  // namespace
 
 // CPU reference implementation that creates a Q matrix with a kNHD layout and
 // initializes.
-void initialize_cpu_q()
-{
-    std::vector<DTypeQ> q(qo_len * num_qo_heads * head_dim);
-    utils::vec_normal_(q);
+void initialize_cpu_q() {
+  std::vector<DTypeQ> q(qo_len * num_qo_heads * head_dim);
+  utils::vec_normal_(q);
 }
 
 // Validates the original Q matrix on CPU with the copied over data from GPU.
