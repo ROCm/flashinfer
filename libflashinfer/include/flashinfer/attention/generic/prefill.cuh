@@ -384,7 +384,6 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
   static_assert(KTraits::SWIZZLE_MODE_KV == SwizzleMode::kLinear);
   using DTypeKV = typename KTraits::DTypeKV;
   constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;  // 16
-  constexpr uint32_t KV_THR_LAYOUT_ROW = KTraits::KV_THR_LAYOUT_ROW;  // 4
   constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
   constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
   constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
@@ -392,7 +391,6 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
   constexpr uint32_t UPCAST_STRIDE =
       produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
   constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
-  constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
 
   // NOTE: NUM_MMA_KV*4/NUM_WARPS_Q = NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
   static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
@@ -1594,7 +1592,6 @@ template <typename KTraits>
 __device__ __forceinline__ void debug_write_sfrag_to_scratch(
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     const dim3 tid = threadIdx, uint32_t debug_thread_id = 0, uint32_t debug_warp_id = 0) {
-  using DTypeQKAccum = typename KTraits::DTypeQKAccum;
   constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
   constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
   const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z), lane_idx = tid.x;

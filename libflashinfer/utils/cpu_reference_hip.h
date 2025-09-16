@@ -67,7 +67,7 @@ inline std::vector<float> apply_llama_rope(const T* input, size_t D, size_t offs
     if (std::is_same_v<T, half>)
       rst[k] = cos * fi::con::explicit_casting<T, float>(input[k]) + sin * permuted_input[k];
   }
-  return std::move(rst);
+  return rst;
 }
 
 template <typename dtype_q, typename dtype_kv, typename dtype_out>
@@ -86,8 +86,6 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
   std::vector<float> att(kv_len);
   std::vector<float> q_rotary_local(head_dim);
   std::vector<float> k_rotary_local(head_dim);
-
-  float soft_cap_pre_tanh_scale = sm_scale / logits_soft_cap;
 
   DISPATCH_head_dim(head_dim, HEAD_DIM, {
     tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads, kv_layout, HEAD_DIM);
