@@ -49,46 +49,6 @@ inline std::vector<T> exclusive_prefix_sum(const T* input, size_t batch_size, si
 }
 
 template <typename T>
-inline std::vector<float> apply_llama_rope_debug(const T* input, size_t D, size_t offset,
-                                                 float rope_scale, float rope_theta) {
-  std::vector<float> rst(D);
-  std::vector<float> permuted_input(D);
-  // Print the input parameters
-  // Only print for first position to avoid flood
-  if (offset == 134) {  // First position in your log
-    std::cout << "=== CPU ROPE DEBUG ===\n";
-    std::cout << "D: " << D << ", offset: " << offset << ", rope_scale: " << rope_scale
-              << ", rope_theta: " << rope_theta << std::endl;
-
-    std::cout << "CPU Frequencies vs GPU comparison:\n";
-    for (size_t k = 0; k < min(4ul, D); ++k) {
-      float freq_base = float(2 * (k % (D / 2))) / float(D);
-      float frequency = 1.0f / std::pow(rope_theta, freq_base);  // This should match GPU
-      float angle = (offset / rope_scale) / std::pow(rope_theta, freq_base);
-
-      std::cout << "CPU: feature[" << k << "] freq_base=" << freq_base << " frequency=" << frequency
-                << " angle=" << angle << std::endl;
-    }
-  }
-
-  for (size_t k = 0; k < D; ++k) {
-    permuted_input[k] = (k < D / 2) ? -fi::con::explicit_casting<T, float>(input[k + D / 2])
-                                    : fi::con::explicit_casting<T, float>(input[k - D / 2]);
-  }
-
-  for (size_t k = 0; k < D; ++k) {
-    float inv_freq =
-        (offset / rope_scale) / (std::pow(rope_theta, float(2 * (k % (D / 2))) / float(D)));
-    float cos = std::cos(inv_freq);
-    float sin = std::sin(inv_freq);
-
-    if (std::is_same_v<T, half>)
-      rst[k] = cos * fi::con::explicit_casting<T, float>(input[k]) + sin * permuted_input[k];
-  }
-  return rst;
-}
-
-template <typename T>
 inline std::vector<float> apply_llama_rope(const T* input, size_t D, size_t offset,
                                            float rope_scale, float rope_theta) {
   std::vector<float> rst(D);
@@ -107,46 +67,7 @@ inline std::vector<float> apply_llama_rope(const T* input, size_t D, size_t offs
     if (std::is_same_v<T, half>)
       rst[k] = cos * fi::con::explicit_casting<T, float>(input[k]) + sin * permuted_input[k];
   }
-  return rst;
-}
-
-template <typename dtype_q, typename dtype_kv>
-std::vector<float> compute_qk(const std::vector<dtype_q>& q, const std::vector<dtype_kv>& k,
-                              size_t qo_len, size_t kv_len, size_t num_qo_heads,
-                              size_t num_kv_heads, size_t head_dim,
-                              QKVLayout kv_layout = QKVLayout::kHND) {
-  assert(num_qo_heads % num_kv_heads == 0);
-  assert(q.size() == qo_len * num_qo_heads * head_dim);
-  assert(k.size() == kv_len * num_kv_heads * head_dim);
-
-  std::vector<float> qk_scores(qo_len * num_qo_heads * kv_len);
-
-  DISPATCH_head_dim(head_dim, HEAD_DIM, {
-    tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads, kv_layout, HEAD_DIM);
-
-    for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx) {
-      const size_t kv_head_idx = qo_head_idx / info.get_group_size();
-
-      for (size_t q_idx = 0; q_idx < qo_len; ++q_idx) {
-        for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {
-          float qk_score = 0.0f;
-
-          // Pure Q*K^T - NO scaling (matching HIP compute_qk)
-          for (size_t feat_idx = 0; feat_idx < head_dim; ++feat_idx) {
-            qk_score += fi::con::explicit_casting<dtype_q, float>(
-                            q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)]) *
-                        fi::con::explicit_casting<dtype_kv, float>(
-                            k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)]);
-          }
-
-          size_t output_idx = qo_head_idx * qo_len * kv_len + q_idx * kv_len + kv_idx;
-          qk_scores[output_idx] = qk_score;
-        }
-      }
-    }
-  });
-
-  return qk_scores;
+  return std::move(rst);
 }
 
 template <typename dtype_q, typename dtype_kv, typename dtype_out>
