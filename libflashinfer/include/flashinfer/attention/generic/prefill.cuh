@@ -1061,14 +1061,10 @@ __device__ __forceinline__ void update_mdo_states(
             m[mma_q][j] = max(m[mma_q][j], s_frag[mma_q][mma_kv][j]);
           }
           // Butterfly reduction across all threads in the band
-          m[mma_q][j] =
-              max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x8));  // 16 apart
-          m[mma_q][j] =
-              max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x4));  // 8 apart
-          m[mma_q][j] =
-              max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x2));  // 4 apart
-          m[mma_q][j] =
-              max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x1));  // 2 apart
+          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x8));
+          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x4));
+          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x2));
+          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x1));
           float o_scale = gpu_iface::math::ptx_exp2(m_prev * sm_scale - m[mma_q][j] * sm_scale);
 
           // Scale output fragments for this specific row
