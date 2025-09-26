@@ -264,20 +264,16 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t nu
   // for(auto i: att_out) {
   //     std::cout << i << "\n";
   // }
-#if 0
-    float result_accuracy =
-        1. - float(num_results_error_atol) / float(o_ref.size());
-    std::cout << "num_qo_heads=" << num_qo_heads
-              << ", num_kv_heads=" << num_kv_heads << ", qo_len=" << qo_len
-              << ", kv_len=" << kv_len << ", head_dim=" << head_dim
-              << ", causal=" << causal
-              << ", kv_layout=" << QKVLayoutToString(kv_layout)
-              << ", pos_encoding_mode="
-              << PosEncodingModeToString(pos_encoding_mode)
-              << ", result_accuracy=" << result_accuracy << std::endl;
+#if 1
+  float result_accuracy = 1. - float(num_results_error_atol) / float(o_ref.size());
+  std::cout << "num_qo_heads=" << num_qo_heads << ", num_kv_heads=" << num_kv_heads
+            << ", qo_len=" << qo_len << ", kv_len=" << kv_len << ", head_dim=" << head_dim
+            << ", causal=" << causal << ", kv_layout=" << QKVLayoutToString(kv_layout)
+            << ", pos_encoding_mode=" << PosEncodingModeToString(pos_encoding_mode)
+            << ", result_accuracy=" << result_accuracy << std::endl;
 
-    EXPECT_GT(result_accuracy, 0.90) << "Result correctness test failed.";
-    EXPECT_FALSE(nan_detected) << "Nan detected in the result.";
+  EXPECT_GT(result_accuracy, 0.90) << "Result correctness test failed.";
+  EXPECT_FALSE(nan_detected) << "Nan detected in the result.";
 #endif
   FI_GPU_CALL(hipFree(q_d));
   FI_GPU_CALL(hipFree(k_d));

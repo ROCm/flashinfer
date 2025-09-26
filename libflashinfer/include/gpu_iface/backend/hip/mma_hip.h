@@ -77,8 +77,8 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
   const uint16_t* v2 = reinterpret_cast<const uint16_t*>(++smem_ptr);
   const uint16_t* v3 = reinterpret_cast<const uint16_t*>(++smem_ptr);
 
-  R[0] = (static_cast<const uint32_t>(*v0) << 16) | static_cast<const uint32_t>(*v1);
-  R[1] = (static_cast<const uint32_t>(*v2) << 16) | static_cast<const uint32_t>(*v3);
+  R[0] = (static_cast<const uint32_t>(*v1) << 16) | static_cast<const uint32_t>(*v0);
+  R[1] = (static_cast<const uint32_t>(*v3) << 16) | static_cast<const uint32_t>(*v2);
 }
 
 template <typename T>
