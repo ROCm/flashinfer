@@ -37,34 +37,32 @@ __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t* R) {
   uint32_t lane_in_group = lane_id % 4;
 
   // === ROUND 1: Exchange with neighbor (XOR with 1) ===
-  // T0↔T1, T2↔T3 partial exchange
-  uint32_t reg_idx = (lane_in_group >> 1) & 0x1;
-  uint32_t exchanged_val = __shfl_xor(R[reg_idx], 0x1);
+  // T0 <-> T1, T2 <-> T3 partial exchange
+  uint32_t regid = (lane_in_group >> 1) & 0x1;
+  uint32_t exchanged_val = __shfl_xor(R[regid], 0x1);
   uint32_t shift = (lane_in_group & 1) * 16;
-  uint32_t keep_mask = 0xFFFF0000 >> shift;
-  int right_shift_amount = 16 * (1 - (lane_in_group & 1));
-  int left_shift_amount = 16 * (lane_in_group & 1);
-  R[reg_idx] =
-      (R[reg_idx] & keep_mask) | ((exchanged_val >> right_shift_amount) << left_shift_amount);
+  uint32_t keep_mask = 0x0000FFFF << shift;
+  int left_shift_amount = 16 * (1 - (lane_in_group & 1));
+  int right_shift_amount = 16 * (lane_in_group & 1);
+  R[regid] = (R[regid] & keep_mask) | ((exchanged_val >> right_shift_amount) << left_shift_amount);
 
   // === ROUND 2: Exchange with one hop (XOR with 2) ===
-  // T0↔T2, T1↔T3 exchange R[0] and R[1]
+  // T0 <-> T2, T1 <-> T3 exchange R[0] and R[1]
   // Swap entire registers based on thread position
-  uint32_t is_top = 1 - reg_idx;
+  uint32_t is_top = 1 - regid;
   uint32_t temp0 = __shfl_xor(R[0], 0x2);
   uint32_t temp1 = __shfl_xor(R[1], 0x2);
 
   // Compute both possibilities and select
-  R[0] = R[0] * is_top + temp1 * reg_idx;
-  R[1] = temp0 * is_top + R[1] * reg_idx;
+  R[0] = R[0] * is_top + temp1 * regid;
+  R[1] = temp0 * is_top + R[1] * regid;
 
   // === ROUND 3: Exchange with neighbor again (XOR with 1) ===
-  // T0↔T1, T2↔T3 exchange remaining parts
+  // T0 <-> T1, T2 <-> T3 exchange remaining parts
 
-  reg_idx = 1 - reg_idx;
-  exchanged_val = __shfl_xor(R[reg_idx], 0x1);
-  R[reg_idx] =
-      (R[reg_idx] & keep_mask) | ((exchanged_val >> right_shift_amount) << left_shift_amount);
+  regid = 1 - regid;
+  exchanged_val = __shfl_xor(R[regid], 0x1);
+  R[regid] = (R[regid] & keep_mask) | ((exchanged_val >> right_shift_amount) << left_shift_amount);
 }
 
 // Single unified load function for all fragment types

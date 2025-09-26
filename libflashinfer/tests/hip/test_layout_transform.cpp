@@ -42,7 +42,7 @@ __device__ void load_amatrix_layout(half* lds_array, uint32_t* R) {
            __half2float(*(offset + 2)), __half2float(*(offset + 3)));
   }
 
-  flashinfer::gpu_iface::mma_impl::hip::load_fragment<__half>(R, offset);
+  flashinfer::gpu_iface::mma_impl::hip::load_fragment(R, offset);
 
   if (tid == 0) {
     print_register(R);
@@ -82,14 +82,16 @@ __global__ void test_mini_tile_transpose_kernel() {
 
   // Step 4: Print initial register values for verification
   __syncthreads();
-  // print_registers(registers, "Before transpose");
 
   // Step 5: Apply transpose to convert from A-matrix to B/C-matrix layout
-  // flashinfer::gpu_iface::mma_impl::hip::transpose_4x4_half_registers(registers);
+  flashinfer::gpu_iface::mma_impl::hip::transpose_4x4_half_registers(registers);
 
   // Step 6: Print transposed register values
   __syncthreads();
-  // print_registers(registers, "After transpose");
+  if (threadIdx.x == 0) {
+    printf("After Transpose\n");
+    print_lds_array(lds_array);
+  }
 }
 
 // Host code to launch the kernel
