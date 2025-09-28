@@ -32,7 +32,7 @@ __device__ void print_register(uint32_t* R) {
          __half2float(values[2]), __half2float(values[3]));
 }
 
-__device__ void print_register(float* R) { printf("[%f %f %f %f]\n", R[0], R[1], R[3], R[4]); }
+__device__ void print_register(float* R) { printf("[%f %f %f %f]\n", R[0], R[1], R[2], R[3]); }
 
 }  // namespace
 
