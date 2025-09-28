@@ -24,6 +24,18 @@
     }                                                                               \
   }
 
+namespace {
+
+__device__ void print_register(uint32_t* R) {
+  auto values = reinterpret_cast<__half*>(R);
+  printf("[%f %f %f %f]\n", __half2float(values[0]), __half2float(values[1]),
+         __half2float(values[2]), __half2float(values[3]));
+}
+
+__device__ void print_register(float* R) { printf("[%f %f %f %f]\n", R[0], R[1], R[3], R[4]); }
+
+}  // namespace
+
 // Dimensions for our test matrices
 constexpr int M = 16;
 constexpr int N = 16;
@@ -57,7 +69,7 @@ __global__ void test_mfma_kernel(const __half* A, const __half* B, float* C) {
   int b_idx = ((threadIdx.x % 4) + 4 * (threadIdx.x / 16)) * LDB + ((threadIdx.x % 16) / 4) * 4;
 
   flashinfer::gpu_iface::mma::load_fragment<__half>(a_reg, &A[a_idx]);
-  flashinfer::gpu_iface::mma_impl::hip::load_fragment_4x4_half_registers<__half>(b_reg, &B[b_idx]);
+  flashinfer::gpu_iface::mma::load_fragment_transpose_4x4_half_registers<__half>(b_reg, &B[b_idx]);
   flashinfer::gpu_iface::mma::mma_sync_m16n16k16_row_col_f16f16f32<__half>(c_reg, a_reg, b_reg);
 
   for (int i = 0; i < 4; ++i) {
