@@ -12,16 +12,6 @@ using f16 = _Float16;
 using f16x4 = f16 __attribute__((ext_vector_type(4)));
 using f32x4 = float __attribute__((ext_vector_type(4)));
 
-template <typename T>
-__device__ __forceinline__ f32x4 mfma_fp32_16x16x16fp16(f32x4 C, const f16x4 A, const f16x4 B) {
-  if constexpr (std::is_same_v<T, __half>) {
-    return __builtin_amdgcn_mfma_f32_16x16x16f16(A, B, C, 0, 0, 0);
-  } else if constexpr (std::is_same_v<T, __hip_bfloat16>) {
-    return __builtin_amdgcn_mfma_f32_16x16x16bf16_1k(A, B, C, 0, 0, 0);
-  }
-  return C;
-}
-
 }  // namespace
 
 namespace flashinfer {
@@ -78,6 +68,7 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
 template <typename T, mma::MMAMode mma_mode = mma::MMAMode::kInplaceUpdate>
 __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, uint32_t* A,
                                                                      uint32_t* B) {
+#if defined(__HIP_DEVICE_COMPILE__) && (__gfx90a__ || __gfx908__ || __gfx942__)
   // Ensure T is either __half or __hip_bfloat16
   static_assert(std::is_same_v<T, __half> || std::is_same_v<T, __hip_bfloat16>,
                 "T must be __half or __hip_bfloat16");
@@ -95,11 +86,22 @@ __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, u
   f32x4 C_fp32 = reinterpret_cast<f32x4*>(C)[0];
 
   // Perform MMA operation directly with fragments
-  C_fp32 = mfma_fp32_16x16x16fp16<T>(C_fp32, A_fp16, B_fp16);
-  C[0] = C_fp32[0];
-  C[1] = C_fp32[1];
-  C[2] = C_fp32[2];
-  C[3] = C_fp32[3];
+
+  if constexpr (std::is_same_v<T, __half>) {
+    C_fp32 = __builtin_amdgcn_mfma_f32_16x16x16f16(A_fp16, B_fp16, C_fp32, 0, 0, 0);
+  } else if constexpr (std::is_same_v<T, __hip_bfloat16>) {
+    C_fp32 = __builtin_amdgcn_mfma_f32_16x16x16bf16_1k(A_fp16, B_fp16, C_fp32, 0, 0, 0);
+  }
+  
+  reinterpret_cast<f32x4*>(C)[0] = C_fp32;
+  
+  // C[0] = C_fp32[0];
+  // C[1] = C_fp32[1];
+  // C[2] = C_fp32[2];
+  // C[3] = C_fp32[3];
+#elif defined(__HIP_DEVICE_COMPILE__)
+#error "Unsupported GFX platform for MFMA ops.
+#endif
 }
 
 /// @brief Loads a fragment from LDS to two 32bit registers and then transposes
