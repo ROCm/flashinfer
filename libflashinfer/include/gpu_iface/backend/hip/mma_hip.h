@@ -74,18 +74,6 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
   R[1] = reinterpret_cast<const uint32_t*>(smem_ptr)[1];
 }
 
-template <typename T>
-__device__ __forceinline__ void load_fragment_transpose(uint32_t* R, const T* smem_ptr,
-                                                        uint32_t stride) {
-  const uint16_t* v0 = reinterpret_cast<const uint16_t*>(smem_ptr) + 0;
-  const uint16_t* v1 = reinterpret_cast<const uint16_t*>(smem_ptr + 1 * stride);
-  const uint16_t* v2 = reinterpret_cast<const uint16_t*>(smem_ptr + 2 * stride);
-  const uint16_t* v3 = reinterpret_cast<const uint16_t*>(smem_ptr + 3 * stride);
-
-  R[0] = (static_cast<const uint32_t>(*v0) << 16) | static_cast<const uint32_t>(*v1);
-  R[1] = (static_cast<const uint32_t>(*v2) << 16) | static_cast<const uint32_t>(*v3);
-}
-
 // MMA operation for FP16 inputs with FP32 accumulator
 template <typename T, mma::MMAMode mma_mode = mma::MMAMode::kInplaceUpdate>
 __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, uint32_t* A,
