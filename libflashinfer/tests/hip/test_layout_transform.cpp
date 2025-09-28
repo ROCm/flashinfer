@@ -89,8 +89,19 @@ __global__ void test_mini_tile_transpose_kernel() {
   // Step 6: Print transposed register values
   __syncthreads();
   if (threadIdx.x == 0) {
-    printf("After Transpose\n");
-    print_lds_array(lds_array);
+    print_register(registers);
+  }
+  __syncthreads();
+  if (threadIdx.x == 1) {
+    print_register(registers);
+  }
+  __syncthreads();
+  if (threadIdx.x == 2) {
+    print_register(registers);
+  }
+  __syncthreads();
+  if (threadIdx.x == 3) {
+    print_register(registers);
   }
 }
 

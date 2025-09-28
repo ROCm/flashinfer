@@ -70,13 +70,8 @@ __device__ __forceinline__ void transpose_4x4_half_registers(uint32_t* R) {
 /// @param smem_ptr [in] pointer to the shared memory to load the fragment from
 template <typename T>
 __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
-  const uint16_t* v0 = reinterpret_cast<const uint16_t*>(smem_ptr) + 0;
-  const uint16_t* v1 = reinterpret_cast<const uint16_t*>(++smem_ptr);
-  const uint16_t* v2 = reinterpret_cast<const uint16_t*>(++smem_ptr);
-  const uint16_t* v3 = reinterpret_cast<const uint16_t*>(++smem_ptr);
-
-  R[0] = (static_cast<const uint32_t>(*v1) << 16) | static_cast<const uint32_t>(*v0);
-  R[1] = (static_cast<const uint32_t>(*v3) << 16) | static_cast<const uint32_t>(*v2);
+  R[0] = reinterpret_cast<const uint32_t*>(smem_ptr)[0];
+  R[1] = reinterpret_cast<const uint32_t*>(smem_ptr)[1];
 }
 
 template <typename T>
@@ -119,27 +114,26 @@ __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, u
   C[3] = C_fp32[3];
 }
 
-/// Loads a fragment from LDS to two 32bit registers and then transposes
+/// @brief Loads a fragment from LDS to two 32bit registers and then transposes
 /// the registers for a group of four consecuitive threads.
+///
+/// transposes the values in four adjacent threads. The function does the
+/// following layout transformation:
+/// Original data in registers for Threads 0-3 after fragment load
+/// T0 : a b c d
+/// T1 : e f g h
+/// T2 : i j k l
+/// T3 : m n o p
+///
+/// After transposition:
+/// T0 : a e i m
+/// T1 : b f j n
+/// T2 : c g k o
+/// T3 : d h l p
 template <typename T>
 __device__ __forceinline__ void load_fragment_4x4_half_registers(uint32_t* R, const T* smem_ptr) {
   static_assert(std::is_same_v<T, __half>, "Only half type is supported");
-  // Each thread loads 4 __half values in two 32b registers.
   load_fragment(R, smem_ptr);
-  // transposes the values in four adjacent threads. The function does the
-  // following layout transformation:
-  // Original data in registers for Threads 0-3 after fragment load
-  // T0 : a b c d
-  // T1 : e f g h
-  // T2 : i j k l
-  // T3 : m n o p
-  //
-  // After transposition:
-  // T0 : a e i m
-  // T1 : b f j n
-  // T2 : c g k o
-  // T3 : d h l p
-
   transpose_4x4_half_registers(R);
 }
 
