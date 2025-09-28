@@ -94,13 +94,8 @@ __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, u
   }
   
   reinterpret_cast<f32x4*>(C)[0] = C_fp32;
-  
-  // C[0] = C_fp32[0];
-  // C[1] = C_fp32[1];
-  // C[2] = C_fp32[2];
-  // C[3] = C_fp32[3];
 #elif defined(__HIP_DEVICE_COMPILE__)
-#error "Unsupported GFX platform for MFMA ops.
+#error "Unsupported GFX platform for MFMA ops."
 #endif
 }
 
