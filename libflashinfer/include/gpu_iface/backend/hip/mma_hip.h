@@ -174,7 +174,7 @@ __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, u
 /// T2 : c g k o
 /// T3 : d h l p
 template <typename T>
-__device__ __forceinline__ void load_fragment_4x4_half_registers(uint32_t* R, const T* smem_ptr) {
+__device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const T* smem_ptr) {
   static_assert(std::is_same_v<T, __half>, "Only half type is supported");
   load_fragment(R, smem_ptr);
   transpose_intra_quad_fragments(R);
