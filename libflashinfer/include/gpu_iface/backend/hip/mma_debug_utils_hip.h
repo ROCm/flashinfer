@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/backend/hip/mma_hip.h"
+#include "gpu_iface/gpu_runtime_compat.hpp"
 
 namespace flashinfer::gpu_iface::debug_utils::hip {
 
@@ -16,15 +16,15 @@ enum class MatrixLayout { A, B };
 /// @param dimY The height of the 2D array.
 /// @param dimX The width of the 2D array.
 __device__ void lexicographic_init_lds_array(half* lds_array, uint32_t dimY, uint32_t dimX) {
-    const int tid = threadIdx.x;
-    if (tid == 0) {
+  const int tid = threadIdx.x;
+  if (tid == 0) {
     for (int y = 0; y < dimY; ++y) {
-        for (int x = 0; x < dimX; ++x) {
+      for (int x = 0; x < dimX; ++x) {
         lds_array[y * dimX + x] = __half(y * dimX + x);
-        }
+      }
     }
-    }
-    __syncthreads();
+  }
+  __syncthreads();
 }
 
 /// @brief Loads a 16x16 tile from LDS into registers using the A-matrix layout pattern.
@@ -101,9 +101,9 @@ __device__ void print_lds_array(T* lds_array, uint32_t dimY, uint32_t dimX) {
 ///          This reconstructs the standard row-major matrix.
 ///
 ///          B-Layout Pattern:
-///          Each thread `T_(16*br + 4*bc + ti)` (where br=block_row, bc=block_col, ti=thread_in_block)
-///          writes its 4 values to `LDS[4*br + ti, 4*bc : 4*bc+3]`.
-///          This creates a block-transposed matrix in shared memory.
+///          Each thread `T_(16*br + 4*bc + ti)` (where br=block_row, bc=block_col,
+///          ti=thread_in_block) writes its 4 values to `LDS[4*br + ti, 4*bc : 4*bc+3]`. This
+///          creates a block-transposed matrix in shared memory.
 /// @tparam T The data type of the LDS array, must be `__half`.
 /// @param R Pointer to the thread's registers (uint32_t[2]).
 /// @param lds_array Pointer to the shared memory array.
@@ -111,8 +111,8 @@ __device__ void print_lds_array(T* lds_array, uint32_t dimY, uint32_t dimX) {
 /// @param dimX The width of the LDS array.
 /// @param layout The target memory layout (A or B) to use for writing.
 template <typename T>
-__device__ void write_matrix_frag_to_lds(
-    const uint32_t* R, T* lds_array, uint32_t dimY, uint32_t dimX, MatrixLayout layout) {
+__device__ void write_matrix_frag_to_lds(const uint32_t* R, T* lds_array, uint32_t dimY,
+                                         uint32_t dimX, MatrixLayout layout) {
   static_assert(std::is_same_v<T, __half>, "Only supported for __half types");
 
   const int lane_id = threadIdx.x % 64;
@@ -139,4 +139,4 @@ __device__ void write_matrix_frag_to_lds(
   offset[3] = values[3];
 }
 
-} // end of flashinfer::gpu_iface::debug_utils::hip
+}  // namespace flashinfer::gpu_iface::debug_utils::hip
