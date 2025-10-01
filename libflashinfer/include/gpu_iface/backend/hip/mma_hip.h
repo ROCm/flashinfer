@@ -74,8 +74,7 @@ __device__ __forceinline__ void transpose_intra_quad_fragments(uint32_t* R) {
   R[regid] = (R[regid] & keep_mask) | ((exchanged_val >> right_shift_amount) << left_shift_amount);
 }
 
-
-/// @brief Permutes matrix fragments between thread quads in a wavefront to perform a block-wise 
+/// @brief Permutes matrix fragments between thread quads in a wavefront to perform a block-wise
 ///        transpose.
 /// @details This function treats the 64-thread wavefront as a 4x4 grid of thread quads.
 ///          Each quad (4 consecutive threads) is considered to hold a 4x4 data fragment.
@@ -111,7 +110,6 @@ __device__ __forceinline__ void transpose_inter_quad_fragments(uint32_t* R) {
   R[0] = __shfl_xor(R[0], xor_mask, 64);
   R[1] = __shfl_xor(R[1], xor_mask, 64);
 }
-
 
 // Single unified load function for all fragment types
 /// @param R [in] pointer to the register file to load the fragment into
