@@ -81,8 +81,8 @@ __global__ void get_a_to_b_transform_fragments_kernel(half* output) {
   load_amatrix_layout<__half>(lds_array, registers, 16);
 
   // 2. Apply the A -> B transformation
-  flashinfer::gpu_iface::mma_impl::hip::transpose_inter_quad_fragments(registers);
   flashinfer::gpu_iface::mma_impl::hip::transpose_intra_quad_fragments(registers);
+  flashinfer::gpu_iface::mma_impl::hip::transpose_inter_quad_fragments(registers);
 
   // 3. Write final register contents to global memory
   const __half* values = reinterpret_cast<const __half*>(registers);

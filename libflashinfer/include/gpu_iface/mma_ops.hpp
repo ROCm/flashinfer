@@ -37,7 +37,7 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
 template <typename T>
 __device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const T* smem_ptr) {
   static_assert(std::is_same<T, __half>::value,
-                "Only __half is supported for the 4x4 register transpose");
+                "Only __half is supported for load_quad_transposed_fragment");
   mma_detail::load_quad_transposed_fragment<T>(R, smem_ptr);
 }
 #endif
