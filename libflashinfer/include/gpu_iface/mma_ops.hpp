@@ -33,7 +33,7 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
   mma_detail::load_fragment<T>(R, smem_ptr);
 }
 
-#if defined(PLATFORM_HIP_DEVICE) && defined(__gfx942__)
+#if defined(PLATFORM_HIP_DEVICE)
 template <typename T>
 __device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const T* smem_ptr) {
   static_assert(std::is_same<T, __half>::value,
