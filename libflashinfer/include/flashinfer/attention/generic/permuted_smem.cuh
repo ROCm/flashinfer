@@ -144,12 +144,13 @@ struct smem_t {
    *          instruction.
    *          It performs two actions in sequence for a quad of 4 threads:
    *          1. Each thread loads a row-oriented fragment (e.g., 4 `half` values) from shared
-   * memory.
+   *             memory.
    *          2. It then calls `transpose_intra_quad_fragments` to perform an in-register transpose
    *             of this data among the 4 threads.
    *
    *          The result is that each thread's registers are populated with a column-oriented
-   * fragment, which is the required layout for the B-operand in a row-major(A) x col-major(B) MFMA.
+   *          fragment, which is the required layout for the B-operand in a
+   *          row-major(A) x col-major(B) MFMA.
    *
    *          Visual Representation:
    *          If `[a,b,c,d]` are the 4 `half` values loaded by Thread 0:
