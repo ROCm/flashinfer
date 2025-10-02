@@ -36,6 +36,7 @@ using b64_t = uint2;
 /*!
  * \brief Compute the number of elements that can be stored in a b128_t.
  * \tparam T The data type of the elements.
+ * \tparam VectorWidthBits The width in bits for vector operations (64 or 128).
  */
 template <typename T, size_t VectorWidthBits>
 constexpr __host__ __device__ __forceinline__ uint32_t upcast_size() {
@@ -137,13 +138,45 @@ struct smem_t {
 #endif
   }
 
+  /*!
+   * \brief Loads a fragment from shared memory and performs an in-register transpose across a quad.
+   * \details This function is designed to prepare the B-matrix operand for a CDNA3 MFMA
+   *          instruction.
+   *          It performs two actions in sequence for a quad of 4 threads:
+   *          1. Each thread loads a row-oriented fragment (e.g., 4 `half` values) from shared
+   * memory.
+   *          2. It then calls `transpose_intra_quad_fragments` to perform an in-register transpose
+   *             of this data among the 4 threads.
+   *
+   *          The result is that each thread's registers are populated with a column-oriented
+   * fragment, which is the required layout for the B-operand in a row-major(A) x col-major(B) MFMA.
+   *
+   *          Visual Representation:
+   *          If `[a,b,c,d]` are the 4 `half` values loaded by Thread 0:
+   *
+   *          Data in Shared Memory (conceptually):
+   *          Row 0: [a, b, c, d]
+   *          Row 1: [e, f, g, h]
+   *          Row 2: [i, j, k, l]
+   *          Row 3: [m, n, o, p]
+   *
+   *          After this function, registers hold:
+   *          Thread 0: [a, e, i, m] (Column 0)
+   *          Thread 1: [b, f, j, n] (Column 1)
+   *          Thread 2: [c, g, k, o] (Column 2)
+   *          Thread 3: [d, h, l, p] (Column 3)
+   *
+   * \tparam T The type of the register fragment (e.g., uint32_t).
+   * \param offset The starting offset in shared memory for the quad to begin loading.
+   * \param frag A pointer to the thread's local registers to store the resulting column fragment.
+   */
   template <typename T = uint32_t>
-  __device__ __forceinline__ void load_fragment_4x4_transposed(uint32_t offset, T* frag) {
+  __device__ __forceinline__ void load_fragment_and_quad_transpose(uint32_t offset, T* frag) {
 #if defined(PLATFORM_HIP_DEVICE)
     auto smem_t_ptr = reinterpret_cast<const half*>(base + offset);
     flashinfer::gpu_iface::mma::load_quad_transposed_fragment(frag, smem_t_ptr);
 #else
-    static_assert(false, "Not supported on current platform");
+    static_assert(sizeof(T) == 0, "Not supported on current platform");
 #endif
   }
 
