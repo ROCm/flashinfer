@@ -7,6 +7,7 @@
 #define FLASHINFER_PERMUTED_SMEM_CUH_
 
 #include "gpu_iface/memory_ops.hpp"
+#include "gpu_iface/mma_ops.hpp"
 #include "gpu_iface/platform.hpp"
 
 #if 0
@@ -36,12 +37,13 @@ using b64_t = uint2;
  * \brief Compute the number of elements that can be stored in a b128_t.
  * \tparam T The data type of the elements.
  */
-template <typename T, size_t NumBits = 128>
+template <typename T, size_t VectorWidthBits>
 constexpr __host__ __device__ __forceinline__ uint32_t upcast_size() {
-  static_assert(NumBits == 128 || NumBits == 64, "Only 64 and 128 bits are supported");
-  if constexpr (NumBits == 128) {
+  static_assert(VectorWidthBits == 128 || VectorWidthBits == 64,
+                "Only 64 and 128 bits are supported");
+  if constexpr (VectorWidthBits == 128) {
     return sizeof(b128_t) / sizeof(T);
-  } else if constexpr (NumBits == 64) {
+  } else if constexpr (VectorWidthBits == 64) {
     return sizeof(b64_t) / sizeof(T);
   }
 }
@@ -125,6 +127,36 @@ struct smem_t {
     }
   }
 
+  template <typename T = uint32_t>
+  __device__ __forceinline__ void load_fragment(uint32_t offset, T* frag) {
+#if defined(PLATFORM_HIP_DEVICE)
+    static_assert(sizeof(T) == 4, "Only 32-bit fragment loading supported");
+    reinterpret_cast<uint2*>(frag)[0] = *reinterpret_cast<const uint2*>(base + offset);
+#else
+    ldmatrix_m8n8x4(offset, frag);
+#endif
+  }
+
+  template <typename T = uint32_t>
+  __device__ __forceinline__ void load_fragment_4x4_transposed(uint32_t offset, T* frag) {
+#if defined(PLATFORM_HIP_DEVICE)
+    auto smem_t_ptr = reinterpret_cast<const half*>(base + offset);
+    flashinfer::gpu_iface::mma::load_quad_transposed_fragment(frag, smem_t_ptr);
+#else
+    static_assert(false, "Not supported on current platform");
+#endif
+  }
+
+  template <typename T = uint32_t>
+  __device__ __forceinline__ void store_fragment(uint32_t offset, const T* frag) {
+#if defined(PLATFORM_HIP_DEVICE)
+    static_assert(sizeof(T) == 4, "Only 32-bit fragment storing supported");
+    *reinterpret_cast<uint2*>(base + offset) = reinterpret_cast<const uint2*>(frag)[0];
+#else
+    stmatrix_m8n8x4(offset, frag);
+#endif
+  }
+
   __device__ __forceinline__ void ldmatrix_m8n8x4(uint32_t offset, uint32_t* R) {
     // b128_t *smem_ptr = base + offset;
     // mma::ldmatrix_m8n8x4(R, smem_ptr);
@@ -188,9 +220,42 @@ struct smem_t {
                                                         reinterpret_cast<const b64_t*>(gptr));
   }
 
+  template <gpu_mem::SharedMemFillMode fill_mode, typename T>
+  __device__ __forceinline__ void load_vector_async(uint32_t offset, const T* gptr,
+                                                    bool predicate) {
+#if defined(PLATFORM_HIP_DEVICE)
+    load_64b_async<fill_mode>(offset, gptr, predicate);
+#else
+    load_128b_async<fill_mode>(offset, gptr, predicate);
+#endif
+  }
+
+  template <typename T>
+  __device__ __forceinline__ void load_vector_async(uint32_t offset, const T* gptr) {
+#if defined(PLATFORM_HIP_DEVICE)
+    load_64b_async(offset, gptr);
+#else
+    load_128b_async(offset, gptr);
+#endif
+  }
+
   template <typename T>
   __device__ __forceinline__ void store_128b(uint32_t offset, T* gptr) {
     *reinterpret_cast<b128_t*>(gptr) = *(base + offset);
+  }
+
+  template <typename T>
+  __device__ __forceinline__ void store_64b(uint32_t offset, T* gptr) {
+    *reinterpret_cast<b64_t*>(gptr) = *(base + offset);
+  }
+
+  template <typename T>
+  __device__ __forceinline__ void store_vector(uint32_t offset, T* gptr) {
+#if defined(PLATFORM_HIP_DEVICE)
+    store_64b(offset, gptr);
+#else
+    store_128b(offset, gptr);
+#endif
   }
 };
 
