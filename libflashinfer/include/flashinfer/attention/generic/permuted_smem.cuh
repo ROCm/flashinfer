@@ -141,7 +141,7 @@ struct smem_t {
   __device__ __forceinline__ void load_fragment_4x4_transposed(uint32_t offset, T* frag) {
 #if defined(PLATFORM_HIP_DEVICE)
     auto smem_t_ptr = reinterpret_cast<const half*>(base + offset);
-    flashinfer::gpu_iface::mma::load_fragment_transpose_4x4_half_registers(frag, smem_t_ptr);
+    flashinfer::gpu_iface::mma::load_quad_transposed_fragment(frag, smem_t_ptr);
 #else
     static_assert(false, "Not supported on current platform");
 #endif
