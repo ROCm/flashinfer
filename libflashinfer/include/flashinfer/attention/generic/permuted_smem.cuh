@@ -177,7 +177,7 @@ struct smem_t {
     auto smem_t_ptr = reinterpret_cast<const half*>(base + offset);
     flashinfer::gpu_iface::mma::load_quad_transposed_fragment(frag, smem_t_ptr);
 #else
-    static_assert(false, "Not supported on current platform");
+    static_assert(sizeof(T) == 0, "Not supported on current platform");
 #endif
   }
 
