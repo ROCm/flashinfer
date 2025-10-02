@@ -1397,17 +1397,8 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
                  get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + 8 * (lane_idx / 16) +
                      lane_idx % 8,
                  (lane_idx % 16) / 8),
-#if defined(PLATFROM_CUDA_DEVICE)
              v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
                  get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, lane_idx / 16),
-#elif defined(PLATFORM_HIP_DEVICE)
-           v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(),
-
-           // ((threadIdx.x % 4) + 4 * (threadIdx.x / 16)) * LDB + ((threadIdx.x % 16) / 4) * 4;
-      v_smem_offset_r = ((lane_idx % 4) + 4 * get_warp_idx_q<KTraits>(tid.y)) * UPCAST_STRIDE_V +
-                        get_warp_idx_kv<KTraits>(tid.z) * 16 * UPCAST_STRIDE_V +
-                        ((lane_idx % 16) / 4) * 4,
-#endif
              k_smem_offset_w = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
                  warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL,
                  lane_idx % KV_THR_LAYOUT_COL),
