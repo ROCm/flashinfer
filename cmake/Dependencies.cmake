@@ -23,7 +23,6 @@ endif()
 if(FLASHINFER_UNITTESTS)
   find_package(GTest REQUIRED)
   include(GoogleTest)
-  message(STATUS "Found GoogleTest: ${GTEST_INCLUDE_DIRS}")
 endif()
 
 # === Benchmark Dependencies ===
