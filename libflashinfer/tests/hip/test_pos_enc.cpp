@@ -3,14 +3,13 @@
 // SPDX - License - Identifier : Apache 2.0
 
 #include <gtest/gtest.h>
-#include <hip/hip_runtime.h>
 
 #include <cmath>
 #include <random>
 #include <vector>
 
 #include "flashinfer/attention/generic/pos_enc.cuh"
-
+#include "gpu_iface/gpu_runtime_compat.hpp"
 namespace flashinfer {
 namespace {
 
@@ -232,12 +231,10 @@ TYPED_TEST(PosEncTest, TestVecApplyLlamaRope) {
   std::vector<float> h_output_interleave(head_dim);
   std::vector<float> h_output_normal(head_dim);
 
-  ASSERT_EQ(hipMemcpy(h_output_normal.data(), d_output_normal, head_dim * sizeof(float),
-                      hipMemcpyDeviceToHost),
-            hipSuccess);
-  ASSERT_EQ(hipMemcpy(h_output_interleave.data(), d_output_interleave, head_dim * sizeof(float),
-                      hipMemcpyDeviceToHost),
-            hipSuccess);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(h_output_normal.data(), d_output_normal,
+                                        head_dim * sizeof(float), hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(h_output_interleave.data(), d_output_interleave,
+                                        head_dim * sizeof(float), hipMemcpyDeviceToHost)));
 
   // Verify results
 
@@ -246,9 +243,9 @@ TYPED_TEST(PosEncTest, TestVecApplyLlamaRope) {
   EXPECT_TRUE(this->ArraysNearlyEqual(h_ref_output_interleave, h_output_interleave));
 
   // Free device memory
-  hipFree(d_input);
-  hipFree(d_freq);
-  hipFree(d_output_interleave);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_input)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_freq)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_output_interleave)));
 }
 
 TYPED_TEST(PosEncTest, TestVecApplyLlamaRopeCosSinInterleaveReuseHalf) {
@@ -316,10 +313,10 @@ TYPED_TEST(PosEncTest, TestVecApplyLlamaRopeCosSinInterleaveReuseHalf) {
   EXPECT_TRUE(this->ArraysNearlyEqual(h_expected_output, h_output));
 
   // Free device memory
-  hipFree(d_input);
-  hipFree(d_cos);
-  hipFree(d_sin);
-  hipFree(d_output);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_input)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_cos)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_sin)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_output)));
 }
 
 TEST(PosEncodingModeTest, EnumToString) {
