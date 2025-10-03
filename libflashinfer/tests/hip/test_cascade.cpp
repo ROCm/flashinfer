@@ -83,40 +83,51 @@ void _TestVariableLengthMergeKernelCorrectness(size_t seq_len, size_t num_heads,
   float* S_merged_0_device;
   float* S_merged_1_device;
 
-  hipMalloc(&V_padded_device, V_padded_host.size() * sizeof(T));
-  hipMalloc(&V_ragged_device, V_ragged_host.size() * sizeof(T));
-  hipMalloc(&S_padded_device, S_padded_host.size() * sizeof(float));
-  hipMalloc(&S_ragged_device, S_ragged_host.size() * sizeof(float));
-  hipMalloc(&indptr_device, indptr.size() * sizeof(int32_t));
-  hipMalloc(&V_merged_0_device, seq_len * num_heads * head_dim * sizeof(T));
-  hipMalloc(&V_merged_1_device, seq_len * num_heads * head_dim * sizeof(T));
-  hipMalloc(&S_merged_0_device, seq_len * num_heads * sizeof(float));
-  hipMalloc(&S_merged_1_device, seq_len * num_heads * sizeof(float));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&V_padded_device, V_padded_host.size() * sizeof(T))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&V_ragged_device, V_ragged_host.size() * sizeof(T))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_padded_device, S_padded_host.size() * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_ragged_device, S_ragged_host.size() * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&indptr_device, indptr.size() * sizeof(int32_t))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&V_merged_0_device, seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&V_merged_1_device, seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_merged_0_device, seq_len * num_heads * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_merged_1_device, seq_len * num_heads * sizeof(float))));
 
   // Copy data from host to device
-  hipMemcpy(V_padded_device, V_padded_host.data(), V_padded_host.size() * sizeof(T),
-            hipMemcpyHostToDevice);
-  hipMemcpy(V_ragged_device, V_ragged_host.data(), V_ragged_host.size() * sizeof(T),
-            hipMemcpyHostToDevice);
-  hipMemcpy(S_padded_device, S_padded_host.data(), S_padded_host.size() * sizeof(float),
-            hipMemcpyHostToDevice);
-  hipMemcpy(S_ragged_device, S_ragged_host.data(), S_ragged_host.size() * sizeof(float),
-            hipMemcpyHostToDevice);
-  hipMemcpy(indptr_device, indptr.data(), indptr.size() * sizeof(int32_t), hipMemcpyHostToDevice);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(V_padded_device, V_padded_host.data(),
+                                        V_padded_host.size() * sizeof(T), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(V_ragged_device, V_ragged_host.data(),
+                                        V_ragged_host.size() * sizeof(T), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_padded_device, S_padded_host.data(),
+                            S_padded_host.size() * sizeof(float), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_ragged_device, S_ragged_host.data(),
+                            S_ragged_host.size() * sizeof(float), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(indptr_device, indptr.data(),
+                                        indptr.size() * sizeof(int32_t), hipMemcpyHostToDevice)));
 
   // Initialize merged arrays to zero
-  hipMemset(V_merged_0_device, 0, seq_len * num_heads * head_dim * sizeof(T));
-  hipMemset(V_merged_1_device, 0, seq_len * num_heads * head_dim * sizeof(T));
-  hipMemset(S_merged_0_device, 0, seq_len * num_heads * sizeof(float));
-  hipMemset(S_merged_1_device, 0, seq_len * num_heads * sizeof(float));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(V_merged_0_device, 0, seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(V_merged_1_device, 0, seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(S_merged_0_device, 0, seq_len * num_heads * sizeof(float))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(S_merged_1_device, 0, seq_len * num_heads * sizeof(float))));
 
   // Method 0: use MergeStates on padded data
-  MergeStates(V_padded_device, S_padded_device, V_merged_0_device, S_merged_0_device,
-              max_num_index_sets, seq_len, num_heads, head_dim);
+  EXPECT_NO_THROW(FI_GPU_CALL(MergeStates(V_padded_device, S_padded_device, V_merged_0_device,
+                                          S_merged_0_device, max_num_index_sets, seq_len, num_heads,
+                                          head_dim)));
 
   // Method 1: use VariableLengthMergeStates on ragged data
-  VariableLengthMergeStates(V_ragged_device, S_ragged_device, indptr_device, V_merged_1_device,
-                            S_merged_1_device, seq_len, nullptr, num_heads, head_dim);
+  EXPECT_NO_THROW(FI_GPU_CALL(
+      VariableLengthMergeStates(V_ragged_device, S_ragged_device, indptr_device, V_merged_1_device,
+                                S_merged_1_device, seq_len, nullptr, num_heads, head_dim)));
 
   // Allocate host memory for results
   std::vector<T> V_merged_0_host(seq_len * num_heads * head_dim);
@@ -125,14 +136,18 @@ void _TestVariableLengthMergeKernelCorrectness(size_t seq_len, size_t num_heads,
   std::vector<float> S_merged_1_host(seq_len * num_heads);
 
   // Copy results from device to host
-  hipMemcpy(V_merged_0_host.data(), V_merged_0_device, seq_len * num_heads * head_dim * sizeof(T),
-            hipMemcpyDeviceToHost);
-  hipMemcpy(V_merged_1_host.data(), V_merged_1_device, seq_len * num_heads * head_dim * sizeof(T),
-            hipMemcpyDeviceToHost);
-  hipMemcpy(S_merged_0_host.data(), S_merged_0_device, seq_len * num_heads * sizeof(float),
-            hipMemcpyDeviceToHost);
-  hipMemcpy(S_merged_1_host.data(), S_merged_1_device, seq_len * num_heads * sizeof(float),
-            hipMemcpyDeviceToHost);
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(V_merged_0_host.data(), V_merged_0_device,
+                            seq_len * num_heads * head_dim * sizeof(T), hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(V_merged_1_host.data(), V_merged_1_device,
+                            seq_len * num_heads * head_dim * sizeof(T), hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_merged_0_host.data(), S_merged_0_device,
+                            seq_len * num_heads * sizeof(float), hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_merged_1_host.data(), S_merged_1_device,
+                            seq_len * num_heads * sizeof(float), hipMemcpyDeviceToHost)));
 
   // Compare results
   size_t num_V_result_errors_atol_1e_3_rtol_1e_3 = 0, num_S_result_errors_atol_1e_3_rtol_1e_3 = 0;
@@ -164,15 +179,15 @@ void _TestVariableLengthMergeKernelCorrectness(size_t seq_len, size_t num_heads,
   EXPECT_GT(S_result_accuracy, 0.99) << "S result correctness test failed.";
 
   // Free device memory
-  hipFree(V_padded_device);
-  hipFree(V_ragged_device);
-  hipFree(S_padded_device);
-  hipFree(S_ragged_device);
-  hipFree(indptr_device);
-  hipFree(V_merged_0_device);
-  hipFree(V_merged_1_device);
-  hipFree(S_merged_0_device);
-  hipFree(S_merged_1_device);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_padded_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_ragged_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_padded_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_ragged_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(indptr_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_merged_0_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_merged_1_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_merged_0_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_merged_1_device)));
 }
 
 template <typename T>
@@ -207,36 +222,49 @@ void _TestVariableLengthMergeKernelPaddedCorrectness(size_t max_seq_len, size_t 
   float* S_merged_1_device;
   uint32_t* seq_len_device;
 
-  hipMalloc(&V_ragged_device, V_ragged_host.size() * sizeof(T));
-  hipMalloc(&S_ragged_device, S_ragged_host.size() * sizeof(float));
-  hipMalloc(&indptr_device, indptr.size() * sizeof(int32_t));
-  hipMalloc(&V_merged_0_device, max_seq_len * num_heads * head_dim * sizeof(T));
-  hipMalloc(&V_merged_1_device, max_seq_len * num_heads * head_dim * sizeof(T));
-  hipMalloc(&S_merged_0_device, max_seq_len * num_heads * sizeof(float));
-  hipMalloc(&S_merged_1_device, max_seq_len * num_heads * sizeof(float));
-  hipMalloc(&seq_len_device, sizeof(uint32_t));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&V_ragged_device, V_ragged_host.size() * sizeof(T))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_ragged_device, S_ragged_host.size() * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&indptr_device, indptr.size() * sizeof(int32_t))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&V_merged_0_device, max_seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&V_merged_1_device, max_seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&S_merged_0_device, max_seq_len * num_heads * sizeof(float))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&S_merged_1_device, max_seq_len * num_heads * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&seq_len_device, sizeof(uint32_t))));
 
   // Copy data from host to device
-  hipMemcpy(V_ragged_device, V_ragged_host.data(), V_ragged_host.size() * sizeof(T),
-            hipMemcpyHostToDevice);
-  hipMemcpy(S_ragged_device, S_ragged_host.data(), S_ragged_host.size() * sizeof(float),
-            hipMemcpyHostToDevice);
-  hipMemcpy(indptr_device, indptr.data(), indptr.size() * sizeof(int32_t), hipMemcpyHostToDevice);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(V_ragged_device, V_ragged_host.data(),
+                                        V_ragged_host.size() * sizeof(T), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_ragged_device, S_ragged_host.data(),
+                            S_ragged_host.size() * sizeof(float), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(indptr_device, indptr.data(),
+                                        indptr.size() * sizeof(int32_t), hipMemcpyHostToDevice)));
   uint32_t seq_len_value = static_cast<uint32_t>(seq_len);
-  hipMemcpy(seq_len_device, &seq_len_value, sizeof(uint32_t), hipMemcpyHostToDevice);
+  EXPECT_NO_THROW(FI_GPU_CALL(
+      hipMemcpy(seq_len_device, &seq_len_value, sizeof(uint32_t), hipMemcpyHostToDevice)));
 
   // Initialize merged arrays to zero
-  hipMemset(V_merged_0_device, 0, max_seq_len * num_heads * head_dim * sizeof(T));
-  hipMemset(V_merged_1_device, 0, max_seq_len * num_heads * head_dim * sizeof(T));
-  hipMemset(S_merged_0_device, 0, max_seq_len * num_heads * sizeof(float));
-  hipMemset(S_merged_1_device, 0, max_seq_len * num_heads * sizeof(float));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(V_merged_0_device, 0, max_seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(V_merged_1_device, 0, max_seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(S_merged_0_device, 0, max_seq_len * num_heads * sizeof(float))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(S_merged_1_device, 0, max_seq_len * num_heads * sizeof(float))));
 
   // Reference: use VariableLengthMergeStates on the precisely-sized input.
-  VariableLengthMergeStates(V_ragged_device, S_ragged_device, indptr_device, V_merged_0_device,
-                            S_merged_0_device, seq_len, nullptr, num_heads, head_dim);
+  EXPECT_NO_THROW(FI_GPU_CALL(
+      VariableLengthMergeStates(V_ragged_device, S_ragged_device, indptr_device, V_merged_0_device,
+                                S_merged_0_device, seq_len, nullptr, num_heads, head_dim)));
   // Expected: use VariableLengthMergeStates on a padded input
-  VariableLengthMergeStates(V_ragged_device, S_ragged_device, indptr_device, V_merged_1_device,
-                            S_merged_1_device, max_seq_len, seq_len_device, num_heads, head_dim);
+  EXPECT_NO_THROW(FI_GPU_CALL(VariableLengthMergeStates(
+      V_ragged_device, S_ragged_device, indptr_device, V_merged_1_device, S_merged_1_device,
+      max_seq_len, seq_len_device, num_heads, head_dim)));
 
   // Allocate host memory for results
   std::vector<T> V_merged_0_host(max_seq_len * num_heads * head_dim);
@@ -245,14 +273,18 @@ void _TestVariableLengthMergeKernelPaddedCorrectness(size_t max_seq_len, size_t 
   std::vector<float> S_merged_1_host(max_seq_len * num_heads);
 
   // Copy results from device to host
-  hipMemcpy(V_merged_0_host.data(), V_merged_0_device,
-            max_seq_len * num_heads * head_dim * sizeof(T), hipMemcpyDeviceToHost);
-  hipMemcpy(V_merged_1_host.data(), V_merged_1_device,
-            max_seq_len * num_heads * head_dim * sizeof(T), hipMemcpyDeviceToHost);
-  hipMemcpy(S_merged_0_host.data(), S_merged_0_device, max_seq_len * num_heads * sizeof(float),
-            hipMemcpyDeviceToHost);
-  hipMemcpy(S_merged_1_host.data(), S_merged_1_device, max_seq_len * num_heads * sizeof(float),
-            hipMemcpyDeviceToHost);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(V_merged_0_host.data(), V_merged_0_device,
+                                        max_seq_len * num_heads * head_dim * sizeof(T),
+                                        hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(V_merged_1_host.data(), V_merged_1_device,
+                                        max_seq_len * num_heads * head_dim * sizeof(T),
+                                        hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_merged_0_host.data(), S_merged_0_device,
+                            max_seq_len * num_heads * sizeof(float), hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_merged_1_host.data(), S_merged_1_device,
+                            max_seq_len * num_heads * sizeof(float), hipMemcpyDeviceToHost)));
 
   // Compare results
   size_t num_V_result_errors_atol_1e_3_rtol_1e_3 = 0, num_S_result_errors_atol_1e_3_rtol_1e_3 = 0;
@@ -281,14 +313,14 @@ void _TestVariableLengthMergeKernelPaddedCorrectness(size_t max_seq_len, size_t 
   EXPECT_GT(S_result_accuracy, 0.99) << "S result correctness test failed.";
 
   // Free device memory
-  hipFree(V_ragged_device);
-  hipFree(S_ragged_device);
-  hipFree(indptr_device);
-  hipFree(V_merged_0_device);
-  hipFree(V_merged_1_device);
-  hipFree(S_merged_0_device);
-  hipFree(S_merged_1_device);
-  hipFree(seq_len_device);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_ragged_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_ragged_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(indptr_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_merged_0_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_merged_1_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_merged_0_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_merged_1_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(seq_len_device)));
 }
 
 template <typename T>
@@ -335,50 +367,64 @@ void _TestMergeKernelCorrectness(size_t num_index_sets, size_t seq_len, size_t n
   T* V_merged_1_device;
   float* S_merged_1_device;
 
-  hipMalloc(&V_device, V_host.size() * sizeof(T));
-  hipMalloc(&V_device_trans_f32, V_host_trans_f32.size() * sizeof(float));
-  hipMalloc(&S_device, S_host.size() * sizeof(float));
-  hipMalloc(&S_device_trans, S_host_trans.size() * sizeof(float));
-  hipMalloc(&V_merged_0_device, seq_len * num_heads * head_dim * sizeof(float));
-  hipMalloc(&S_merged_0_device, seq_len * num_heads * sizeof(float));
-  hipMalloc(&V_merged_1_device, seq_len * num_heads * head_dim * sizeof(T));
-  hipMalloc(&S_merged_1_device, seq_len * num_heads * sizeof(float));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&V_device, V_host.size() * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&V_device_trans_f32, V_host_trans_f32.size() * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_device, S_host.size() * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_device_trans, S_host_trans.size() * sizeof(float))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&V_merged_0_device, seq_len * num_heads * head_dim * sizeof(float))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_merged_0_device, seq_len * num_heads * sizeof(float))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMalloc(&V_merged_1_device, seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMalloc(&S_merged_1_device, seq_len * num_heads * sizeof(float))));
 
   // Copy data from host to device
-  hipMemcpy(V_device, V_host.data(), V_host.size() * sizeof(T), hipMemcpyHostToDevice);
-  hipMemcpy(V_device_trans_f32, V_host_trans_f32.data(), V_host_trans_f32.size() * sizeof(float),
-            hipMemcpyHostToDevice);
-  hipMemcpy(S_device, S_host.data(), S_host.size() * sizeof(float), hipMemcpyHostToDevice);
-  hipMemcpy(S_device_trans, S_host_trans.data(), S_host_trans.size() * sizeof(float),
-            hipMemcpyHostToDevice);
+  EXPECT_NO_THROW(FI_GPU_CALL(
+      hipMemcpy(V_device, V_host.data(), V_host.size() * sizeof(T), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(V_device_trans_f32, V_host_trans_f32.data(),
+                            V_host_trans_f32.size() * sizeof(float), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(FI_GPU_CALL(
+      hipMemcpy(S_device, S_host.data(), S_host.size() * sizeof(float), hipMemcpyHostToDevice)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_device_trans, S_host_trans.data(),
+                            S_host_trans.size() * sizeof(float), hipMemcpyHostToDevice)));
 
   // Initialize merged arrays to zero
-  hipMemset(V_merged_0_device, 0, seq_len * num_heads * head_dim * sizeof(float));
-  hipMemset(S_merged_0_device, 0, seq_len * num_heads * sizeof(float));
-  hipMemset(V_merged_1_device, 0, seq_len * num_heads * head_dim * sizeof(T));
-  hipMemset(S_merged_1_device, 0, seq_len * num_heads * sizeof(float));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(V_merged_0_device, 0, seq_len * num_heads * head_dim * sizeof(float))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(S_merged_0_device, 0, seq_len * num_heads * sizeof(float))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(V_merged_1_device, 0, seq_len * num_heads * head_dim * sizeof(T))));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemset(S_merged_1_device, 0, seq_len * num_heads * sizeof(float))));
 
   if (num_index_sets > 1) {
     // Method 0: use MergeState
-    MergeState(V_device_trans_f32, S_device_trans,
-               V_device_trans_f32 + seq_len * num_heads * head_dim,
-               S_device_trans + seq_len * num_heads, V_merged_0_device, S_merged_0_device, seq_len,
-               num_heads, head_dim);
+    EXPECT_NO_THROW(FI_GPU_CALL(MergeState(V_device_trans_f32, S_device_trans,
+                                           V_device_trans_f32 + seq_len * num_heads * head_dim,
+                                           S_device_trans + seq_len * num_heads, V_merged_0_device,
+                                           S_merged_0_device, seq_len, num_heads, head_dim)));
     for (uint i = 2; i < num_index_sets; ++i) {
-      MergeStateInPlace(V_merged_0_device, S_merged_0_device,
-                        V_device_trans_f32 + i * seq_len * num_heads * head_dim,
-                        S_device_trans + i * seq_len * num_heads, seq_len, num_heads, head_dim);
+      EXPECT_NO_THROW(FI_GPU_CALL(MergeStateInPlace(
+          V_merged_0_device, S_merged_0_device,
+          V_device_trans_f32 + i * seq_len * num_heads * head_dim,
+          S_device_trans + i * seq_len * num_heads, seq_len, num_heads, head_dim)));
     }
   } else {
-    hipMemcpy(V_merged_0_device, V_device, seq_len * num_heads * head_dim * sizeof(T),
-              hipMemcpyDeviceToDevice);
-    hipMemcpy(S_merged_0_device, S_device, seq_len * num_heads * sizeof(float),
-              hipMemcpyDeviceToDevice);
+    EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(V_merged_0_device, V_device,
+                                          seq_len * num_heads * head_dim * sizeof(T),
+                                          hipMemcpyDeviceToDevice)));
+    EXPECT_NO_THROW(
+        FI_GPU_CALL(hipMemcpy(S_merged_0_device, S_device, seq_len * num_heads * sizeof(float),
+                              hipMemcpyDeviceToDevice)));
   }
 
   // Method 1: use MergeStates
-  MergeStates(V_device, S_device, V_merged_1_device, S_merged_1_device, num_index_sets, seq_len,
-              num_heads, head_dim);
+  EXPECT_NO_THROW(FI_GPU_CALL(MergeStates(V_device, S_device, V_merged_1_device, S_merged_1_device,
+                                          num_index_sets, seq_len, num_heads, head_dim)));
 
   // Allocate host memory for results
   std::vector<float> V_merged_0_host(seq_len * num_heads * head_dim);
@@ -387,14 +433,18 @@ void _TestMergeKernelCorrectness(size_t num_index_sets, size_t seq_len, size_t n
   std::vector<float> S_merged_1_host(seq_len * num_heads);
 
   // Copy results from device to host
-  hipMemcpy(V_merged_0_host.data(), V_merged_0_device,
-            seq_len * num_heads * head_dim * sizeof(float), hipMemcpyDeviceToHost);
-  hipMemcpy(V_merged_1_host.data(), V_merged_1_device, seq_len * num_heads * head_dim * sizeof(T),
-            hipMemcpyDeviceToHost);
-  hipMemcpy(S_merged_0_host.data(), S_merged_0_device, seq_len * num_heads * sizeof(float),
-            hipMemcpyDeviceToHost);
-  hipMemcpy(S_merged_1_host.data(), S_merged_1_device, seq_len * num_heads * sizeof(float),
-            hipMemcpyDeviceToHost);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipMemcpy(V_merged_0_host.data(), V_merged_0_device,
+                                        seq_len * num_heads * head_dim * sizeof(float),
+                                        hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(V_merged_1_host.data(), V_merged_1_device,
+                            seq_len * num_heads * head_dim * sizeof(T), hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_merged_0_host.data(), S_merged_0_device,
+                            seq_len * num_heads * sizeof(float), hipMemcpyDeviceToHost)));
+  EXPECT_NO_THROW(
+      FI_GPU_CALL(hipMemcpy(S_merged_1_host.data(), S_merged_1_device,
+                            seq_len * num_heads * sizeof(float), hipMemcpyDeviceToHost)));
 
   // Compare results
   size_t num_V_result_errors_atol_1e_3_rtol_1e_3 = 0, num_S_result_errors_atol_1e_3_rtol_1e_3 = 0;
@@ -425,14 +475,14 @@ void _TestMergeKernelCorrectness(size_t num_index_sets, size_t seq_len, size_t n
   EXPECT_GT(S_result_accuracy, 0.99) << "S result correctness test failed.";
 
   // Free device memory
-  hipFree(V_device);
-  hipFree(V_device_trans_f32);
-  hipFree(S_device);
-  hipFree(S_device_trans);
-  hipFree(V_merged_0_device);
-  hipFree(S_merged_0_device);
-  hipFree(V_merged_1_device);
-  hipFree(S_merged_1_device);
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_device_trans_f32)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_device_trans)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_merged_0_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_merged_0_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(V_merged_1_device)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(S_merged_1_device)));
 }
 
 template <typename T>
