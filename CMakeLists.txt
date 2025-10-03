@@ -167,6 +167,8 @@ if(FLASHINFER_ENABLE_HIP)
     "-D__HIP_PLATFORM_AMD__=1"
     "-D__HIP_ROCclr__=1"
     "-fno-gpu-rdc"
+    # Note - This Flag is being added to suppress "use of NaN is undefined behavior" warning
+    "-Wno-nan-infinity-disabled"
     "-fPIC"
   )
   # cmake-format: on
