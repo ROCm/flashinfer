@@ -1,7 +1,7 @@
 # cmake-format: off
 # Common configuration function for tests and benchmarks
 function(configure_flashinfer_target)
-  set(options IS_GTEST IS_BENCHMARK)
+  set(options IS_GTEST IS_BENCHMARK IS_HIP)
   set(oneValueArgs TARGET_NAME)
   set(multiValueArgs SOURCES LINK_LIBS COMPILE_FLAGS INCLUDE_DIRS)
 
@@ -27,6 +27,10 @@ function(configure_flashinfer_target)
   # Create executable target
   add_executable(${arg_TARGET_NAME} EXCLUDE_FROM_ALL ${arg_SOURCES})
 
+  if(arg_IS_HIP)
+    set_source_files_properties(${arg_SOURCES} PROPERTIES LANGUAGE HIP)
+  endif()
+
   # Add all include directories
   target_include_directories(
     ${arg_TARGET_NAME}
@@ -39,9 +43,6 @@ function(configure_flashinfer_target)
   foreach(extra_include_dir IN LISTS arg_INCLUDE_DIRS)
     target_include_directories(${arg_TARGET_NAME} PRIVATE ${extra_include_dir})
   endforeach()
-
-  # Add dispatch_inc dependency
-  add_dependencies(${arg_TARGET_NAME} dispatch_inc)
 
   # Add benchmark-specific library for benchmarks
   if(arg_IS_BENCHMARK)
@@ -59,10 +60,7 @@ function(configure_flashinfer_target)
 
   # Add Google Test libraries if required
   if(arg_IS_GTEST)
-    target_include_directories(${arg_TARGET_NAME} PRIVATE
-                              ${gtest_SOURCE_DIR}/include
-                              ${gtest_SOURCE_DIR})
-    target_link_libraries(${arg_TARGET_NAME} PRIVATE gtest gtest_main)
+    target_link_libraries(${arg_TARGET_NAME} PRIVATE GTest::gtest GTest::gtest_main Threads::Threads)
   endif()
 
   # Register with CTest if it's a test

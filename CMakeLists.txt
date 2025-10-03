@@ -43,7 +43,6 @@ set(CMAKE_SKIP_INSTALL_RPATH FALSE)
 # Compiler flags - defined as lists for cleaner management
 set(WARNING_FLAGS
     "-Wall"
-    "-Wextra"
     "-Winit-self"
     "-Wno-switch-bool"
     "-Wunused-function"
@@ -230,6 +229,10 @@ if(FLASHINFER_ENABLE_HIP)
       "gfx942"
       CACHE STRING "HIP architectures for all targets" FORCE)
 
+endif()
+
+if(FLASHINFER_UNITTESTS)
+  enable_testing()
 endif()
 
 # Add library subdirectories
