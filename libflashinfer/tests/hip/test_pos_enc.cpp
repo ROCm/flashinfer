@@ -246,6 +246,7 @@ TYPED_TEST(PosEncTest, TestVecApplyLlamaRope) {
   EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_input)));
   EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_freq)));
   EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_output_interleave)));
+  EXPECT_NO_THROW(FI_GPU_CALL(hipFree(d_output_normal)));
 }
 
 TYPED_TEST(PosEncTest, TestVecApplyLlamaRopeCosSinInterleaveReuseHalf) {
