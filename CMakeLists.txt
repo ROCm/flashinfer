@@ -43,7 +43,6 @@ set(CMAKE_SKIP_INSTALL_RPATH FALSE)
 # Compiler flags - defined as lists for cleaner management
 set(WARNING_FLAGS
     "-Wall"
-    "-Wextra"
     "-Winit-self"
     "-Wno-switch-bool"
     "-Wunused-function"

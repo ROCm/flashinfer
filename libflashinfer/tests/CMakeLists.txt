@@ -4,76 +4,23 @@ set(ALL_TEST_TARGETS "")
 # Include centralized config utilities
 include(ConfigureTargets)
 
-# Include GoogleTest to enable test discovery
-include(GoogleTest)
 find_package(Threads REQUIRED)
 
 # cmake-format: off
 # === HIP C++ Unit Tests Configuration ===
 if(FLASHINFER_ENABLE_HIP)
+  file(GLOB HIP_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/hip/*.cpp")
 
-  configure_flashinfer_target(
-    TARGET_NAME test_batch_decode_hip
-    SOURCES "hip/test_batch_decode.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_cascade_hip
-    SOURCES "hip/test_cascade.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_layout_transform_hip
-    SOURCES "hip/test_layout_transform.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_math_hip
-    SOURCES "hip/test_math.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_mfma_fp32_16x16x16fp16_hip
-    SOURCES "hip/test_mfma_fp32_16x16x16fp16.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_permuted_smem_hip
-    SOURCES "hip/test_permuted_smem.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_pos_enc_hip
-    SOURCES "hip/test_pos_enc.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_rowsum_hip
-    SOURCES "hip/test_rowsum.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
-
-  configure_flashinfer_target(
-    TARGET_NAME test_single_decode_hip
-    SOURCES "hip/test_single_decode.cpp"
-    IS_GTEST ON
-    IS_HIP ON
-  )
+  foreach(test_source IN LISTS HIP_TEST_SOURCES)
+    get_filename_component(test_name ${test_source} NAME_WE)
+    set(target_name "${test_name}_hip")
+    configure_flashinfer_target(
+      TARGET_NAME ${target_name}
+      SOURCES ${test_source}
+      IS_GTEST ON
+      IS_HIP ON
+    )
+  endforeach()
 
 endif(FLASHINFER_ENABLE_HIP)
 # cmake-format: on
