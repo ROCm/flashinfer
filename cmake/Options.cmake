@@ -73,10 +73,10 @@ flashinfer_option(FLASHINFER_PY_LIMITED_API "Use Python's limited API for better
 flashinfer_option(FLASHINFER_MIN_PYTHON_ABI "Minimum Python ABI version for limited API compatibility" "3.9")
 
 # === CUDA OPTIONS ===
-flashinfer_option(FLASHINFER_ENABLE_CUDA "Enable NVIDIA CUDA backend" ON)
+flashinfer_option(FLASHINFER_ENABLE_CUDA "Enable NVIDIA CUDA backend" OFF)
 
 # === HIP/ROCm OPTIONS ===
-flashinfer_option(FLASHINFER_ENABLE_HIP "Enable AMD HIP/ROCm backend" OFF)
+flashinfer_option(FLASHINFER_ENABLE_HIP "Enable AMD HIP/ROCm backend" ON)
 flashinfer_option(FLASHINFER_HIP_ARCHITECTURES "AMD GPU architectures to target" "")
 
 # === AUTO-DERIVED OPTIONS ===
@@ -112,22 +112,24 @@ if(FLASHINFER_ENABLE_HIP AND FLASHINFER_ENABLE_CUDA)
 endif()
 
 # Handle CUDA architectures
-if(FLASHINFER_CUDA_ARCHITECTURES)
-  message(STATUS "CMAKE_CUDA_ARCHITECTURES set to ${FLASHINFER_CUDA_ARCHITECTURES}.")
-else()
-  # No user-provided architectures, try to detect the CUDA archs based on where
-  # the project is being built
-  set(detected_archs "")
-  detect_cuda_architectures(detected_archs)
-  if(detected_archs)
-    set(FLASHINFER_CUDA_ARCHITECTURES ${detected_archs} CACHE STRING
-        "CUDA architectures" FORCE)
-    message(STATUS "Setting FLASHINFER_CUDA_ARCHITECTURES to detected values: ${FLASHINFER_CUDA_ARCHITECTURES}")
+if(FLASHINFER_ENABLE_CUDA)
+  if(FLASHINFER_CUDA_ARCHITECTURES)
+    message(STATUS "CMAKE_CUDA_ARCHITECTURES set to ${FLASHINFER_CUDA_ARCHITECTURES}.")
   else()
-    # No architectures detected, use safe defaults
-    set(FLASHINFER_CUDA_ARCHITECTURES "75;80;86" CACHE STRING
-        "CUDA architectures to compile for" FORCE)
-    message(STATUS "No architectures detected, using defaults: ${FLASHINFER_CUDA_ARCHITECTURES}")
+    # No user-provided architectures, try to detect the CUDA archs based on where
+    # the project is being built
+    set(detected_archs "")
+    detect_cuda_architectures(detected_archs)
+    if(detected_archs)
+      set(FLASHINFER_CUDA_ARCHITECTURES ${detected_archs} CACHE STRING
+          "CUDA architectures" FORCE)
+      message(STATUS "Setting FLASHINFER_CUDA_ARCHITECTURES to detected values: ${FLASHINFER_CUDA_ARCHITECTURES}")
+    else()
+      # No architectures detected, use safe defaults
+      set(FLASHINFER_CUDA_ARCHITECTURES "75;80;86" CACHE STRING
+          "CUDA architectures to compile for" FORCE)
+      message(STATUS "No architectures detected, using defaults: ${FLASHINFER_CUDA_ARCHITECTURES}")
+    endif()
   endif()
 endif()
 

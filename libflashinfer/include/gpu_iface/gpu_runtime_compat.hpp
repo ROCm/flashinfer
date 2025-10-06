@@ -50,7 +50,7 @@
 #define gpuMemcpy cudaMemcpy
 #define gpuMalloc cudaMalloc
 #define gpuMemset cudaMemset
-#define gpFree cudaFree
+#define gpuFree cudaFree
 #define gpuMemCpyAsync cudaMemcpyAsync
 #define gpuMemcpyHostToDevice cudaMemcpyHostToDevice
 #define gpuMemcpyDeviceToHost cudaMemcpyDeviceToHost

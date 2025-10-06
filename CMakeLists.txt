@@ -43,7 +43,6 @@ set(CMAKE_SKIP_INSTALL_RPATH FALSE)
 # Compiler flags - defined as lists for cleaner management
 set(WARNING_FLAGS
     "-Wall"
-    "-Wextra"
     "-Winit-self"
     "-Wno-switch-bool"
     "-Wunused-function"
@@ -168,6 +167,8 @@ if(FLASHINFER_ENABLE_HIP)
     "-D__HIP_PLATFORM_AMD__=1"
     "-D__HIP_ROCclr__=1"
     "-fno-gpu-rdc"
+    # Note - This Flag is being added to suppress "use of NaN is undefined behavior" warning
+    "-Wno-nan-infinity-disabled"
     "-fPIC"
   )
   # cmake-format: on
@@ -230,6 +231,10 @@ if(FLASHINFER_ENABLE_HIP)
       "gfx942"
       CACHE STRING "HIP architectures for all targets" FORCE)
 
+endif()
+
+if(FLASHINFER_UNITTESTS)
+  enable_testing()
 endif()
 
 # Add library subdirectories

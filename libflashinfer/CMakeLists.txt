@@ -64,7 +64,9 @@ message(STATUS "HEAD_DIMS_SM90=${HEAD_DIMS_SM90}")
 # the DECODE_KERNELS_SRCS, PREFILL_KERNELS_SRCS, and DISPATCH_INC_FILE
 # variables.
 include(ConfigureKernelGeneration)
-flashinfer_configure_kernel_generation()
+if(FLASHINFER_BUILD_KERNELS)
+  flashinfer_configure_kernel_generation()
+endif()
 # ---------------------------------------------------------------------------#
 
 # Set the install path for the libflashinfer headers based on whether the build
@@ -97,10 +99,7 @@ flashinfer_generate_config_header(
 # ---------------------------------------------------------------------------#
 
 # Build decode_kernels and prefill_kernels if needed
-if(FLASHINFER_BUILD_KERNELS
-   OR FLASHINFER_UNITTESTS
-   OR FLASHINFER_CXX_BENCHMARKS)
-
+if(FLASHINFER_BUILD_KERNELS)
   set(FLASHINFER_KERNEL_TARGETS "")
 
   add_library(decode_kernels STATIC ${DECODE_KERNELS_SRCS})
