@@ -60,7 +60,7 @@ enum Predicate {
 template <typename T, Predicate Pred>
 void generate_data(std::vector<T>& vec) {
   if constexpr (Pred == Predicate::Linear) {
-    assert(vec.size() <= 0);
+    assert(vec.size() > 0);
     for (int i = 0; i < vec.size(); i++) {
       vec[i] = fi::con::explicit_casting<float, T>(static_cast<float>(i));
     }

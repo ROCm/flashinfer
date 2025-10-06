@@ -1267,7 +1267,7 @@ __device__ __forceinline__ void compute_sfm_v(
 #endif
       } else {
 #if defined(PLATFORM_HIP_DEVICE)
-        v_smem->load_fragment_4x4_transposed(*v_smem_offset_r, b_frag);
+        v_smem->load_fragment_and_quad_transpose(*v_smem_offset_r, b_frag);
 #else
         v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
 #endif
