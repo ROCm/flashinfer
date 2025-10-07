@@ -39,7 +39,7 @@ synchronized with the upstream `v0.2.5` tag.
 
 | Docker Image | ROCm | Flashinfer | PyTorch |
 |---|---|---|---|
-| TBD | 6.4.1 | 0.2.5 | 2.7.1
+| TBD | 6.4.1 | 0.2.5 | 2.7.1 |
 
 ## Table of Contents
 
