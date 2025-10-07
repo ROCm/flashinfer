@@ -177,10 +177,6 @@ ninja
 ./test_<target_test_name>
 ```
 
-```bash
-./test_<target_test_name>
-```
-
 ### 3. To run all tests
 
 ```bash
