@@ -10,10 +10,8 @@
 #include "cascade.cuh"
 #include "decode.cuh"
 #include "default_decode_params.cuh"
+#include "default_prefill_params.cuh"
+#include "prefill.cuh"
 #include "variants.cuh"
-
-// Disabled Prefill for now
-// #include "default_prefill_params.cuh"
-// #include "prefill.cuh"
 
 #endif  // FLASHINFER_ATTENTION_IMPL_CUH_

@@ -70,18 +70,17 @@ def get_single_prefill_module(backend):
             uri = get_single_prefill_uri(backend, *args)
             if has_prebuilt_ops and uri in prebuilt_ops_uri:
                 if backend == "fa2":
-                    _kernels = torch.ops.flashinfer_kernels
+                    _kernels = torch.ops.flashinfer_hip_kernels
 
                     run_func = _kernels.single_prefill_with_kv_cache.default
                 else:
                     _kernels_sm90 = torch.ops.flashinfer_kernels_sm90
-
                     run_func = _kernels_sm90.single_prefill_with_kv_cache_sm90.default
             else:
-                run_func = gen_single_prefill_module(backend, *args).run.default
+                module = gen_single_prefill_module(backend, *args).build_and_load()
+                run_func = module.run.default
 
             # torch library for single_prefill_with_kv_cache
-
             @register_custom_op(
                 f"flashinfer::{uri}_run", mutates_args=("tmp", "o", "maybe_lse")
             )
