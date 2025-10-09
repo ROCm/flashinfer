@@ -26,6 +26,10 @@
 #include "pos_enc.cuh"
 #include "variants.cuh"
 
+#if Debug
+#include "gpu_iface/backend/hip/mma_debug_utils_hip.h"
+#endif
+
 namespace flashinfer {
 
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
@@ -67,9 +71,6 @@ struct SharedStorageQKVO {
     struct {
       alignas(16) DTypeQ q_smem[CTA_TILE_Q * HEAD_DIM_QK];
       alignas(16) DTypeKV k_smem[CTA_TILE_KV * HEAD_DIM_QK];
-#if Debug
-      alignas(16) DTypeKV qk_scratch[CTA_TILE_Q * CTA_TILE_KV];
-#endif
       alignas(16) DTypeKV v_smem[CTA_TILE_KV * HEAD_DIM_VO];
     };
     struct {  // NOTE(Zihao): synchronize attention states across warps
@@ -1067,13 +1068,6 @@ __device__ __forceinline__ void update_mdo_states(
           float o_scale = gpu_iface::math::ptx_exp2(m_prev * sm_scale - m[mma_q][j] * sm_scale);
           d[mma_q][j] *= o_scale;
 
-#if Debug
-          if (warp_idx == 0 && lane_idx == 0) {
-            printf("Max value %f, m_prev %f, o_scale %f, d %f\n", m[mma_q][j], m_prev, o_scale,
-                   float(d[mma_q][j]));
-            printf("-------------\n");
-          }
-#endif
 #pragma unroll
           for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
             o_frag[mma_q][mma_d][j] *= o_scale;
@@ -1116,13 +1110,6 @@ __device__ __forceinline__ void update_mdo_states(
           }
 #endif
         }
-#if Debug1
-        if (warp_idx == 0 && lane_idx == 0) {
-          printf("d[0] %f d[1] %f d[2] %f d[3]%f\n", float(d[mma_q][0]), float(d[mma_q][0]),
-                 float(d[mma_q][0]), float(d[mma_q][0]));
-          printf("-------------\n");
-        }
-#endif
       }
     } else if constexpr (std::is_same_v<DTypeQKAccum, half>) {
 #if defined(PLATFORM_HIP_DEVICE)
@@ -1234,13 +1221,6 @@ __device__ __forceinline__ void compute_sfm_v(
 #endif
         }
       }
-#if Debug
-      if (debug_warp_idx == 0 && debug_lane_idx == 0) {
-        printf("After rowsum: d[0] %f d[1] %f d[2] %f d[3] %f\n", float(d[mma_q][0]),
-               float(d[mma_q][0]), float(d[mma_q][0]), float(d[mma_q][0]));
-        printf("-------------\n");
-      }
-#endif
     }
   }
 
@@ -1749,6 +1729,12 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     }
     init_states<KTraits>(variant, o_frag, m, d);
 
+#if Debug
+    // Statically allocate a shared memory array specifically for debugging s_frag.
+    // This avoids modifying the main SharedStorage union.
+    __shared__ DTypeQKAccum qk_scratch[CTA_TILE_Q * CTA_TILE_KV];
+#endif
+
     // cooperative fetch q fragment from gmem to reg
     const uint32_t qo_packed_idx_base =
         (bx * NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) * NUM_MMA_Q * 16;
@@ -1811,16 +1797,18 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 #if defined(PLATFORM_HIP_DEVICE)
     uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
         get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
+    uint32_t v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
+        get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + (lane_idx % 4) + 4 * (lane_idx / 16),
+        lane_idx / 4);
 #elif defined(PLATFORM_CUDA_DEVICE)
   uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
       get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + 8 * (lane_idx / 16) + lane_idx % 8,
       (lane_idx % 16) / 8);
+  uint32_t v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
+      get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + (lane_idx % 4) + 4 * (lane_idx / 16),
+      lane_idx / 4);
 #endif
-    uint32_t v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
-                 get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + (lane_idx % 4) +
-                     4 * (lane_idx / 16),
-                 lane_idx / 4),
-             k_smem_offset_w = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
+    uint32_t k_smem_offset_w = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
                  warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL,
                  lane_idx % KV_THR_LAYOUT_COL),
              v_smem_offset_w = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
@@ -1832,11 +1820,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(v_smem, &v_smem_offset_w, &v_ptr,
                                                             v_stride_n, 0, chunk_size, tid);
     memory::commit_group();
-
 #if Debug
-
-    smem_t<SwizzleMode::kLinear, typename KTraits::SmemBasePtrTy> scratch(smem_storage.qk_scratch);
-
     // if (warp_idx == 0 && lane_idx == 0) {
     //     printf("partition_kv : %d\n", partition_kv);
     //     printf("kv_len : %d\n", kv_len);
@@ -1871,16 +1855,16 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     // Prints the (NUM_MMA_KV*16) x (NUM_MMA_D*16) matrix from global mem.
 
     if (warp_idx == 0 && lane_idx == 0) {
-      // printf("\n DEBUG K Global (HIP):\n");
-      // printf("k_stride_n : %d\n", k_stride_n);
-      // printf("k_stride_h : %d\n", k_stride_h);
-      // printf("kv_head_idx : %d\n", kv_head_idx);
-      // printf("num_qo_heads : %d\n", num_qo_heads);
-      // printf("num_kv_heads : %d\n", num_kv_heads);
-      // printf("k_stride_n : %d\n", k_stride_n);
-      // printf("KTraits::NUM_MMA_D_QK : %d\n", KTraits::NUM_MMA_D_QK);
-      // printf("NUM_MMA_KV : %d\n", NUM_MMA_KV);
-      // printf("NUM_MMA_Q : %d\n", NUM_MMA_Q);
+      printf("\n DEBUG K Global (HIP):\n");
+      printf("k_stride_n : %d\n", k_stride_n);
+      printf("k_stride_h : %d\n", k_stride_h);
+      printf("kv_head_idx : %d\n", kv_head_idx);
+      printf("num_qo_heads : %d\n", num_qo_heads);
+      printf("num_kv_heads : %d\n", num_kv_heads);
+      printf("k_stride_n : %d\n", k_stride_n);
+      printf("KTraits::NUM_MMA_D_QK : %d\n", KTraits::NUM_MMA_D_QK);
+      printf("NUM_MMA_KV : %d\n", NUM_MMA_KV);
+      printf("NUM_MMA_Q : %d\n", NUM_MMA_Q);
 #if 0
             DTypeKV *k_ptr_tmp = k +
                                  (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
@@ -1967,27 +1951,23 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 
       // compute attention score
       compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag);
-#if Debug1
-      if (params.debug_thread_id == lane_idx && params.debug_warp_id == warp_idx) {
-        printf("After compute_qk\n");
-      }
-      debug_write_sfrag_to_scratch<KTraits>(s_frag, tid, params.debug_thread_id,
-                                            params.debug_warp_id);
+#if Debug
+      flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
+                                                                      CTA_TILE_KV, tid);
+
+      // a) Print thread 0's registers to see the source data.
+      flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, tid);
+
+      // b) Print the materialized LDS array to see the final result for this iteration.
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(qk_scratch, CTA_TILE_Q, CTA_TILE_KV);
+
 #endif
       logits_transform<KTraits>(
           params, variant, /*batch_idx=*/0, qo_packed_idx_base,
           chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
           qo_len, kv_len, group_size, s_frag, tid, kv_head_idx);
-
-#if Debug1
-      if (params.debug_thread_id == lane_idx && params.debug_warp_id == warp_idx) {
-        printf("params.sm_scale %f, params.logits_soft_cap %f\n", params.sm_scale,
-               params.logits_soft_cap);
-        printf("After logits_transform\n");
-      }
-      debug_write_sfrag_to_scratch<KTraits>(s_frag, tid, params.debug_thread_id,
-                                            params.debug_warp_id);
-#endif
 
       // apply mask
       if (MASK_MODE == MaskMode::kCustom || (iter >= mask_iteration || iter < window_iteration)) {
@@ -1997,21 +1977,8 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
             qo_len, kv_len, chunk_end, group_size, s_frag, tid, kv_head_idx);
       }
 
-#if Debug1
-      // if(params.debug_thread_id == lane_idx && params.debug_warp_id == warp_idx) {
-      //   printf("Before update_mdo_states\n");
-      // }
-      debug_write_sfrag_to_scratch<KTraits>(s_frag, tid, params.debug_thread_id,
-                                            params.debug_warp_id);
-#endif
-
       // compute m,d states in online softmax
       update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d, warp_idx, lane_idx);
-
-#if Debug1
-      debug_write_sfrag_to_scratch<KTraits>(s_frag, tid, params.debug_thread_id,
-                                            params.debug_warp_id);
-#endif
       block.sync();
       produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
           k_smem, &k_smem_offset_w, &k_ptr, k_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
