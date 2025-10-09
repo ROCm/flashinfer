@@ -170,6 +170,7 @@ def get_instantiation_cu(args: argparse.Namespace) -> List[str]:
                 dtype_q,  # dtype_q
                 dtype_kv,  # dtype_kv
                 dtype_q,  # dtype_out
+                generate_hip,
             )
             for use_sliding_window in [True, False]:
                 for use_logits_soft_cap in [True, False]:
@@ -218,6 +219,7 @@ def get_instantiation_cu(args: argparse.Namespace) -> List[str]:
                 dtype_kv,  # dtype_kv
                 dtype_q,  # dtype_out
                 idtype,
+                generate_hip,
             )
             write_if_different(path / fname, content)
 
@@ -232,6 +234,7 @@ def get_instantiation_cu(args: argparse.Namespace) -> List[str]:
                 dtype_kv,  # dtype_kv
                 dtype_q,  # dtype_out
                 idtype,
+                generate_hip,
             )
             write_if_different(path / fname, content)
 
@@ -258,7 +261,6 @@ def get_instantiation_cu(args: argparse.Namespace) -> List[str]:
         + single_prefill_uris
         + batch_prefill_uris
     )
-    print(final_list)
     return final_list
 
 

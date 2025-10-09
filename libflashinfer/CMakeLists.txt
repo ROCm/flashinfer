@@ -64,9 +64,7 @@ message(STATUS "HEAD_DIMS_SM90=${HEAD_DIMS_SM90}")
 # the DECODE_KERNELS_SRCS, PREFILL_KERNELS_SRCS, and DISPATCH_INC_FILE
 # variables.
 include(ConfigureKernelGeneration)
-if(FLASHINFER_BUILD_KERNELS)
-  flashinfer_configure_kernel_generation()
-endif()
+flashinfer_configure_kernel_generation()
 # ---------------------------------------------------------------------------#
 
 # Set the install path for the libflashinfer headers based on whether the build
@@ -99,17 +97,27 @@ flashinfer_generate_config_header(
 # ---------------------------------------------------------------------------#
 
 # Build decode_kernels and prefill_kernels if needed
-if(FLASHINFER_BUILD_KERNELS)
+if(FLASHINFER_BUILD_KERNELS
+   OR FLASHINFER_UNITTESTS
+   OR FLASHINFER_CXX_BENCHMARKS)
+
   set(FLASHINFER_KERNEL_TARGETS "")
 
   add_library(decode_kernels STATIC ${DECODE_KERNELS_SRCS})
+  add_library(prefill_kernels STATIC ${PREFILL_KERNELS_SRCS})
+
   add_library(flashinfer::decode_kernels ALIAS decode_kernels)
+  add_library(flashinfer::prefill_kernels ALIAS prefill_kernels)
+
   target_include_directories(decode_kernels PRIVATE ${FLASHINFER_INCLUDE_DIR})
+  target_include_directories(prefill_kernels PRIVATE ${FLASHINFER_INCLUDE_DIR})
+
   if(FLASHINFER_GEN_USE_FP16_QK_REDUCTIONS)
     target_link_libraries(decode_kernels PRIVATE Boost::math)
+    target_link_libraries(prefill_kernels PRIVATE Boost::math)
   endif()
 
-  list(APPEND FLASHINFER_KERNEL_TARGETS decode_kernels)
+  list(APPEND FLASHINFER_KERNEL_TARGETS decode_kernels prefill_kernels)
 
   # NOTE: The prefill_kernels is not yet supported on HIP
   if(FLASHINFER_ENABLE_CUDA)
@@ -125,8 +133,11 @@ if(FLASHINFER_BUILD_KERNELS)
 
   if(FLASHINFER_ENABLE_HIP)
     set_source_files_properties(${DECODE_KERNELS_SRCS} PROPERTIES LANGUAGE HIP)
+    set_source_files_properties(${PREFILL_KERNELS_SRCS} PROPERTIES LANGUAGE HIP)
     foreach(flag ${FLASHINFER_HIPCC_FLAGS})
       target_compile_options(decode_kernels
+                             PRIVATE $<$<COMPILE_LANGUAGE:HIP>:${flag}>)
+      target_compile_options(prefill_kernels
                              PRIVATE $<$<COMPILE_LANGUAGE:HIP>:${flag}>)
     endforeach()
   endif()
