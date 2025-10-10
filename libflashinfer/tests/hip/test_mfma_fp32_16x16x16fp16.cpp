@@ -24,18 +24,6 @@
     }                                                                               \
   }
 
-namespace {
-
-__device__ void print_register(uint32_t* R) {
-  auto values = reinterpret_cast<__half*>(R);
-  printf("[%f %f %f %f]\n", __half2float(values[0]), __half2float(values[1]),
-         __half2float(values[2]), __half2float(values[3]));
-}
-
-__device__ void print_register(float* R) { printf("[%f %f %f %f]\n", R[0], R[1], R[3], R[4]); }
-
-}  // namespace
-
 // Dimensions for our test matrices
 constexpr int M = 16;
 constexpr int N = 16;
