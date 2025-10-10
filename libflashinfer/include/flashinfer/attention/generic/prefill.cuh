@@ -1166,8 +1166,7 @@ __device__ __forceinline__ void compute_sfm_v(
     uint32_t* v_smem_offset_r,
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const dim3 tid = threadIdx,
-    uint32_t debug_warp_idx = 0, uint32_t debug_lane_idx = 0) {
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const dim3 tid = threadIdx) {
   constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
@@ -1185,25 +1184,6 @@ __device__ __forceinline__ void compute_sfm_v(
       }
     }
   }
-
-#if Debug1
-  // Debug the state of attention score matrix before rowsum to compute denom
-  constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
-  constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
-  const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z), lane_idx = tid.x;
-
-  // Write all thread's fragments to shared memory
-  for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
-    for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
-      if (lane_idx == debug_lane_idx && warp_idx == debug_warp_idx) {
-        printf("%.6f %.6f %.6f %.6f\n", s_frag[mma_q][mma_kv][0], s_frag[mma_q][mma_kv][1],
-               s_frag[mma_q][mma_kv][2], s_frag[mma_q][mma_kv][3]);
-      }
-    }
-  }
-  __syncthreads();
-
-#endif
 
   if constexpr (KTraits::AttentionVariant::use_softmax) {
 #pragma unroll
@@ -1600,26 +1580,6 @@ __device__ __forceinline__ void write_o_reg_gmem(
 
 }  // namespace
 
-template <typename KTraits>
-__device__ __forceinline__ void debug_write_sfrag_to_scratch(
-    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
-    const dim3 tid = threadIdx, uint32_t debug_thread_id = 0, uint32_t debug_warp_id = 0) {
-  constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
-  constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
-  const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z), lane_idx = tid.x;
-
-  // Write all thread's fragments to shared memory
-  for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
-    for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
-      if (lane_idx == debug_thread_id && warp_idx == debug_warp_id) {
-        printf("%.6f %.6f %.6f %.6f\n", s_frag[mma_q][mma_kv][0], s_frag[mma_q][mma_kv][1],
-               s_frag[mma_q][mma_kv][2], s_frag[mma_q][mma_kv][3]);
-      }
-    }
-  }
-  __syncthreads();
-}
-
 /*!
  * \brief FlashAttention prefill CUDA kernel for a single request.
  * \tparam partition_kv Whether to split kv_len into chunks.
@@ -1987,8 +1947,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       block.sync();
 
       // compute sfm*v
-      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid,
-                             params.debug_warp_id, params.debug_thread_id);
+      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid);
       block.sync();
       produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
           v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
