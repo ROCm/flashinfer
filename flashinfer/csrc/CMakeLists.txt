@@ -39,7 +39,9 @@ file(
   "${CMAKE_CURRENT_SOURCE_DIR}/norm_hip.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/page_hip.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/rope_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/single_decode_hip.cu")
+  "${CMAKE_CURRENT_SOURCE_DIR}/single_decode_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/batch_prefill_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill_hip.cu")
 
 # SM90-specific sources
 file(
@@ -85,6 +87,7 @@ if(FLASHINFER_ENABLE_HIP)
       ${COMMON_HIP_INCLUDE_DIRS}
     LINK_LIBS
       $<$<TARGET_EXISTS:flashinfer::decode_kernels>:flashinfer::decode_kernels>
+      $<$<TARGET_EXISTS:flashinfer::prefill_kernels>:flashinfer::prefill_kernels>
     COMPILE_FLAGS
       $<$<COMPILE_LANGUAGE:CXX>:-Wno-switch-bool>
     PY_LIMITED_API ${FLASHINFER_PY_LIMITED_API}

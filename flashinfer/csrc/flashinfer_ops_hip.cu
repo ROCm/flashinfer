@@ -96,42 +96,34 @@ void block_sparse_indices_to_vector_sparse_offsets(
     at::Tensor vector_sparse_offsets, at::Tensor vector_sparse_indptr, at::Tensor kv_len_arr,
     int64_t stride_block, int64_t stride_n, int64_t batch_size, int64_t block_size);
 
-// //========== prefill ==========
+//========== prefill ==========
 
-// void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v,
-// at::Tensor tmp,
-//                                   at::Tensor o, std::optional<at::Tensor>
-//                                   maybe_lse, int64_t mask_mode_code, int64_t
-//                                   layout, int64_t window_left
-//                                   SINGLE_PREFILL_ADDITIONAL_FUNC_PARAMS);
+void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::Tensor tmp,
+                                  at::Tensor o, std::optional<at::Tensor> maybe_lse,
+                                  int64_t mask_mode_code, int64_t layout,
+                                  int64_t window_left SINGLE_PREFILL_ADDITIONAL_FUNC_PARAMS);
 
-// at::Tensor BatchPrefillWithKVCachePlan(
-//     at::Tensor float_workspace_buffer, at::Tensor int_workspace_buffer,
-//     at::Tensor page_locked_int_workspace_buffer, at::Tensor qo_indptr,
-//     at::Tensor kv_indptr, at::Tensor kv_len_arr, int64_t total_num_rows,
-//     int64_t batch_size, int64_t num_qo_heads, int64_t num_kv_heads, int64_t
-//     page_size, bool enable_cuda_graph, int64_t head_dim_qk, int64_t
-//     head_dim_vo, bool causal);
+at::Tensor BatchPrefillWithKVCachePlan(
+    at::Tensor float_workspace_buffer, at::Tensor int_workspace_buffer,
+    at::Tensor page_locked_int_workspace_buffer, at::Tensor qo_indptr, at::Tensor kv_indptr,
+    at::Tensor kv_len_arr, int64_t total_num_rows, int64_t batch_size, int64_t num_qo_heads,
+    int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t head_dim_qk,
+    int64_t head_dim_vo, bool causal);
 
-// void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
-//                                       at::Tensor int_workspace_buffer,
-//                                       at::Tensor plan_info_vec, at::Tensor q,
-//                                       at::Tensor k, at::Tensor v, at::Tensor
-//                                       qo_indptr, at::Tensor kv_indptr,
-//                                       at::Tensor o, std::optional<at::Tensor>
-//                                       maybe_lse, int64_t mask_mode_code,
-//                                       int64_t layout,
-//                                       int64_t window_left
-//                                       BATCH_PREFILL_ADDITIONAL_FUNC_PARAMS);
+void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
+                                      at::Tensor int_workspace_buffer, at::Tensor plan_info_vec,
+                                      at::Tensor q, at::Tensor k, at::Tensor v,
+                                      at::Tensor qo_indptr, at::Tensor kv_indptr, at::Tensor o,
+                                      std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code,
+                                      int64_t layout,
+                                      int64_t window_left BATCH_PREFILL_ADDITIONAL_FUNC_PARAMS);
 
-// void BatchPrefillWithPagedKVCacheRun(
-//     at::Tensor float_workspace_buffer, at::Tensor int_workspace_buffer,
-//     at::Tensor plan_info_vec, at::Tensor q, at::Tensor paged_k_cache,
-//     at::Tensor paged_v_cache, at::Tensor qo_indptr, at::Tensor
-//     paged_kv_indptr, at::Tensor paged_kv_indices, at::Tensor
-//     paged_kv_last_page_len, at::Tensor o, std::optional<at::Tensor>
-//     maybe_lse, int64_t mask_mode_code, int64_t layout, int64_t window_left
-//     BATCH_PREFILL_ADDITIONAL_FUNC_PARAMS);
+void BatchPrefillWithPagedKVCacheRun(
+    at::Tensor float_workspace_buffer, at::Tensor int_workspace_buffer, at::Tensor plan_info_vec,
+    at::Tensor q, at::Tensor paged_k_cache, at::Tensor paged_v_cache, at::Tensor qo_indptr,
+    at::Tensor paged_kv_indptr, at::Tensor paged_kv_indices, at::Tensor paged_kv_last_page_len,
+    at::Tensor o, std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code, int64_t layout,
+    int64_t window_left BATCH_PREFILL_ADDITIONAL_FUNC_PARAMS);
 
 //========== pod-attention =========
 // void pod_with_kv_cache_tensor(
@@ -220,11 +212,11 @@ void apply_rope_pos_ids_cos_sin_cache(at::Tensor q, at::Tensor k, at::Tensor q_r
 // void top_k_top_p_sampling_from_probs(at::Tensor probs,
 //                                      at::Tensor output,
 //                                      std::optional<at::Tensor> maybe_indices,
-//                                      std::optional<at::Tensor> maybe_top_k_arr,
-//                                      double top_k_val,
-//                                      std::optional<at::Tensor> maybe_top_p_arr,
-//                                      double top_p_val,
-//                                      bool deterministic,
+//                                      std::optional<at::Tensor>
+//                                      maybe_top_k_arr, double top_k_val,
+//                                      std::optional<at::Tensor>
+//                                      maybe_top_p_arr, double top_p_val, bool
+//                                      deterministic,
 //                                      std::optional<at::Generator> gen);
 
 // void top_p_renorm_probs(at::Tensor probs,
@@ -301,14 +293,12 @@ TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   m.def("block_sparse_indices_to_vector_sparse_offsets",
         block_sparse_indices_to_vector_sparse_offsets);
 
-  //   // prefill
-  //   // Single-request prefill attention with KV-Cache operator
-  //   m.def("single_prefill_with_kv_cache", single_prefill_with_kv_cache);
-  //   m.def("batch_prefill_with_kv_cache_plan", BatchPrefillWithKVCachePlan);
-  //   m.def("batch_prefill_with_ragged_kv_cache_run",
-  //   BatchPrefillWithRaggedKVCacheRun);
-  //   m.def("batch_prefill_with_paged_kv_cache_run",
-  //   BatchPrefillWithPagedKVCacheRun);
+  // prefill
+  // Single-request prefill attention with KV-Cache operator
+  m.def("single_prefill_with_kv_cache", single_prefill_with_kv_cache);
+  m.def("batch_prefill_with_kv_cache_plan", BatchPrefillWithKVCachePlan);
+  m.def("batch_prefill_with_ragged_kv_cache_run", BatchPrefillWithRaggedKVCacheRun);
+  m.def("batch_prefill_with_paged_kv_cache_run", BatchPrefillWithPagedKVCacheRun);
 
   // pod-attention
   // Temporarily disabled because we don't generate the implementation yet.
@@ -342,7 +332,8 @@ TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   // // Top-p sampling from probabilities
   // m.def("top_p_sampling_from_probs", top_p_sampling_from_probs);
   // // Top-k and top-p sampling from probabilities
-  // m.def("top_k_top_p_sampling_from_probs", top_k_top_p_sampling_from_probs);
+  // m.def("top_k_top_p_sampling_from_probs",
+  // top_k_top_p_sampling_from_probs);
   // // Renormalize probabilities by top-k mask
   // m.def("top_k_renorm_probs", top_k_renorm_probs);
   // // Renormalize probabilities by top-p mask
