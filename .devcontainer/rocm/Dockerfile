@@ -32,8 +32,7 @@ ENV MAMBA_ROOT_PREFIX="/opt/conda"
 ENV MAMBA_EXE="/bin/micromamba"
 
 # Silence warning where the UID and GID are out of the usual range,
-# create a non-root user, and configure SSH server to allow SSH connections into
-# a detached container instance.
+# create a non-root user.
 RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     groupadd --gid $USER_GID $USERNAME && \
