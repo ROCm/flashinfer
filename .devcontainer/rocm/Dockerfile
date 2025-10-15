@@ -1,4 +1,4 @@
-ARG ROCM_VERSION=6.4
+ARG ROCM_VERSION=6.4.1
 
 FROM mambaorg/micromamba:2.1.1 as micromamba
 
@@ -6,7 +6,7 @@ FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete
 
 ARG ROCM_VERSION
 ARG PY_VERSION=3.12
-ARG TORCH_VERSION=2.6
+ARG TORCH_VERSION=2.7.1
 
 # Update package lists and install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -16,7 +16,9 @@ RUN apt-get update && apt-get install -y \
     clang-format \
     clangd-19 \
     vim \
+    emacs \
     zsh \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user
@@ -29,20 +31,15 @@ ENV MAMBA_USER=$USERNAME
 ENV MAMBA_ROOT_PREFIX="/opt/conda"
 ENV MAMBA_EXE="/bin/micromamba"
 
-# To silence warning where the UID and GID are out of the usual range
+# Silence warning where the UID and GID are out of the usual range,
+# create a non-root user.
 RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
-    sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs
-
-RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
-    # [Optional] Add sudo support
-    && apt-get update \
-    && apt-get install -y sudo \
-    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
-    && chmod 0440 /etc/sudoers.d/$USERNAME \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN usermod -a -G render $USERNAME
+    sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
+    groupadd --gid $USER_GID $USERNAME && \
+    useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
+    echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME && \
+    chmod 0440 /etc/sudoers.d/$USERNAME && \
+    usermod -a -G render $USERNAME
 
 # Copy over needed files from the micromamba image
 # Refer: https://micromamba-docker.readthedocs.io/en/latest/advanced_usage.html
@@ -60,21 +57,20 @@ RUN /usr/local/bin/_dockerfile_initialize_user_accounts.sh && \
 USER $USERNAME
 WORKDIR /home/$USERNAME
 
-# Setup useful git aliases
-RUN git config --global alias.st status
-RUN git config --global alias.co checkout
-RUN git config --global alias.br branch
-RUN git config --global alias.ci commit
-
 # Create the new micromamba environment
 ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_VERSION}
+ENV MAMBA_ENV_NAME=${MAMBA_ENV_NAME}
 
-RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION}
+RUN \
+    sed -i 's/^#\(force_color_prompt=yes\)/\1/' /home/$USERNAME/.bashrc && \
+    echo '' >> /home/$USERNAME/.bashrc && \
+    echo 'eval "$(micromamba shell hook --shell bash)"' >> /home/$USERNAME/.bashrc && \
+    echo "micromamba activate ${MAMBA_ENV_NAME}" >> /home/$USERNAME/.bashrc
 
-# Install needed packages for flashinfer development within the environment
-RUN /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/
-RUN /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install cmake ninja scikit-build-core setuptools-scm
-RUN /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install pre-commit
+# Create a new micromamba env and install needed packages for flashinfer development
+RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} gtest gmock bash-completion -c conda-forge && \
+    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
+    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir cmake ninja scikit-build-core setuptools-scm pre-commit pytest pytest-cov black ruff ipython
 
 SHELL ["/usr/local/bin/_dockerfile_shell.sh"]
 
