@@ -8,6 +8,9 @@
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
 
+#include <cmath>
+#include <iostream>
+
 #include "flashinfer/attention/generic/page.cuh"
 #include "flashinfer/attention/generic/pos_enc.cuh"
 #include "flashinfer/exception.h"
@@ -64,7 +67,7 @@ inline std::vector<float> apply_llama_rope(const T* input, size_t D, size_t offs
     if (std::is_same_v<T, half>)
       rst[k] = cos * fi::con::explicit_casting<T, float>(input[k]) + sin * permuted_input[k];
   }
-  return std::move(rst);
+  return rst;
 }
 
 template <typename dtype_q, typename dtype_kv, typename dtype_out>
@@ -73,16 +76,38 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
                                   size_t num_qo_heads, size_t num_kv_heads, size_t head_dim,
                                   bool causal = true, QKVLayout kv_layout = QKVLayout::kHND,
                                   PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
-                                  float rope_scale = 1.f, float rope_theta = 1e4) {
+                                  float logits_soft_cap = 8.0f, float rope_scale = 1.f,
+                                  float rope_theta = 1e4, bool use_soft_cap = false) {
   assert(qo_len <= kv_len);
   assert(num_qo_heads % num_kv_heads == 0);
   float sm_scale = 1.f / std::sqrt(float(head_dim));
+  // float sm_scale = 1.0;
   std::vector<dtype_out> o(qo_len * num_qo_heads * head_dim);
   std::vector<float> att(kv_len);
   std::vector<float> q_rotary_local(head_dim);
   std::vector<float> k_rotary_local(head_dim);
+
   DISPATCH_head_dim(head_dim, HEAD_DIM, {
     tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads, kv_layout, HEAD_DIM);
+#if Debug1
+    std::cout << "DEBUG: Original Q (CPU): " << '\n';
+    for (auto i = 0ul; i < 128; ++i) {
+      for (int j = 0; j < 64; ++j) {
+        std::cout << (float)q[info.get_q_elem_offset(i, 0, j)] << " ";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << std::endl;
+
+    std::cout << "DEBUG: Original K (CPU): " << '\n';
+    for (auto i = 0ul; i < 128; ++i) {
+      for (int j = 0ul; j < 64; ++j) {
+        std::cout << (float)k[info.get_kv_elem_offset(i, 0, j)] << " ";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << std::endl;
+#endif
     for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx) {
       const size_t kv_head_idx = qo_head_idx / info.get_group_size();
       for (size_t q_idx = 0; q_idx < qo_len; ++q_idx) {
@@ -126,12 +151,45 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
           }
           max_val = std::max(max_val, att[kv_idx]);
         }
+
+#if Debug1
+        if (qo_head_idx == 0) {
+          // for qo_len = 128, each warp on the GPU will store 128/4,
+          // that is, 32 attention scores. For CDNA3, these 32 scores
+          // are spread across 4 threads.
+          for (auto i = 0ul; i < 128; ++i) {
+            std::cout << att[i] / sm_scale << " ";
+          }
+          std::cout << std::endl;
+        }
+#endif
         // exp minus max
         float denom = 0;
         for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {
           att[kv_idx] = std::exp(att[kv_idx] - max_val);
           denom += att[kv_idx];
         }
+
+#if Debug1
+        if (qo_head_idx == 0) {
+          // for qo_len = 128, each warp on the GPU will store 128/4,
+          // that is, 32 attention scores. For CDNA3, these 32 scores
+          // are spread across 4 threads.
+          for (auto i = 0ul; i < 128; ++i) {
+            std::cout << att[i] << " ";
+          }
+          std::cout << std::endl;
+        }
+#endif
+
+#if Debug1
+        if (qo_head_idx == 0) {
+          for (auto i = 0ul; i < 128; ++i) {
+            std::cout << denom << " ";
+          }
+          std::cout << std::endl;
+        }
+#endif
 
         // divide by denom
         for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {
