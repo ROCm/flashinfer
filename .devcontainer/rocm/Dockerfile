@@ -1,25 +1,31 @@
-ARG ROCM_VERSION=6.4.1
+ARG ROCM_VERSION=7.0.2
+ARG PY_VERSION=3.12
+ARG TORCH_VERSION=2.8.0
 
 FROM mambaorg/micromamba:2.1.1 as micromamba
 
-FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete
+FROM rocm/pytorch:rocm${ROCM_VERSION}_ubuntu24.04_py${PY_VERSION}_pytorch_release_${TORCH_VERSION}
 
 ARG ROCM_VERSION
-ARG PY_VERSION=3.12
-ARG TORCH_VERSION=2.7.1
+ARG PY_VERSION
+ARG TORCH_VERSION
 
 # Update package lists and install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
     git \
+    tmux \
     clang-format \
     clangd-19 \
+    libstdc++-14-dev \
     vim \
     emacs \
     zsh \
     sudo \
     && rm -rf /var/lib/apt/lists/*
+
+RUN echo "set-option -g default-command \"/bin/bash -i\"" >> /home/$USERNAME/.tmux.conf
 
 # Create a non-root user
 ARG USERNAME=devuser
@@ -41,7 +47,15 @@ RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     chmod 0440 /etc/sudoers.d/$USERNAME && \
     usermod -a -G render $USERNAME
 
-# Copy over needed files from the micromamba image
+# Remove default 'ubuntu' user (UID 1000) to prevent devcontainer permission conflicts
+# Ref: https://github.com/rapidsai/devcontainers/pull/373
+RUN if grep ubuntu:x:1000:1000 /etc/passwd >/dev/null; then userdel -f -r ubuntu; fi
+
+# set up fzf
+RUN git clone --depth 1 https://github.com/junegunn/fzf.git /home/$USERNAME/.fzf &&  /home/$USERNAME/.fzf/install && \
+    chown $USERNAME:$USERNAME /home/$USERNAME/.fzf
+
+# Adding micromamba functionality to an existing Docker image requires copying over needed files from the micromamba image
 # Refer: https://micromamba-docker.readthedocs.io/en/latest/advanced_usage.html
 COPY --from=micromamba "$MAMBA_EXE" "$MAMBA_EXE"
 COPY --from=micromamba /usr/local/bin/_activate_current_env.sh /usr/local/bin/_activate_current_env.sh
@@ -55,7 +69,11 @@ RUN /usr/local/bin/_dockerfile_initialize_user_accounts.sh && \
 
 # Switch to non-root user
 USER $USERNAME
+# Set home directory
 WORKDIR /home/$USERNAME
+
+# clangd
+ENV PATH="/usr/lib/llvm-19/bin:$PATH"
 
 # Create the new micromamba environment
 ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_VERSION}
@@ -69,7 +87,6 @@ RUN \
 
 # Create a new micromamba env and install needed packages for flashinfer development
 RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} gtest gmock bash-completion -c conda-forge && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
     /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir cmake ninja scikit-build-core setuptools-scm pre-commit pytest pytest-cov black ruff ipython
 
 SHELL ["/usr/local/bin/_dockerfile_shell.sh"]

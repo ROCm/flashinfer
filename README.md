@@ -162,7 +162,7 @@ PASS
 
 Flashinfer+ROCm provides a C++ test suite to test all HIP kernels and C++ code. Installing Flashinfer does not automatically install the tests, instead these have to be configured separately.
 
-### 1. To configure the rest of the test suite
+#### 1. To configure the rest of the test suite
 
 ```bash
 cd flashinfer/libflashinfer/tests/hip
@@ -171,13 +171,13 @@ cmake -DCMAKE_CXX_COMPILER:PATH=/opt/rocm/bin/amdclang++ -DFLASHINFER_INCLUDE_DI
 ninja
 ```
 
-### 2. To run individual tests
+#### 2. To run individual tests
 
 ```bash
 ./test_<target_test_name>
 ```
 
-### 3. To run all tests
+#### 3. To run all tests
 
 ```bash
 ctest
