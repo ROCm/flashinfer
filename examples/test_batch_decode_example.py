@@ -144,17 +144,10 @@ if __name__ == "__main__":
     batch_size = 256
     page_size = 8
 
-    # # This configuration works
     num_qo_heads = 32
     num_kv_heads = 4
-    head_dim = 256
-    kv_len = 512
-
-    # # This configuration fails
-    # num_qo_heads = 8
-    # num_kv_heads = 8
-    # head_dim = 128
-    # kv_len = 54
+    head_dim = 128
+    kv_len = 2048
 
     kv_layout = "NHD"
     pos_encoding_mode = "NONE"
@@ -164,10 +157,6 @@ if __name__ == "__main__":
     kv_dtype = torch.float16
     contiguous_kv = True
 
-    num_qo_heads = 32
-    num_kv_heads = 4
-    head_dim = 256
-    kv_len = 512
     test_batch_decode_with_paged_kv_cache(
         batch_size,
         kv_len,

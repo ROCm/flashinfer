@@ -67,8 +67,12 @@ __device__ __forceinline__ void load(T* smem_ptr, const T* gmem_ptr) {
 // Generic predicated load with NumBits template parameter
 template <size_t NumBits, PrefetchMode PrefetchOpt, SharedMemFillMode FillOpt, typename T>
 __device__ __forceinline__ void pred_load(T* smem_ptr, const T* gmem_ptr, bool predicate) {
-  static_assert(NumBits == 128 || NumBits == 256, "NumBits must be 128 or 256");
-  if constexpr (NumBits == 128) {
+  static_assert(NumBits == 64 || NumBits == 128 || NumBits == 256,
+                "NumBits must be 64, 128 or 256");
+
+  if constexpr (NumBits == 64) {
+    pred_load_64b<PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
+  } else if constexpr (NumBits == 128) {
     pred_load_128b<PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
   } else {
     pred_load_128b<PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
