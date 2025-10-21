@@ -206,10 +206,6 @@ template <PosEncodingMode pos_encoding_mode, uint32_t num_stages_smem, uint32_t 
           uint32_t vec_size, uint32_t bdx, uint32_t bdy, uint32_t bdz, typename AttentionVariant,
           typename Params>
 __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
-  int globalIndex = (blockIdx.y * gridDim.x + blockIdx.x) * (blockDim.x * blockDim.y * blockDim.z) +
-                    (threadIdx.z * blockDim.x * blockDim.y) + (threadIdx.y * blockDim.x) +
-                    threadIdx.x;
-
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -220,7 +216,6 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   const uint32_t q_stride_h = params.q_stride_h;
   const uint32_t kv_stride_n = params.kv_stride_n;
   const uint32_t kv_stride_h = params.kv_stride_h;
-
   DTypeO* o = params.o;
   float* lse = params.lse;
   uint32_t kv_chunk_size = params.kv_chunk_size;
@@ -235,10 +230,8 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   uint32_t num_qo_heads = params.num_qo_heads;
 
   extern __shared__ uint8_t smem[];
-
   AttentionVariant variant(params, /*batch_idx=*/0, smem);
   const uint32_t seq_len = variant.kv_len;
-
   DTypeKV* k_smem = (DTypeKV*)smem;
   DTypeKV* v_smem = (DTypeKV*)(smem + num_stages_smem * bdy * tile_size_per_bdx * bdz * head_dim *
                                           sizeof(DTypeKV));
@@ -246,7 +239,6 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
                                        sizeof(DTypeKV));
 
   uint32_t tx = threadIdx.x, ty = threadIdx.y, tz = threadIdx.z;
-
   vec_t<float, vec_size> q_vec;
   vec_t<float, vec_size> freq;
   if constexpr (pos_encoding_mode == PosEncodingMode::kRoPELlama) {
@@ -272,7 +264,6 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   // preload k tiles and v tiles
   uint32_t producer_kv_idx_base = chunk_start;
   constexpr uint32_t vec_bits = sizeof(DTypeKV) * vec_size * 8;
-
 #pragma unroll
   for (uint32_t iter = 0; iter < num_stages_smem; ++iter) {
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
@@ -609,12 +600,12 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(const Params params) {
 constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeof_dtype) {
   if (group_size == 8U) {
     if (sizeof_dtype == 1U) {
-      return 256;  // not enough registers for 512 threads
+      return 256U;  // not enough registers for 512 threads
     } else {
-      return 512;
+      return 512U;
     }
   } else {
-    return 256;
+    return 256U;
   }
 }
 
@@ -658,16 +649,16 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   constexpr uint32_t bdx = HEAD_DIM / vec_size;  // 64
 
   auto compute_capacity = GetCudaComputeCapability();
-  static_assert(bdx <= 64);
+  static_assert(bdx <= 64U);
 
   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
     constexpr uint32_t bdy = GROUP_SIZE;
     constexpr uint32_t num_threads =
         std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
-    constexpr uint32_t bdz = num_threads / (bdx * bdy);  // 1
+    constexpr uint32_t bdz = num_threads / (bdx * bdy);
 
     // AMD CDNA3 Reduce tile size to minimize shared memory usage
-    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 1U;  // 4
+    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 1U;
 
     constexpr uint32_t NUM_STAGES_SMEM = 2;
 
