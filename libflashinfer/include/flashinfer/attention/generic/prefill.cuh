@@ -1825,6 +1825,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       printf("KTraits::NUM_MMA_D_QK : %d\n", KTraits::NUM_MMA_D_QK);
       printf("NUM_MMA_KV : %d\n", NUM_MMA_KV);
       printf("NUM_MMA_Q : %d\n", NUM_MMA_Q);
+      printf("sm_scale : %f\n", variant.sm_scale_log2);
 #if 0
             DTypeKV *k_ptr_tmp = k +
                                  (chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
@@ -1936,17 +1937,18 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
             chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
             qo_len, kv_len, chunk_end, group_size, s_frag, tid, kv_head_idx);
       }
-#if Debug1
+#if Debug
       flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
           DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
                                                                       CTA_TILE_KV, tid);
 
-      // a) Print thread 0's registers to see the source data.
-      flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
-          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, tid);
+      // // a) Print thread 0's registers to see the source data.
+      // flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+      //     DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, tid);
 
       // b) Print the materialized LDS array to see the final result for this iteration.
-      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(qk_scratch, CTA_TILE_Q, CTA_TILE_KV);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+          qk_scratch, CTA_TILE_Q, CTA_TILE_KV, ("S frag before update_mdo for iteration\n"));
 
 #endif
       // compute m,d states in online softmax
@@ -1957,13 +1959,13 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
           DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
                                                                       CTA_TILE_KV, tid);
 
-      // a) Print thread 0's registers to see the source data.
-      flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
-          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, tid);
+      // // a) Print thread 0's registers to see the source data.
+      // flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+      //     DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, tid);
 
       // b) Print the materialized LDS array to see the final result for this iteration.
-      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(qk_scratch, CTA_TILE_Q, CTA_TILE_KV);
-
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+          qk_scratch, CTA_TILE_Q, CTA_TILE_KV, ("S frag after update_mdo for iteration\n"));
 #endif
       block.sync();
       produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
