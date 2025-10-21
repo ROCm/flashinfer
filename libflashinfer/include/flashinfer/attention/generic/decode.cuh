@@ -646,7 +646,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   // AMD CDNA3 optimized vector size - prefer smaller vec_size for better occupancy
   constexpr uint32_t vec_size = (HEAD_DIM < 256) ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
                                                  : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
-  constexpr uint32_t bdx = HEAD_DIM / vec_size;  // 64
+  constexpr uint32_t bdx = HEAD_DIM / vec_size;
 
   auto compute_capacity = GetCudaComputeCapability();
   static_assert(bdx <= 64U);
