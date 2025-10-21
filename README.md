@@ -47,7 +47,7 @@ synchronized with the upstream `v0.2.5` tag.
   * [Step 0: Docker pull](#step-0-docker-pull)
   * [Step 1: Setting up micromamba](#step-1-setting-up-micromamba)
   * [Step 2: Installing Flashinfer](#step-2-installing-flashinfer-into-the-docker-container)
-  * [Step3: Verifying Installation](#step3-verifying-installation)
+  * [Step 3: Verifying Installation](#step-3-verifying-installation)
   * [Configure C++ Tests](#configure-c-tests)
   * [Configure PyTest](#configure-pytest)
 * [Using ROCm Dockerfile](#using-rocm-dockerfile)
@@ -60,19 +60,17 @@ synchronized with the upstream `v0.2.5` tag.
 The recommended docker image to setup a development environment for
 FlashInfer+ROCm is `rocm/pytorch:rocm6.4.1_ubuntu24.04_py3.12_pytorch_release_2.7.1`
 
-### Step 0: Docker pull
+### Step 0: Build a docker container
 
 ```bash
 docker pull rocm/pytorch:rocm6.4.1_ubuntu24.04_py3.12_pytorch_release_2.7.1
-```
 
-```bash
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
 --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
 --ipc=host --shm-size 128G --name=<container name> rocm/pytorch:rocm6.4.1_ubuntu24.04_py3.12_pytorch_release_2.7.1
 ```
 
-### Step 1: Setting up micromamba
+### Step 1: Set up a micromamba env
 
 Run the following command to install micromamba and set it up inside `bash`
 
@@ -95,7 +93,7 @@ pip install setuptools-scm scikit-build-core pytest numpy cmake ninja pybind11
 pip install torch --index-url https://download.pytorch.org/whl/rocm6.4
 ```
 
-### Step 2: Installing Flashinfer into the Docker container
+### Step 2: Install Flashinfer into the docker container
 
 Clone the latest trunk from <https://github.com/ROCm/flashinfer>.
 
@@ -139,7 +137,7 @@ with both AOT and JIT builds of the package. To setup an editable install, follo
 FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip install --no-build-isolation -ve.
 ```
 
-### Step3: Verifying Installation
+### Step 3: Verify installation
 
 A convenience script is provided inside the example directory that runs two HIPified kernels from Flashinfer: `SingleDecodeWithKVCache` and `BatchDecodeWithKVCache` and verifies the correctness of the generated results.
 
@@ -158,29 +156,28 @@ Failed to import __aot_prebuilt_uris__: No module named 'flashinfer.__aot_prebui
 PASS
 ```
 
-### Configure C++ Tests
+### Build and run C++ tests
 
 Flashinfer+ROCm provides a C++ test suite to test all HIP kernels and C++ code. Installing Flashinfer does not automatically install the tests, instead these have to be configured separately.
 
-### 1. To configure the rest of the test suite
+### 1. Build tests
 
 ```bash
-cd flashinfer/libflashinfer/tests/hip
 mkdir build && cd build/
-cmake -DCMAKE_CXX_COMPILER:PATH=/opt/rocm/bin/amdclang++ -DFLASHINFER_INCLUDE_DIRS=<path to flashinfer includ dirs> ..
-ninja
+cmake -DFLASHINFER_ENABLE_HIP=ON -DFLASHINFER_UNITTESTS=ON  -GNinja ..
+ninja build_tests
 ```
 
-### 2. To run individual tests
+### 2. Run individual tests
 
 ```bash
 ./test_<target_test_name>
 ```
 
-### 3. To run all tests
+### 3. Run all tests
 
 ```bash
-ctest
+ctest --progress --output-on-failure -j12
 ```
 
 The output should look something like this
@@ -203,7 +200,7 @@ Test project /root/flashinfer/libflashinfer/tests/hip/build
 100% tests passed, 0 tests failed out of 6
 ```
 
-### Configure PyTest
+### Run pytests
 
 To run pytests, run the following helper script from the project root directory:
 
@@ -224,9 +221,7 @@ git clone https://github.com/ROCm/flashinfer
 
 ```bash
 docker build -f docker/Dockerfile.rocm_ci --target flashinfer_base -t <docker-image-tag> .
-```
 
-```bash
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
 --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
 --ipc=host --shm-size 128G --name=<container name> <docker-image-tag>
@@ -261,3 +256,5 @@ q = torch.randn(num_qo_heads, head_dim).half().to(0)
 o = flashinfer.single_decode_with_kv_cache(q, k, v) # decode attention without RoPE on-the-fly
 o_rope_on_the_fly = flashinfer.single_decode_with_kv_cache(q, k, v, pos_encoding_mode="ROPE_LLAMA") # decode with LLaMA style RoPE on-the-fly
 ```
+
+Developers should be able to run the example, C++ tests, and the pytests from the above as well inside this container.
