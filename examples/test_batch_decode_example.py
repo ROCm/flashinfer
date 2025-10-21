@@ -146,8 +146,8 @@ if __name__ == "__main__":
 
     num_qo_heads = 32
     num_kv_heads = 4
-    head_dim = 128
-    kv_len = 2048
+    head_dim = 256
+    kv_len = 8192
 
     kv_layout = "NHD"
     pos_encoding_mode = "NONE"

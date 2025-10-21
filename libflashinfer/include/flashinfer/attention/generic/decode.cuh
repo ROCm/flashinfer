@@ -600,7 +600,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(const Params params) {
 constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeof_dtype) {
   if (group_size == 8U) {
     if (sizeof_dtype == 1U) {
-      return 512U;  // not enough registers for 512 threads
+      return 256U;  // not enough registers for 512 threads
     } else {
       return 512U;
     }
@@ -644,10 +644,8 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   const uint32_t seq_len = params.kv_len;
 
   // AMD CDNA3 optimized vector size - prefer smaller vec_size for better occupancy
-  constexpr uint32_t vec_size =
-      (HEAD_DIM < 256) ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
-                       : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);  // max(8/2, 256/64) = 4
-
+  constexpr uint32_t vec_size = (HEAD_DIM < 256) ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
+                                                 : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
   constexpr uint32_t bdx = HEAD_DIM / vec_size;  // 64
 
   auto compute_capacity = GetCudaComputeCapability();
@@ -708,7 +706,6 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
       uint32_t num_chunks = ceil_div(seq_len, kv_chunk_size);
 
       dim3 nblks = dim3(num_chunks, num_kv_heads);
-      // std::cout<<"nblks.x: "<<nblks.x<<", nblks.y: "<<nblks.y<<std::endl;
       if (nblks.x == 0 || nblks.y == 0) {
         std::ostringstream err_msg;
         err_msg << "Invalid kernel configuration: nblks=(" << nblks.x << "," << nblks.y << ")";
