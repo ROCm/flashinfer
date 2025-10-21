@@ -34,7 +34,7 @@ def warmup_jit():
                         torch.float16,
                         torch.float8_e4m3fn,
                     ],  # kv_dtypes
-                    [64, 128],  # head_dims
+                    [128, 256],  # head_dims
                     [0, 1],  # pos_encoding_modes
                     [False],  # use_sliding_windows
                     [False],  # use_logits_soft_caps
@@ -52,7 +52,7 @@ def warmup_jit():
 @pytest.mark.parametrize("page_size", [1, 8, 16])
 @pytest.mark.parametrize("num_kv_heads", [4])
 @pytest.mark.parametrize("num_qo_heads", [4, 32])
-@pytest.mark.parametrize("head_dim", [64, 128])
+@pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("kv_layout", ["NHD"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE", "ROPE_LLAMA"])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
@@ -185,7 +185,7 @@ def test_batch_decode_with_paged_kv_cache(
 @pytest.mark.parametrize("page_size", [1, 8, 16])
 @pytest.mark.parametrize("num_kv_heads", [4])
 @pytest.mark.parametrize("num_qo_heads", [4, 32])
-@pytest.mark.parametrize("head_dim", [64, 128])
+@pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("kv_layout", ["NHD"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE", "ROPE_LLAMA"])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
