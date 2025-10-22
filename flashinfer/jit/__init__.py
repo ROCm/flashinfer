@@ -80,7 +80,7 @@ from .core import logger
 
 # Try and Except to break circular dependencies
 try:
-    from ..__aot_prebuilt_uris__ import prebuilt_ops_uri  # type: ignore
+    from ..__aot_prebuilt_uris__ import prebuilt_ops_uri
 except ImportError:
     prebuilt_ops_uri = None
 
@@ -89,8 +89,7 @@ try:
 
     if __config__.get_info("aot_torch_exts_cuda"):
         try:
-            # The import is intentionally unused - it's just loading the module to ensure the kernels are registered.
-            from .. import flashinfer_kernels  # noqa: F401
+            from .. import flashinfer_kernels
 
             has_prebuilt_ops = True
             kernels_path = _get_extension_path("flashinfer.flashinfer_kernels")
