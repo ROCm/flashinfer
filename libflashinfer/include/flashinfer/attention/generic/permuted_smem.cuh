@@ -10,12 +10,6 @@
 #include "gpu_iface/mma_ops.hpp"
 #include "gpu_iface/platform.hpp"
 
-#if 0
-#include <cuda/pipeline>
-
-#include "mma.cuh"
-#endif
-
 namespace gpu_mem = flashinfer::gpu_iface::memory;
 
 namespace flashinfer {
@@ -138,6 +132,7 @@ struct smem_t {
 #endif
   }
 
+#if defined(PLATFORM_HIP_DEVICE)
   /*!
    * \brief Loads a fragment from shared memory and performs an in-register transpose across a quad.
    * \details This function is designed to prepare the B-matrix operand for a CDNA3 MFMA
@@ -172,14 +167,11 @@ struct smem_t {
    * \param frag A pointer to the thread's local registers to store the resulting column fragment.
    */
   template <typename T = uint32_t>
-  __device__ __forceinline__ void load_fragment_and_quad_transpose(uint32_t offset, T* frag) {
-#if defined(PLATFORM_HIP_DEVICE)
-    auto smem_t_ptr = reinterpret_cast<const half*>(base + offset);
-    flashinfer::gpu_iface::mma::load_quad_transposed_fragment(frag, smem_t_ptr);
-#else
-    static_assert(sizeof(T) == 0, "Not supported on current platform");
-#endif
+  __device__ __forceinline__ void load_matrix_m16n16_trans(uint32_t offset, T* frag) {
+    load_fragment(offset, frag);
+    gpu_iface::mma::transpose_mma_tile(frag);
   }
+#endif
 
   template <typename T = uint32_t>
   __device__ __forceinline__ void store_fragment(uint32_t offset, const T* frag) {
@@ -191,41 +183,42 @@ struct smem_t {
 #endif
   }
 
+#if defined(PLATFORM_CUDA_DEVICE)
   __device__ __forceinline__ void ldmatrix_m8n8x4(uint32_t offset, uint32_t* R) {
-    // b128_t *smem_ptr = base + offset;
-    // mma::ldmatrix_m8n8x4(R, smem_ptr);
+    b128_t* smem_ptr = base + offset;
+    mma::ldmatrix_m8n8x4(R, smem_ptr);
   }
 
   __device__ __forceinline__ void ldmatrix_m8n8x4_left_half(uint32_t offset, uint32_t* R) {
-    // b128_t *smem_ptr = base + offset;
-    // mma::ldmatrix_m8n8x4_left_half(R, smem_ptr);
+    b128_t* smem_ptr = base + offset;
+    mma::ldmatrix_m8n8x4_left_half(R, smem_ptr);
   }
 
   __device__ __forceinline__ void ldmatrix_m8n8x4_right_half(uint32_t offset, uint32_t* R) {
-    // b128_t *smem_ptr = base + offset;
-    // mma::ldmatrix_m8n8x4_right_half(R, smem_ptr);
+    b128_t* smem_ptr = base + offset;
+    mma::ldmatrix_m8n8x4_right_half(R, smem_ptr);
   }
 
   __device__ __forceinline__ void stmatrix_m8n8x4(uint32_t offset, uint32_t* R) {
-    // b128_t *smem_ptr = base + offset;
-    // mma::stmatrix_m8n8x4(R, smem_ptr);
+    b128_t* smem_ptr = base + offset;
+    mma::stmatrix_m8n8x4(R, smem_ptr);
   }
 
   __device__ __forceinline__ void ldmatrix_m8n8x4_trans(uint32_t offset, uint32_t* R) {
-    // b128_t *smem_ptr = base + offset;
-    // mma::ldmatrix_m8n8x4_trans(R, smem_ptr);
+    b128_t* smem_ptr = base + offset;
+    mma::ldmatrix_m8n8x4_trans(R, smem_ptr);
   }
 
   __device__ __forceinline__ void ldmatrix_m8n8x4_trans_left_half(uint32_t offset, uint32_t* R) {
-    // b128_t *smem_ptr = base + offset;
-    // mma::ldmatrix_m8n8x4_trans_left_half(R, smem_ptr);
+    b128_t* smem_ptr = base + offset;
+    mma::ldmatrix_m8n8x4_trans_left_half(R, smem_ptr);
   }
 
   __device__ __forceinline__ void ldmatrix_m8n8x4_trans_right_half(uint32_t offset, uint32_t* R) {
-    // b128_t *smem_ptr = base + offset;
-    // mma::ldmatrix_m8n8x4_trans_right_half(R, smem_ptr);
+    b128_t* smem_ptr = base + offset;
+    mma::ldmatrix_m8n8x4_trans_right_half(R, smem_ptr);
   }
-
+#endif
   template <gpu_mem::SharedMemFillMode fill_mode, typename T>
   __device__ __forceinline__ void load_128b_async(uint32_t offset, const T* gptr, bool predicate) {
     b128_t* smem_ptr = base + offset;
