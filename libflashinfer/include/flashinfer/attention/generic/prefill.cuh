@@ -1166,13 +1166,37 @@ __device__ __forceinline__ void compute_sfm_v(
     uint32_t* v_smem_offset_r,
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const dim3 tid = threadIdx) {
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const dim3 tid = threadIdx,
+    typename KTraits::DTypeQKAccum* qk_scratch = nullptr) {
   constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
   constexpr uint32_t V_SMEM_COLUMN_ADVANCE = 16 / KTraits::HALF_ELEMS_PER_THREAD;
   typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
                                      [HALF_ELEMS_PER_THREAD];
+
+#if defined(PLATFORM_HIP_DEVICE)
+#if Debug
+  // Print S fragment BEFORE transpose (in B/C/D layout: 128x64)
+  flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+      typename KTraits::DTypeQKAccum, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+      KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, tid);
+  flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+      qk_scratch, KTraits::CTA_TILE_Q, KTraits::CTA_TILE_KV,
+      "S frag BEFORE transpose (B/C/D layout, 128x64)");
+#endif
+  // In-place transposition of the s_frag MMA tile to get the data into CDNA3 A-matrix layout.
+  mma::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag));
+#if Debug
+  // Print S fragment AFTER transpose (in A-matrix layout: 64x128)
+  flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+      typename KTraits::DTypeQKAccum, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+      KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, tid);
+  flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+      qk_scratch, KTraits::CTA_TILE_KV, KTraits::CTA_TILE_Q,
+      "S frag AFTER transpose (A-matrix layout, 64x128)");
+#endif
+#endif
 
   if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
 #pragma unroll
@@ -1203,6 +1227,15 @@ __device__ __forceinline__ void compute_sfm_v(
       }
     }
   }
+
+#if Debug1
+  // Print d values after update_mdo_states
+  flashinfer::gpu_iface::debug_utils::hip::write_d_to_lds<float, KTraits::NUM_MMA_Q,
+                                                          KTraits::NUM_ACCUM_ROWS_PER_THREAD>(
+      d, qk_scratch, tid);
+  flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+      qk_scratch, KTraits::CTA_TILE_Q, "--- d values after rowsum inside compute_sfm_v ---");
+#endif
 
 #pragma unroll
   for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
@@ -1923,8 +1956,8 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 
       // b) Print the materialized LDS array to see the final result for this iteration.
       flashinfer::gpu_iface::debug_utils::hip::print_lds_array(qk_scratch, CTA_TILE_Q, CTA_TILE_KV);
-
 #endif
+
       logits_transform<KTraits>(
           params, variant, /*batch_idx=*/0, qo_packed_idx_base,
           chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
@@ -1937,7 +1970,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
             chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
             qo_len, kv_len, chunk_end, group_size, s_frag, tid, kv_head_idx);
       }
-#if Debug
+#if Debug1
       flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
           DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
                                                                       CTA_TILE_KV, tid);
@@ -1954,7 +1987,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       // compute m,d states in online softmax
       update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d, warp_idx, lane_idx);
 
-#if Debug
+#if Debug1
       flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
           DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
                                                                       CTA_TILE_KV, tid);
@@ -1966,6 +1999,13 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       // b) Print the materialized LDS array to see the final result for this iteration.
       flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
           qk_scratch, CTA_TILE_Q, CTA_TILE_KV, ("S frag after update_mdo for iteration\n"));
+
+      // c) Print d values after update_mdo_states
+      flashinfer::gpu_iface::debug_utils::hip::write_d_to_lds<float, NUM_MMA_Q,
+                                                              NUM_ACCUM_ROWS_PER_THREAD>(
+          d, qk_scratch, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+          qk_scratch, CTA_TILE_Q, "--- d values after update_mdo_states ---");
 #endif
       block.sync();
       produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
@@ -1975,7 +2015,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       block.sync();
 
       // compute sfm*v
-      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid);
+      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid, qk_scratch);
       block.sync();
       produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
           v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
