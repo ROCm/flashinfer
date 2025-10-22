@@ -1183,18 +1183,18 @@ __device__ __forceinline__ void compute_sfm_v(
       KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, tid);
   flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
       qk_scratch, KTraits::CTA_TILE_Q, KTraits::CTA_TILE_KV,
-      "S frag BEFORE transpose (B/C/D layout, 128x64)");
+      "S frag BEFORE transpose (B/C/D layout)");
 #endif
   // In-place transposition of the s_frag MMA tile to get the data into CDNA3 A-matrix layout.
   mma::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag));
 #if Debug
   // Print S fragment AFTER transpose (in A-matrix layout: 64x128)
-  flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+  flashinfer::gpu_iface::debug_utils::hip::write_amatrix_frag_to_lds<
       typename KTraits::DTypeQKAccum, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
       KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, tid);
   flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
-      qk_scratch, KTraits::CTA_TILE_KV, KTraits::CTA_TILE_Q,
-      "S frag AFTER transpose (A-matrix layout, 64x128)");
+      qk_scratch, KTraits::CTA_TILE_Q, KTraits::CTA_TILE_KV,
+      "S frag BEFORE transpose (B/C/D layout)");
 #endif
 #endif
 

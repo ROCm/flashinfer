@@ -150,6 +150,60 @@ __device__ void print_lds_array_1d(float* lds_array, uint32_t dim,
   __syncthreads();
 }
 
+/// @brief Writes an A-matrix fragment from registers to shared memory.
+/// @details In the A-matrix layout, each thread owns a row slice of a 16x16 fragment.
+///          Thread T_(16*c + r) owns row r, columns [4*c : 4*c+3].
+///          This function reconstructs the full logical tile from distributed row fragments.
+/// @tparam T The data type of the fragments and LDS array (e.g., float or half).
+/// @tparam NUM_MMA_ROW The number of fragments along the rows dimension per thread.
+/// @tparam NUM_MMA_COL The number of fragments along the column dimension per thread.
+/// @tparam ELEMS_PER_FRAGMENT The number of elements per fragment (typically 4).
+/// @param frag The 3D fragment array from the thread's registers.
+/// @param lds_scratchpad Pointer to the shared memory array.
+/// @param lds_stride The width/stride of the lds_scratchpad.
+/// @param tid The thread's index within the block (threadIdx).
+template <typename T, uint32_t NUM_MMA_ROW, uint32_t NUM_MMA_COL, uint32_t ELEMS_PER_FRAGMENT = 4>
+__device__ void write_amatrix_frag_to_lds(const T (*frag)[NUM_MMA_COL][ELEMS_PER_FRAGMENT],
+                                          T* lds_scratchpad, const uint32_t lds_stride,
+                                          const dim3 tid = threadIdx) {
+  const int lane_id = tid.x % 64;
+  const int warp_idx_q = tid.y;
+
+  // Calculate the starting row in the LDS tile for this entire warp.
+  const uint32_t warp_base_row = warp_idx_q * NUM_MMA_ROW * MMA_COLS;
+
+#pragma unroll
+  for (uint32_t mma_row = 0; mma_row < NUM_MMA_ROW; ++mma_row) {
+#pragma unroll
+    for (uint32_t mma_col = 0; mma_col < NUM_MMA_COL; ++mma_col) {
+      // -- Calculate the top-left corner of the 16x16 fragment this thread contributes to --
+      const uint32_t frag_row_offset = mma_row * MMA_COLS;
+      const uint32_t frag_col_offset = mma_col * MMA_COLS;
+
+      // -- Calculate the specific 1x4 element strip this thread writes within that fragment --
+      // A-matrix layout: each thread handles a row strip.
+      // Thread lane_id = 16*c + r owns row r, columns [4*c : 4*c+3]
+      const uint32_t thread_row_in_frag = lane_id % MMA_COLS;
+      const uint32_t thread_start_col_in_frag = (lane_id / MMA_COLS) * MMA_ROWS_PER_THREAD;
+
+      // -- Combine all offsets and write the 1x4 row strip to LDS --
+      const T* values = frag[mma_row][mma_col];
+
+      // The row is fixed for all 4 elements in the strip.
+      const uint32_t final_row = warp_base_row + frag_row_offset + thread_row_in_frag;
+
+      for (int i = 0; i < MMA_ROWS_PER_THREAD; ++i) {
+        // The column for this element is the thread's starting column + the element's index.
+        const uint32_t final_col = frag_col_offset + thread_start_col_in_frag + i;
+
+        // Calculate destination and write the value.
+        T* dest = lds_scratchpad + final_row * lds_stride + final_col;
+        *dest = values[i];
+      }
+    }
+  }
+}
+
 /// @brief Generic function to materialize 2D fragment arrays into shared memory.
 /// @details Works for both s_frag (attention scores) and o_frag (output accumulator).
 ///          Reconstructs a logical tile from distributed register fragments.
