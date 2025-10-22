@@ -667,16 +667,16 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary(
 #endif
 #pragma unroll
     for (uint32_t mma_di = 0; mma_di < KTraits::NUM_MMA_D_QK / 2; ++mma_di) {
-      q_smem->template load_fragment(q_smem_offset_r_first_half, q_frag_local[0]);
+      q_smem->load_fragment(q_smem_offset_r_first_half, q_frag_local[0]);
       uint32_t q_smem_offset_r_last_half =
           q_smem->template advance_offset_by_column<COL_ADVANCE_TO_LAST_HALF>(
               q_smem_offset_r_first_half, 0);
-      q_smem->template load_fragment(q_smem_offset_r_last_half, q_frag_local[1]);
+      q_smem->load_fragment(q_smem_offset_r_last_half, q_frag_local[1]);
       q_frag_apply_llama_rope<typename KTraits::DTypeQ, KTraits::HALF_ELEMS_PER_THREAD>(
           (typename KTraits::DTypeQ*)q_frag_local[0], (typename KTraits::DTypeQ*)q_frag_local[1],
           rope_freq[mma_di], seq_id, group_size);
-      q_smem->template store_fragment(q_smem_offset_r_last_half, q_frag_local[1]);
-      q_smem->template store_fragment(q_smem_offset_r_first_half, q_frag_local[0]);
+      q_smem->store_fragment(q_smem_offset_r_last_half, q_frag_local[1]);
+      q_smem->store_fragment(q_smem_offset_r_first_half, q_frag_local[0]);
       q_smem_offset_r_first_half = q_smem->template advance_offset_by_column<COL_ADVANCE_TO_NEXT>(
           q_smem_offset_r_first_half, mma_di);
     }
