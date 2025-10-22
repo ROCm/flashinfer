@@ -111,6 +111,24 @@ __device__ __forceinline__ void transpose_inter_quad_fragments(uint32_t* R) {
   R[1] = __shfl_xor(R[1], xor_mask, 64);
 }
 
+/// @brief Performs a full 16x16 in-register matrix transpose by combining intra-quad and
+///        inter-quad fragment transpositions.
+/// @details This function converts between A-matrix layout (row-major) and B/C/D-matrix layout
+///          (column-major) for CDNA3 MFMA operations. It applies both
+///          transpose_intra_quad_fragments and transpose_inter_quad_fragments to fully transpose a
+///          16x16 tile distributed across 64 threads.
+///
+///          Use cases:
+///          - B→A layout: Convert column slices to row slices (e.g., for rowsum where S must be
+///          A-matrix)
+///          - A→B layout: Convert row slices to column slices (if needed for other operations)
+///
+/// @param R Pointer to 2 uint32_t registers containing the fragment data
+__device__ __forceinline__ void transpose_mma_tile(uint32_t* R) {
+  transpose_intra_quad_fragments(R);
+  transpose_inter_quad_fragments(R);
+}
+
 // Single unified load function for all fragment types
 /// @param R [in] pointer to the register file to load the fragment into
 /// @param smem_ptr [in] pointer to the shared memory to load the fragment from
@@ -191,7 +209,6 @@ __device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const
 template <typename DType>
 __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float* d, DType* s_frag) {
   static_assert(sizeof(DType) == 2, "DType must be 16-bit type");
-  transpose_intra_quad_fragments(reinterpret_cast<uint32_t*>(s_frag));
   f16x4 a = reinterpret_cast<const f16x4*>(s_frag)[0];
   f16x4 b = {f16(1.0f), f16(1.0f), f16(1.0f), f16(1.0f)};
   f32x4 c = {d[0], d[1], d[2], d[3]};
