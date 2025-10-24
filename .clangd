@@ -1,0 +1,54 @@
+# clangd configuration for FlashInfer
+# This configuration provides IntelliSense support for both CUDA and HIP/ROCm code paths
+
+CompileFlags:
+  Add:
+    # Project includes (relative to workspace root where .clangd is located)
+    - "-I${workspaceFolder}/libflashinfer/include"
+
+    # ROCm/HIP includes (fallback to system paths if ROCm not in standard location)
+    - "-I/opt/rocm/include"
+    - "-I/opt/rocm/include/hip"
+    - "-I/opt/rocm/lib/llvm/lib/clang/19/include"
+
+    # FlashInfer feature flags
+    - "-DFLASHINFER_ENABLE_BF16"
+    - "-DFLASHINFER_ENABLE_F16"
+
+    # HIP/ROCm platform defines
+    - "-D__HIP_PLATFORM_AMD__=1"
+    - "-D__HIP_PLATFORM_HCC__=1"
+    - "-D__HIP_ROCclr__=1"
+
+    # CUDA compatibility defines
+    - "-DCUDA_HAS_FP16=1"
+
+    # HIP feature flags
+    - "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1"
+
+    # C++ standard
+    - "-std=c++20"
+
+    # Treat files as HIP source (works for both .cu and .cuh files)
+    - "-x"
+    - "hip"
+
+    # Target GPU architecture (gfx942 for MI300X)
+    - "--cuda-gpu-arch=gfx942"
+
+  # Use compile_commands.json from the project root (clangd searches upward from source files)
+  CompilationDatabase: .
+
+  # Remove problematic flags that might come from compile_commands.json
+  Remove:
+    - "-forward-unknown-to-host-compiler"
+    - "--generate-code*"
+    - "-Werror*"
+
+# Diagnostics configuration
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: Relaxed
+  Suppress:
+    - pp_file_not_found
+    - drv_unknown_argument
