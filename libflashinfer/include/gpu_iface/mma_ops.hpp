@@ -40,6 +40,16 @@ __device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const
                 "Only __half is supported for load_quad_transposed_fragment");
   mma_detail::load_quad_transposed_fragment<T>(R, smem_ptr);
 }
+
+/*!
+ * \brief Performs a full 16x16 in-register matrix transpose for CDNA3 MFMA tiles
+ * \details Converts between A-matrix layout (row-major) and B/C/D-matrix layout (column-major)
+ *          by combining intra-quad and inter-quad fragment transpositions.
+ * \param R Pointer to 2 uint32_t registers containing the fragment data
+ */
+__device__ __forceinline__ void transpose_mma_tile(uint32_t* R) {
+  mma_detail::transpose_mma_tile(R);
+}
 #endif
 
 /*!
