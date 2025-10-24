@@ -686,12 +686,14 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
     if (seq_len <= 256 || tmp == nullptr) {
+      // No need to use partition-kv kernel
       dim3 nblks = dim3(1, num_kv_heads);
       dim3 nthrs = dim3(bdx, bdy, bdz);
       params.kv_chunk_size = seq_len;
       void* args[] = {(void*)&params};
       FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     } else {
+      // Use partition-kv kernel with AMD-specific tuning
       int num_blocks_per_sm = 0;
       int num_sm = 0;
       int dev_id = 0;
