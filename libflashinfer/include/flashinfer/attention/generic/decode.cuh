@@ -605,6 +605,8 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
       return 512U;
     }
   } else {
+    // At 128 threads and 32 threads per warp, the CUDA implementation deploys 4 warps per block.
+    // We have 64 threads per wavefront so we use 256 threads
     return 256U;
   }
 }
