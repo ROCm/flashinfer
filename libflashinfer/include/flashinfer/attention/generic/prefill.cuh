@@ -1175,29 +1175,6 @@ __device__ __forceinline__ void compute_sfm_v(
   typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
                                      [HALF_ELEMS_PER_THREAD];
 
-#if defined(PLATFORM_HIP_DEVICE)
-#if Debug
-  // Print S fragment BEFORE transpose (in B/C/D layout: 128x64)
-  flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
-      typename KTraits::DTypeQKAccum, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
-      KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, tid);
-  flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
-      qk_scratch, KTraits::CTA_TILE_Q, KTraits::CTA_TILE_KV,
-      "S frag BEFORE transpose (B/C/D layout)");
-#endif
-  // In-place transposition of the s_frag MMA tile to get the data into CDNA3 A-matrix layout.
-  mma::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag));
-#if Debug
-  // Print S fragment AFTER transpose (in A-matrix layout: 64x128)
-  flashinfer::gpu_iface::debug_utils::hip::write_amatrix_frag_to_lds<
-      typename KTraits::DTypeQKAccum, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
-      KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, tid);
-  flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
-      qk_scratch, KTraits::CTA_TILE_Q, KTraits::CTA_TILE_KV,
-      "S frag BEFORE transpose (B/C/D layout)");
-#endif
-#endif
-
   if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
@@ -1208,6 +1185,85 @@ __device__ __forceinline__ void compute_sfm_v(
       }
     }
   }
+
+#if defined(PLATFORM_HIP_DEVICE)
+#if Debug
+  // Print S fragment BEFORE transpose (in B/C/D layout)
+  flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+      typename KTraits::DTypeQKAccum, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+      KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, KTraits::CTA_TILE_KV, tid);
+  flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+      qk_scratch, KTraits::CTA_TILE_Q, KTraits::CTA_TILE_KV,
+      "S frag BEFORE transpose (B/C/D layout)");
+
+  //   flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+  //       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+  //       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 4, 0, 0);
+  //   __syncthreads();
+
+  // flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+  //       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+  //       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 5, 0, 0);
+  // __syncthreads();
+  // flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+  //       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+  //       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 6, 0, 0);
+  // __syncthreads();
+  // flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+  //       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+  //       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 7, 0, 0);
+  // __syncthreads();
+
+  if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+    printf("=== BEFORE TRANSPOSE ===\n");
+  }
+
+#endif
+// In-place transposition of the s_frag MMA tile to get the data into CDNA3 A-matrix layout.
+#pragma unroll
+  for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
+#pragma unroll
+    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
+      mma::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag_f16[mma_q][mma_kv]));
+    }
+  }
+#if Debug
+
+  if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+    printf("=== AFTER TRANSPOSE ===\n");
+  }
+  // Print S fragment AFTER transpose (in A-matrix layout)
+  // flashinfer::gpu_iface::debug_utils::hip::write_amatrix_frag_to_lds<
+  //     typename KTraits::DTypeQKAccum, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+  //     KTraits::NUM_ACCUM_ROWS_PER_THREAD>(s_frag, qk_scratch, KTraits::CTA_TILE_KV, tid);
+//   flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+//       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+//       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 16, 0, 0);
+//   __syncthreads();
+
+// flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+//       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+//       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 17, 0, 0);
+// __syncthreads();
+// flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+//       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+//       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 18, 0, 0);
+// __syncthreads();
+// flashinfer::gpu_iface::debug_utils::hip::print_s_frag_register<
+//       typename KTraits::DTypeQ, KTraits::NUM_MMA_Q, KTraits::NUM_MMA_KV,
+//       KTraits::HALF_ELEMS_PER_THREAD>(s_frag_f16, 19, 0, 0);
+// __syncthreads();
+// flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+//     qk_scratch, KTraits::CTA_TILE_Q, KTraits::CTA_TILE_KV,
+//     "S frag AFTER transpose (A layout)");
+#endif
+#endif
+
+#if Debug1
+  if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+    printf("d[0] before rowsum: %.6f %.6f %.6f %.6f\n", d[0][0], d[0][1], d[0][2], d[0][3]);
+  }
+#endif
 
   if constexpr (KTraits::AttentionVariant::use_softmax) {
 #pragma unroll
@@ -1228,7 +1284,7 @@ __device__ __forceinline__ void compute_sfm_v(
     }
   }
 
-#if Debug1
+#if Debug
   // Print d values after update_mdo_states
   flashinfer::gpu_iface::debug_utils::hip::write_d_to_lds<float, KTraits::NUM_MMA_Q,
                                                           KTraits::NUM_ACCUM_ROWS_PER_THREAD>(
@@ -1889,7 +1945,6 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     for (uint32_t iter = 0; iter < num_iterations; ++iter) {
       memory::wait_group<1>();
       block.sync();
-
       if constexpr (KTraits::POS_ENCODING_MODE == PosEncodingMode::kRoPELlama) {
         k_smem_inplace_apply_rotary<KTraits>(chunk_start + iter * CTA_TILE_KV, &k_smem,
                                              &k_smem_offset_r, rope_freq, tid);

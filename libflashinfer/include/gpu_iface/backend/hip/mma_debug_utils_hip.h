@@ -81,14 +81,15 @@ __device__ void print_register(uint32_t* R) {
 /// @brief Prints the full s_frag array from a single thread's registers.
 template <typename T, uint32_t NUM_MMA_Q, uint32_t NUM_MMA_KV, uint32_t ELEMS_PER_FRAGMENT>
 __device__ void print_s_frag_register(const T (*s_frag)[NUM_MMA_KV][ELEMS_PER_FRAGMENT],
-                                      const dim3 tid = threadIdx) {
-  if (tid.x == 0 && tid.y == 0 && tid.z == 0) {
-    printf("Thread (0,0,0) s_frag registers:\n");
+                                      const uint32_t tidx = 0, const uint32_t tidy = 0,
+                                      const uint32_t tidz = 0) {
+  if (threadIdx.x == tidx && threadIdx.y == tidy && threadIdx.z == tidz) {
+    printf("Thread (%u,%u,%u) s_frag registers:\n", tidx, tidy, tidz);
     for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
       for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
         const T* values = s_frag[mma_q][mma_kv];
-        printf("  frag[%u][%u]: [%8.3f, %8.3f, %8.3f, %8.3f]\n", mma_q, mma_kv, float(values[0]),
-               float(values[1]), float(values[2]), float(values[3]));
+        printf("  frag[%u][%u]: [%10.6f, %10.6f, %10.6f, %10.6f]\n", mma_q, mma_kv,
+               float(values[0]), float(values[1]), float(values[2]), float(values[3]));
       }
     }
     printf("\n");
@@ -122,7 +123,7 @@ __device__ void print_lds_array(T* lds_array, uint32_t dimY, uint32_t dimX,
 __device__ void print_lds_array(float* lds_array, uint32_t dimY, uint32_t dimX,
                                 const char* title = "LDS Array (float)") {
   if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-    printf("%s (%dx%d):\n", title, dimX, dimY);
+    printf("%s (%dx%d):\n", title, dimY, dimX);
     for (int y = 0; y < dimY; ++y) {
       for (int x = 0; x < dimX; ++x) {
         printf("%10.6f ", lds_array[y * dimX + x]);
