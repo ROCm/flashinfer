@@ -644,8 +644,9 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   const uint32_t seq_len = params.kv_len;
 
   // AMD CDNA3 optimized vector size - prefer smaller vec_size for better occupancy
-  constexpr uint32_t vec_size = (HEAD_DIM < 256) ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
-                                                 : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
+  constexpr uint32_t vec_size = (HEAD_DIM < 256U)
+                                    ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
+                                    : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
   constexpr uint32_t bdx = HEAD_DIM / vec_size;
 
   auto compute_capacity = GetCudaComputeCapability();
@@ -658,16 +659,19 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     constexpr uint32_t bdz = num_threads / (bdx * bdy);
 
     // AMD CDNA3 Reduce tile size to minimize shared memory usage
-    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 1U;
+    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1U) ? 2U : 1U;
 
-    constexpr uint32_t NUM_STAGES_SMEM = 2;
+    // This has been hard coded to 2U. Previous implementation involved a macro redirection that
+    // always resulted in 2U for H100 or CDNA3 architecture. Please take a look at
+    // gpu_iface/dispatch.cuh - DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM macro
+    constexpr uint32_t NUM_STAGES_SMEM = 2U;
 
     // AMD CDNA3 LDS is 64KB per CU, shared across wavefronts
     const uint32_t smem_size =
         2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
         2U * bdy * bdz * sizeof(float);
 
-    if (smem_size > 65536) {
+    if (smem_size > 65536U) {
       std::ostringstream err_msg;
       err_msg << "Shared memory size " << smem_size << " exceeds CDNA3 limit of 64KB";
       FLASHINFER_ERROR(err_msg.str());
@@ -676,6 +680,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     auto kernel =
         SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
                                       vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
+
     FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
     if (seq_len <= 256 || tmp == nullptr) {
@@ -702,7 +707,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
       uint32_t max_num_kv_chunks = max_grid_size / num_kv_heads;
 
       // AMD CDNA3: Use larger chunk size to reduce synchronization overhead
-      uint32_t kv_chunk_size = max(ceil_div(seq_len, max_num_kv_chunks), 512);
+      uint32_t kv_chunk_size = max(ceil_div(seq_len, max_num_kv_chunks), 512U);
       uint32_t num_chunks = ceil_div(seq_len, kv_chunk_size);
 
       dim3 nblks = dim3(num_chunks, num_kv_heads);
