@@ -645,7 +645,8 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   const uint32_t num_kv_heads = params.num_kv_heads;
   const uint32_t seq_len = params.kv_len;
 
-  // AMD CDNA3 optimized vector size - prefer smaller vec_size for better occupancy
+  // Optimizing vec_size for CDNA3 architecture.
+  // This helps keep the dynamic shared memory allocation within hardware threshold for CDNA3
   constexpr uint32_t vec_size = (HEAD_DIM < 256U)
                                     ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
                                     : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
@@ -660,7 +661,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
         std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
     constexpr uint32_t bdz = num_threads / (bdx * bdy);
 
-    // AMD CDNA3 Reduce tile size to minimize shared memory usage
+    // AMD CDNA3 Reduce tile size to accomodate for CDNA3 architecture's hardware threshold.
     constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1U) ? 2U : 1U;
 
     // This has been hard coded to 2U. Previous implementation involved a macro redirection that
