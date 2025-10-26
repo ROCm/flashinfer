@@ -6,7 +6,7 @@
 #ifndef FLASHINFER_DECODE_CUH_
 #define FLASHINFER_DECODE_CUH_
 
-#include <iostream>
+#include <sstream>
 
 #include "cascade.cuh"
 #include "gpu_iface/cooperative_groups.h"
