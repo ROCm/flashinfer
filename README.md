@@ -160,7 +160,7 @@ PASS
 
 Flashinfer+ROCm provides a C++ test suite to test all HIP kernels and C++ code. Installing Flashinfer does not automatically install the tests, instead these have to be configured separately.
 
-### 1. Build tests
+#### 1. Build tests
 
 ```bash
 mkdir build && cd build/
@@ -168,13 +168,13 @@ cmake -DFLASHINFER_ENABLE_HIP=ON -DFLASHINFER_UNITTESTS=ON  -GNinja ..
 ninja build_tests
 ```
 
-### 2. Run individual tests
+#### 2. Run individual tests
 
 ```bash
 ./test_<target_test_name>
 ```
 
-### 3. Run all tests
+#### 3. Run all tests
 
 ```bash
 ctest --progress --output-on-failure -j12
