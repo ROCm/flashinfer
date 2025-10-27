@@ -44,12 +44,12 @@ synchronized with the upstream `v0.2.5` tag.
 ## Table of Contents
 
 * [Development Setup Inside a Pre-built Docker Container](#development-setup-inside-a-pre-built-docker-container)
-  * [Step 0: Docker pull](#step-0-docker-pull)
-  * [Step 1: Setting up micromamba](#step-1-setting-up-micromamba)
-  * [Step 2: Installing Flashinfer](#step-2-installing-flashinfer-into-the-docker-container)
-  * [Step 3: Verifying Installation](#step-3-verifying-installation)
-  * [Configure C++ Tests](#configure-c-tests)
-  * [Configure PyTest](#configure-pytest)
+  * [Step 0: Build a docker container](#step-0-build-a-docker-container)
+  * [Step 1: Set up a micromamba env](#step-1-set-up-a-micromamba-env)
+  * [Step 2: Install Flashinfer into the docker container](#step-2-install-flashinfer-into-the-docker-container)
+  * [Step 3: Verify installation](#step-3-verify-installation)
+  * [Build and run C++ tests](#build-and-run-c-tests)
+  * [Run pytests](#run-pytests)
 * [Using ROCm Dockerfile](#using-rocm-dockerfile)
   * [Step 1: Clone the repository](#step-1-clone-the-repository)
   * [Step 2: Docker build](#step-2-docker-build)
