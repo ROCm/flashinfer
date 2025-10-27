@@ -1,0 +1,31 @@
+# clangd configuration for FlashInfer
+# This configuration provides IntelliSense support for both CUDA and HIP/ROCm code paths
+
+CompileFlags:
+  Add:
+    # Project includes (relative to workspace root where .clangd is located)
+    - "-I${workspaceFolder}/libflashinfer/include"
+
+    # C++ standard
+    - "-std=c++20"
+
+    # Treat files as HIP source (works for both .cu and .cuh files)
+    - "-x"
+    - "hip"
+
+  # Use compile_commands.json from the project root (clangd searches upward from source files)
+  CompilationDatabase: .
+
+  # Remove problematic flags that might come from compile_commands.json
+  Remove:
+    - "-forward-unknown-to-host-compiler"
+    - "--generate-code*"
+    - "-Werror*"
+
+# Diagnostics configuration
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: Relaxed
+  Suppress:
+    - pp_file_not_found
+    - drv_unknown_argument
