@@ -152,44 +152,12 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
           max_val = std::max(max_val, att[kv_idx]);
         }
 
-#if Debug1
-        if (qo_head_idx == 0) {
-          // for qo_len = 128, each warp on the GPU will store 128/4,
-          // that is, 32 attention scores. For CDNA3, these 32 scores
-          // are spread across 4 threads.
-          for (auto i = 0ul; i < 128; ++i) {
-            std::cout << att[i] / sm_scale << " ";
-          }
-          std::cout << std::endl;
-        }
-#endif
         // exp minus max
         float denom = 0;
         for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {
           att[kv_idx] = std::exp(att[kv_idx] - max_val);
           denom += att[kv_idx];
         }
-
-#if Debug1
-        if (qo_head_idx == 0) {
-          // for qo_len = 128, each warp on the GPU will store 128/4,
-          // that is, 32 attention scores. For CDNA3, these 32 scores
-          // are spread across 4 threads.
-          for (auto i = 0ul; i < 128; ++i) {
-            std::cout << att[i] << " ";
-          }
-          std::cout << std::endl;
-        }
-#endif
-
-#if Debug1
-        if (qo_head_idx == 0) {
-          for (auto i = 0ul; i < 128; ++i) {
-            std::cout << denom << " ";
-          }
-          std::cout << std::endl;
-        }
-#endif
 
         // divide by denom
         for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {
