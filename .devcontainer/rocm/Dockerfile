@@ -1,4 +1,4 @@
-ARG ROCM_VERSION=6.4.1
+ARG ROCM_VERSION=7.0.2
 
 FROM mambaorg/micromamba:2.1.1 as micromamba
 
@@ -9,7 +9,7 @@ ARG PY_VERSION=3.12
 ARG TORCH_VERSION=2.7.1
 
 # Update package lists and install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     clang-format \
     clangd-19 \
     curl \
