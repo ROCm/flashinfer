@@ -34,13 +34,6 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
 }
 
 #if defined(PLATFORM_HIP_DEVICE)
-template <typename T>
-__device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const T* smem_ptr) {
-  static_assert(std::is_same<T, __half>::value,
-                "Only __half is supported for load_quad_transposed_fragment");
-  mma_detail::load_quad_transposed_fragment<T>(R, smem_ptr);
-}
-
 /*!
  * \brief Performs a full 16x16 in-register matrix transpose for CDNA3 MFMA tiles
  * \details Converts between A-matrix layout (row-major) and B/C/D-matrix layout (column-major)

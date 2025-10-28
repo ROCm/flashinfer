@@ -89,24 +89,25 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
 
   DISPATCH_head_dim(head_dim, HEAD_DIM, {
     tensor_info_t info(qo_len, kv_len, num_qo_heads, num_kv_heads, kv_layout, HEAD_DIM);
-#if Debug1
-    std::cout << "DEBUG: Original Q (CPU): " << '\n';
-    for (auto i = 0ul; i < 128; ++i) {
-      for (int j = 0; j < 64; ++j) {
-        std::cout << (float)q[info.get_q_elem_offset(i, 0, j)] << " ";
-      }
-      std::cout << std::endl;
-    }
-    std::cout << std::endl;
+#if Debug
+    // std::cout << "DEBUG: Original Q (CPU): " << '\n';
+    // for (auto i = 0ul; i < 128; ++i) {
+    //   for (int j = 0; j < 64; ++j) {
+    //     std::cout << (float)q[info.get_q_elem_offset(i, 0, j)] << " ";
+    //   }
+    //   std::cout << std::endl;
+    // }
+    // std::cout << std::endl;
 
-    std::cout << "DEBUG: Original K (CPU): " << '\n';
-    for (auto i = 0ul; i < 128; ++i) {
-      for (int j = 0ul; j < 64; ++j) {
-        std::cout << (float)k[info.get_kv_elem_offset(i, 0, j)] << " ";
-      }
-      std::cout << std::endl;
-    }
-    std::cout << std::endl;
+    // std::cout << "DEBUG: Original K (CPU): " << '\n';
+    // for (auto i = 0ul; i < 128; ++i) {
+    //   for (int j = 0ul; j < 64; ++j) {
+    //     std::cout << (float)k[info.get_kv_elem_offset(i, 0, j)] << " ";
+    //   }
+    //   std::cout << std::endl;
+    // }
+    // std::cout << std::endl;
+    std::vector<float> m_values;
 #endif
     for (size_t qo_head_idx = 0; qo_head_idx < num_qo_heads; ++qo_head_idx) {
       const size_t kv_head_idx = qo_head_idx / info.get_group_size();
@@ -145,13 +146,17 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
               FLASHINFER_ERROR(err_msg.str());
             }
           }
+          // apply soft cap if enabled
+          if (use_soft_cap) {
+            float soft_cap_pre_tanh_scale = sm_scale / logits_soft_cap;
+            att[kv_idx] = std::tanh(att[kv_idx] / sm_scale * soft_cap_pre_tanh_scale);
+          }
           // apply mask
           if (causal && kv_idx > kv_len + q_idx - qo_len) {
             att[kv_idx] = -5e4;
           }
           max_val = std::max(max_val, att[kv_idx]);
         }
-
         // exp minus max
         float denom = 0;
         for (size_t kv_idx = 0; kv_idx < kv_len; ++kv_idx) {
@@ -173,8 +178,18 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
           o[info.get_o_elem_offset(q_idx, qo_head_idx, feat_idx)] =
               fi::con::explicit_casting<float, dtype_out>(o_float);
         }
+#if Debug
+        m_values.push_back(max_val);
+#endif
       }
     }
+#if Debug
+    std::cout << "DEBUG: Max values (CPU): " << '\n';
+    for (auto m_value : m_values) {
+      std::cout << m_value << '\n';
+    }
+    std::cout << std::endl;
+#endif
   });
   return std::move(o);
 }

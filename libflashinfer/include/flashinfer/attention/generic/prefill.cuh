@@ -1040,7 +1040,7 @@ __device__ __forceinline__ void update_mdo_states(
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
     typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], uint32_t warp_idx = 0, uint32_t lane_idx = 0) {
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
   using DTypeQKAccum = typename KTraits::DTypeQKAccum;
   using AttentionVariant = typename KTraits::AttentionVariant;
   constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
@@ -1064,8 +1064,16 @@ __device__ __forceinline__ void update_mdo_states(
           m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x4));
           m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x2));
           m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x1));
-
           float o_scale = gpu_iface::math::ptx_exp2(m_prev * sm_scale - m[mma_q][j] * sm_scale);
+#if Debug
+          if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+            printf("At start of iteration\n");
+            printf("m[%u][%u] : %f\n", mma_q, j, m[mma_q][j]);
+            printf("m_prev : %f\n", m_prev);
+            printf("o_scale : %f\n", o_scale);
+            printf("Prescaling d[%u][%u] : %f\n", mma_q, j, d[mma_q][j]);
+          }
+#endif
           d[mma_q][j] *= o_scale;
 
 #pragma unroll
@@ -1316,7 +1324,7 @@ __device__ __forceinline__ void compute_sfm_v(
 #endif
       } else {
 #if defined(PLATFORM_HIP_DEVICE)
-        v_smem->load_fragment_and_quad_transpose(*v_smem_offset_r, b_frag);
+        v_smem->load_matrix_m16n16_trans(*v_smem_offset_r, b_frag);
 #else
         v_smem->ldmatrix_m8n8x4_trans(*v_smem_offset_r, b_frag);
 #endif
@@ -2040,7 +2048,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 
 #endif
       // compute m,d states in online softmax
-      update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d, warp_idx, lane_idx);
+      update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
 
 #if Debug1
       flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
@@ -2080,6 +2088,14 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     block.sync();
 
     finalize_m<KTraits>(variant, m);
+
+#if Debug
+    flashinfer::gpu_iface::debug_utils::hip::write_m_to_lds<float, NUM_MMA_Q,
+                                                            NUM_ACCUM_ROWS_PER_THREAD>(
+        m, qk_scratch, tid);
+    flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+        qk_scratch, CTA_TILE_Q, "--- m values after finalize_m ---");
+#endif
 
     // threadblock synchronization
     threadblock_sync_mdo_states<KTraits>(o_frag, &smem_storage, m, d, warp_idx, lane_idx, tid);
