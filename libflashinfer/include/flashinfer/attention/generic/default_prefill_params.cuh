@@ -1,27 +1,15 @@
-/*
- * Copyright (c) 2024 by FlashInfer team.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX - FileCopyrightText : 2023-2025 FlashInfer team.
+// SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
+//
+// SPDX - License - Identifier : Apache - 2.0
 #ifndef FLASHINFER_PREFILL_PARAMS_CUH_
 #define FLASHINFER_PREFILL_PARAMS_CUH_
-
-#include <cuda_runtime.h>
 
 #include <cmath>
 #include <cstdint>
 
-#include "../page.cuh"
+#include "gpu_iface/gpu_runtime_compat.hpp"
+#include "page.cuh"
 
 namespace flashinfer {
 
@@ -39,10 +27,10 @@ struct SinglePrefillParams {
   float* lse;
   float* maybe_alibi_slopes;
   uint_fastdiv group_size;
-  uint32_t qo_len;
-  uint32_t kv_len;
   uint32_t num_qo_heads;
   uint32_t num_kv_heads;
+  uint32_t qo_len;
+  uint32_t kv_len;
   uint32_t q_stride_n;
   uint32_t q_stride_h;
   uint32_t k_stride_n;
@@ -55,6 +43,8 @@ struct SinglePrefillParams {
   float sm_scale;
   float rope_rcp_scale;
   float rope_rcp_theta;
+  uint32_t debug_thread_id;
+  uint32_t debug_warp_id;
 
   uint32_t partition_kv;
 
@@ -91,7 +81,8 @@ struct SinglePrefillParams {
                                uint32_t kv_len, uint32_t q_stride_n, uint32_t q_stride_h,
                                uint32_t kv_stride_n, uint32_t kv_stride_h, uint32_t head_dim,
                                int32_t window_left, float logits_soft_cap, float sm_scale,
-                               float rope_scale, float rope_theta)
+                               float rope_scale, float rope_theta, uint32_t debug_thread_id,
+                               uint32_t debug_warp_id)
       : q(q),
         k(k),
         v(v),
@@ -116,6 +107,8 @@ struct SinglePrefillParams {
         sm_scale(sm_scale),
         rope_rcp_scale(1. / rope_scale),
         rope_rcp_theta(1. / rope_theta),
+        debug_thread_id(debug_thread_id),
+        debug_warp_id(debug_warp_id),
         partition_kv(false) {}
 
   __host__ __device__ __forceinline__ uint32_t get_qo_len(uint32_t batch_idx) const {
@@ -388,4 +381,4 @@ struct BatchPrefillPagedParams {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_DECODE_PARAMS_CUH_
+#endif  // FLASHINFER_PREFILL_PARAMS_CUH_
