@@ -1,3 +1,9 @@
+# v0.2.5+rocm.0.2
+
+## Added
+
+- Decode feature chunking logic and shared mem optimization (#25) @Madduri, Rishi
+
 # v0.2.5+rocm
 
 The initial technical preview release of a ROCm port of FlashInfer. The release
