@@ -1,7 +1,7 @@
-// SPDX - FileCopyrightText : 2023-2025 FlashInfer team.
-// SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
+// SPDX-FileCopyrightText : 2023-2035 FlashInfer team.
+// SPDX-FileCopyrightText : 2025 Advanced Micro Devices, Inc.
 //
-// SPDX - License - Identifier : Apache - 2.0
+// SPDX-License-Identifier : Apache-2.0
 
 #pragma once
 
@@ -262,7 +262,6 @@ __global__ void AppendPagedKVCacheKernel(paged_kv_t<DType, IdType> paged_kv,
                                          size_t append_k_stride_n, size_t append_k_stride_h,
                                          size_t append_v_stride_n, size_t append_v_stride_h) {
   uint32_t tx = threadIdx.x, ty = threadIdx.y;
-  uint32_t num_heads = paged_kv.num_heads;
   uint32_t head_idx = ty;
   uint32_t cta_id = blockIdx.x;
   uint32_t num_ctas = gridDim.x;

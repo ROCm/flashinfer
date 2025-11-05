@@ -6,25 +6,15 @@
 #ifndef FLASHINFER_DECODE_CUH_
 #define FLASHINFER_DECODE_CUH_
 
+#include <sstream>
+
+#include "cascade.cuh"
 #include "gpu_iface/cooperative_groups.h"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/math_ops.hpp"
 #include "gpu_iface/memory_ops.hpp"
 #include "gpu_iface/platform.hpp"
 #include "gpu_iface/utils.cuh"
-
-#if defined(PLATFORM_CUDA_DEVICE)
-#include "gpu_iface/backend/cuda/vec_dtypes.cuh"
-#elif defined(PLATFORM_HIP_DEVICE)
-#define HIP_ENABLE_WARP_SYNC_BUILTINS 1
-// #include "gpu_iface/memory_ops.hpp"
-#include "hip/hip_runtime.h"
-#include "hip/hip_runtime_api.h"
-#endif
-
-#include <iostream>
-
-#include "cascade.cuh"
 #include "pos_enc.cuh"
 #include "state.cuh"
 
@@ -263,7 +253,6 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
     // apply rotary embedding to q matrix
     q_vec = vec_apply_llama_rope<vec_size, bdx>(q + qo_head_idx * q_stride_h, freq, seq_len - 1);
   } else {
-    // do not apply rotary embedding to q matrix
     q_vec.cast_load(q + qo_head_idx * q_stride_h + tx * vec_size);
   }
   block.sync();
@@ -616,7 +605,9 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
       return 512U;
     }
   } else {
-    return 128U;
+    // At 128 threads and 32 threads per warp, the CUDA implementation deploys 4 warps per block.
+    // We have 64 threads per wavefront so we use 256 threads
+    return 256U;
   }
 }
 
@@ -632,8 +623,7 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
  *   head_dim] for NHD layout, [num_kv_heads, seq_len, head_dim] for HND layout
  * \param o The output matrix, shape: [num_qo_heads, head_dim]
  * \param tmp Used-allocated temporary buffer
- * \param num_qo_heads A integer indicates the number of heads of query and
- * output
+ * \param num_qo_heads A integer indicates the number of heads of query and output
  * \param num_kv_heads A integer indicates the number of heads of key and value
  * \param seq_len A integer indicates the sequence length
  * \param head_dim A integer indicates the head dimension
@@ -650,111 +640,106 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
+
   const uint32_t num_qo_heads = params.num_qo_heads;
   const uint32_t num_kv_heads = params.num_kv_heads;
   const uint32_t seq_len = params.kv_len;
 
-  constexpr uint32_t vec_size = std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
+  // Optimizing vec_size for CDNA3 architecture.
+  // This helps keep the dynamic shared memory allocation within hardware threshold for CDNA3
+  constexpr uint32_t vec_size = (HEAD_DIM < 256U)
+                                    ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
+                                    : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
   constexpr uint32_t bdx = HEAD_DIM / vec_size;
+
   auto compute_capacity = GetCudaComputeCapability();
   static_assert(bdx <= 64U);
 
   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
     constexpr uint32_t bdy = GROUP_SIZE;
-
-    // For AMD CDNA3, use fewer threads to reduce shared memory usage
     constexpr uint32_t num_threads =
         std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
-
     constexpr uint32_t bdz = num_threads / (bdx * bdy);
 
-    // Use smaller tile size for AMD to reduce shared memory requirements
-    constexpr uint32_t tile_size_per_bdx = GROUP_SIZE == 1 ? (sizeof(DTypeKV) == 1 ? 2U : 4U) : 1U;
+    // AMD CDNA3 Reduce tile size to accomodate for CDNA3 architecture's hardware threshold.
+    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1U) ? 2U : 1U;
 
-    DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, BASE_NUM_STAGES_SMEM, {
-      constexpr uint32_t NUM_STAGES_SMEM = std::min(BASE_NUM_STAGES_SMEM, 2U);
-      const uint64_t smem_size =
-          2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
-          2U * bdy * bdz * sizeof(float);
+    // This has been hard coded to 2U. Previous implementation involved a macro redirection that
+    // always resulted in 2U for H100 or CDNA3 architecture. Please take a look at
+    // gpu_iface/dispatch.cuh - DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM macro
+    constexpr uint32_t NUM_STAGES_SMEM = 2U;
 
-      // For AMD, ensure we don't exceed 64KB shared memory
-      const uint64_t max_smem = 65536U;
-      const uint64_t safe_smem_size = std::min(smem_size, max_smem - 1024U);  // Leave some buffer
+    // AMD CDNA3 LDS is 64KB per CU, shared across wavefronts
+    const uint32_t smem_size =
+        2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
+        2U * bdy * bdz * sizeof(float);
 
-      auto kernel =
-          SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
-                                        vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
+    if (smem_size > 65536U) {
+      std::ostringstream err_msg;
+      err_msg << "Shared memory size " << smem_size << " exceeds CDNA3 limit of 64KB";
+      FLASHINFER_ERROR(err_msg.str());
+    }
 
-      FI_GPU_CALL(gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
-                                      safe_smem_size));
+    auto kernel =
+        SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
+                                      vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
 
-#if defined(PLATFORM_HIP_DEVICE)
-      // For CDNA we have shared memory allocaion disabled for now.
-      // TODO: Fix this for better performance
+    FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+
+    if (seq_len <= 256 || tmp == nullptr) {
+      // No need to use partition-kv kernel
       dim3 nblks = dim3(1, num_kv_heads);
       dim3 nthrs = dim3(bdx, bdy, bdz);
       params.kv_chunk_size = seq_len;
       void* args[] = {(void*)&params};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, safe_smem_size, stream));
+      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    } else {
+      // Use partition-kv kernel with AMD-specific tuning
+      int num_blocks_per_sm = 0;
+      int num_sm = 0;
+      int dev_id = 0;
+      FI_GPU_CALL(gpuGetDevice(&dev_id));
+      FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
+      FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
+                                                               num_threads, smem_size));
+      if (num_blocks_per_sm == 0) {
+        std::ostringstream err_msg;
+        err_msg << "Zero occupancy detected. smem_size=" << smem_size
+                << ", num_threads=" << num_threads;
+        FLASHINFER_ERROR(err_msg.str());
+      }
+      uint32_t max_grid_size = uint32_t(num_blocks_per_sm) * uint32_t(num_sm);
+      uint32_t max_num_kv_chunks = max_grid_size / num_kv_heads;
 
-#else
+      // AMD CDNA3: Use larger chunk size to reduce synchronization overhead
+      uint32_t kv_chunk_size = max(ceil_div(seq_len, max_num_kv_chunks), 512U);
+      uint32_t num_chunks = ceil_div(seq_len, kv_chunk_size);
 
-                    if (seq_len <= 256 || tmp == nullptr) {
-                        // No need to use partition-kv kernel
-                        dim3 nblks = dim3(1, num_kv_heads);
-                        dim3 nthrs = dim3(bdx, bdy, bdz);
-                        params.kv_chunk_size = seq_len;
-                        void *args[] = {(void *)&params};
-                        FI_GPU_CALL(gpuLaunchKernel((void *)kernel, nblks, nthrs,
-                                                    args, safe_smem_size, stream));
-                    }
-                    else {
-                        // Use partition-kv kernel with AMD-specific tuning
-                        int num_blocks_per_sm = 0;
-                        int num_sm = 0;
-                        int dev_id = 0;
-                        FI_GPU_CALL(gpuGetDevice(&dev_id));
-                        FI_GPU_CALL(gpuDeviceGetAttribute(
-                            &num_sm, gpuDevAttrMultiProcessorCount, dev_id));
+      dim3 nblks = dim3(num_chunks, num_kv_heads);
+      if (nblks.x == 0 || nblks.y == 0) {
+        std::ostringstream err_msg;
+        err_msg << "Invalid kernel configuration: nblks=(" << nblks.x << "," << nblks.y << ")";
+        FLASHINFER_ERROR(err_msg.str());
+      }
+      dim3 nthrs = dim3(bdx, bdy, bdz);
 
-                        // For AMD hardware, limit to 1 block per CU to avoid shared
-                        // memory issues
-                        num_blocks_per_sm = 1;
+      float* tmp_lse = (float*)(tmp + num_chunks * num_qo_heads * HEAD_DIM);
+      auto o = params.o;
+      params.o = tmp;
+      params.lse = tmp_lse;
+      params.kv_chunk_size = kv_chunk_size;
+      void* args[] = {(void*)&params};
+      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
 
-                        uint32_t max_grid_size =
-                            uint32_t(num_blocks_per_sm) * uint32_t(num_sm);
-                        uint32_t max_num_kv_chunks = max_grid_size / num_kv_heads;
+      FI_GPU_CALL(hipStreamSynchronize(stream));
 
-                        // For AMD, use smaller chunk size to fit in memory
-                        uint32_t kv_chunk_size =
-                            max(ceil_div(seq_len, max_num_kv_chunks), 256U);
-                        uint32_t num_chunks = ceil_div(seq_len, kv_chunk_size);
-
-                        dim3 nblks = dim3(num_chunks, num_kv_heads);
-                        dim3 nthrs = dim3(bdx, bdy, bdz);
-
-                        float *tmp_lse =
-                            (float *)(tmp + num_chunks * num_qo_heads * HEAD_DIM);
-                        auto o = params.o;
-                        params.o = tmp;
-                        params.lse = tmp_lse;
-                        params.kv_chunk_size = kv_chunk_size;
-                        void *args[] = {(void *)&params};
-
-                        FI_GPU_CALL(gpuLaunchKernel((void *)kernel, nblks, nthrs,
-                                                    args, safe_smem_size, stream));
-
-                        if constexpr (AttentionVariant::use_softmax) {
-                            FI_GPU_CALL(
-                            MergeStates(tmp, tmp_lse, o, nullptr, num_chunks,
-                            1, num_qo_heads, HEAD_DIM, stream));
-                        } else {
-                            FI_GPU_CALL(AttentionSum(tmp, o, num_chunks, 1,
-                            num_qo_heads, HEAD_DIM, stream));
-                        }
-                    }
-#endif
-    });
+      if constexpr (AttentionVariant::use_softmax) {
+        FI_GPU_CALL(
+            MergeStates(tmp, tmp_lse, o, nullptr, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
+      } else {
+        FI_GPU_CALL(AttentionSum(tmp, o, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
+      }
+    }
   });
   return gpuSuccess;
 }
