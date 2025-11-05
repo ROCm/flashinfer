@@ -8,7 +8,7 @@
 #include <type_traits>
 
 #include "../../utils/cpu_reference_hip.h"
-#include "../../utils/flashinfer_prefill_ops.hip.h"
+#include "../../utils/flashinfer_prefill_ops_hip.h"
 #include "../../utils/utils_hip.h"
 #include "flashinfer/attention/generic/prefill.cuh"
 #include "gpu_iface/gpu_runtime_compat.hpp"

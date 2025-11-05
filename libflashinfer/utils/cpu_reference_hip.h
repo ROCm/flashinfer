@@ -8,9 +8,6 @@
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
 
-#include <cmath>
-#include <iostream>
-
 #include "flashinfer/attention/generic/page.cuh"
 #include "flashinfer/attention/generic/pos_enc.cuh"
 #include "flashinfer/exception.h"
