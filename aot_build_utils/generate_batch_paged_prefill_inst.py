@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .literal_map import (
     dtype_literal,
+    dtype_literal_hip,
     idtype_literal,
     mask_mode_literal,
     pos_encoding_mode_literal,
@@ -36,60 +37,120 @@ def get_cu_file_str(
     dtype_kv,
     dtype_out,
     idtype,
+    generate_hip,
 ):
-    cta_tile_q_choice = [128, 64, 16]
+    if generate_hip:
+        cta_tile_q_choice = [128, 64, 16]
 
-    def get_insts(attention_variant, dtype_out):
-        return "\n".join(
-            [
-                """template cudaError_t BatchPrefillWithPagedKVCacheDispatched<{cta_tile_q}, {head_dim_qk}, {head_dim_vo}, {pos_encoding_mode}, {use_fp16_qk_reduction}, {mask_mode}, {attention_variant}, Params>(
-    Params params,
-    {dtype_out}* tmp_v,
-    float* tmp_s, cudaStream_t stream);
-    """.format(
-                    cta_tile_q=cta_tile_q,
-                    head_dim_qk=head_dim_qk,
-                    head_dim_vo=head_dim_vo,
-                    pos_encoding_mode=pos_encoding_mode_literal[int(pos_encoding_mode)],
-                    use_fp16_qk_reduction=use_fp16_qk_reduction,
-                    mask_mode=mask_mode_literal[int(mask_mode)],
-                    attention_variant=attention_variant,
-                    dtype_out=dtype_out,
-                )
-                for cta_tile_q in cta_tile_q_choice
-            ]
-        )
+        def get_insts(attention_variant, dtype_out):
+            return "\n".join(
+                [
+                    """template hipError_t BatchPrefillWithPagedKVCacheDispatched<{cta_tile_q}, {head_dim_qk}, {head_dim_vo}, {pos_encoding_mode}, {use_fp16_qk_reduction}, {mask_mode}, {attention_variant}, Params>(
+        Params params,
+        {dtype_out}* tmp_v,
+        float* tmp_s, hipStream_t stream);
+        """.format(
+                        cta_tile_q=cta_tile_q,
+                        head_dim_qk=head_dim_qk,
+                        head_dim_vo=head_dim_vo,
+                        pos_encoding_mode=pos_encoding_mode_literal[
+                            int(pos_encoding_mode)
+                        ],
+                        use_fp16_qk_reduction=use_fp16_qk_reduction,
+                        mask_mode=mask_mode_literal[int(mask_mode)],
+                        attention_variant=attention_variant,
+                        dtype_out=dtype_out,
+                    )
+                    for cta_tile_q in cta_tile_q_choice
+                ]
+            )
 
-    use_custom_mask = "true" if int(mask_mode) == 2 else "false"
-    dtype_q = dtype_literal[dtype_q]
-    dtype_kv = dtype_literal[dtype_kv]
-    dtype_out = dtype_literal[dtype_out]
-    idtype = idtype_literal[idtype]
+        use_custom_mask = "true" if int(mask_mode) == 2 else "false"
+        dtype_q = dtype_literal_hip[dtype_q]
+        dtype_kv = dtype_literal_hip[dtype_kv]
+        dtype_out = dtype_literal_hip[dtype_out]
+        idtype = idtype_literal[idtype]
 
-    content = f"""#include <flashinfer/attention_impl.cuh>
+        content = f"""#include <flashinfer/attention/generic/attention_impl.cuh>
 
-namespace flashinfer {{
+    namespace flashinfer {{
 
-using Params = BatchPrefillPagedParams<{dtype_q}, {dtype_kv}, {dtype_out}, {idtype}>;
+    using Params = BatchPrefillPagedParams<{dtype_q}, {dtype_kv}, {dtype_out}, {idtype}>;
 
-using AttentionVariant1 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/true, /*use_logits_soft_cap=*/false, /*use_alibi_bias=*/false>;
+    using AttentionVariant1 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/true, /*use_logits_soft_cap=*/false, /*use_alibi_bias=*/false>;
 
-{get_insts("AttentionVariant1", dtype_out)}
+    {get_insts("AttentionVariant1", dtype_out)}
 
-using AttentionVariant2 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/true, /*use_logits_soft_cap=*/true, /*use_alibi_bias=*/false>;
+    using AttentionVariant2 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/true, /*use_logits_soft_cap=*/true, /*use_alibi_bias=*/false>;
 
-{get_insts("AttentionVariant2", dtype_out)}
+    {get_insts("AttentionVariant2", dtype_out)}
 
-using AttentionVariant3 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/false, /*use_logits_soft_cap=*/false, /*use_alibi_bias=*/false>;
+    using AttentionVariant3 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/false, /*use_logits_soft_cap=*/false, /*use_alibi_bias=*/false>;
 
-{get_insts("AttentionVariant3", dtype_out)}
+    {get_insts("AttentionVariant3", dtype_out)}
 
-using AttentionVariant4 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/false, /*use_logits_soft_cap=*/true, /*use_alibi_bias=*/false>;
+    using AttentionVariant4 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/false, /*use_logits_soft_cap=*/true, /*use_alibi_bias=*/false>;
 
-{get_insts("AttentionVariant4", dtype_out)}
+    {get_insts("AttentionVariant4", dtype_out)}
 
-}}"""
-    return content
+    }}"""
+        return content
+
+    else:
+        cta_tile_q_choice = [128, 64, 16]
+
+        def get_insts(attention_variant, dtype_out):
+            return "\n".join(
+                [
+                    """template cudaError_t BatchPrefillWithPagedKVCacheDispatched<{cta_tile_q}, {head_dim_qk}, {head_dim_vo}, {pos_encoding_mode}, {use_fp16_qk_reduction}, {mask_mode}, {attention_variant}, Params>(
+        Params params,
+        {dtype_out}* tmp_v,
+        float* tmp_s, cudaStream_t stream);
+        """.format(
+                        cta_tile_q=cta_tile_q,
+                        head_dim_qk=head_dim_qk,
+                        head_dim_vo=head_dim_vo,
+                        pos_encoding_mode=pos_encoding_mode_literal[
+                            int(pos_encoding_mode)
+                        ],
+                        use_fp16_qk_reduction=use_fp16_qk_reduction,
+                        mask_mode=mask_mode_literal[int(mask_mode)],
+                        attention_variant=attention_variant,
+                        dtype_out=dtype_out,
+                    )
+                    for cta_tile_q in cta_tile_q_choice
+                ]
+            )
+
+        use_custom_mask = "true" if int(mask_mode) == 2 else "false"
+        dtype_q = dtype_literal[dtype_q]
+        dtype_kv = dtype_literal[dtype_kv]
+        dtype_out = dtype_literal[dtype_out]
+        idtype = idtype_literal[idtype]
+
+        content = f"""#include <flashinfer/attention_impl.cuh>
+
+    namespace flashinfer {{
+
+    using Params = BatchPrefillPagedParams<{dtype_q}, {dtype_kv}, {dtype_out}, {idtype}>;
+
+    using AttentionVariant1 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/true, /*use_logits_soft_cap=*/false, /*use_alibi_bias=*/false>;
+
+    {get_insts("AttentionVariant1", dtype_out)}
+
+    using AttentionVariant2 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/true, /*use_logits_soft_cap=*/true, /*use_alibi_bias=*/false>;
+
+    {get_insts("AttentionVariant2", dtype_out)}
+
+    using AttentionVariant3 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/false, /*use_logits_soft_cap=*/false, /*use_alibi_bias=*/false>;
+
+    {get_insts("AttentionVariant3", dtype_out)}
+
+    using AttentionVariant4 = DefaultAttention<{use_custom_mask}, /*use_sliding_window=*/false, /*use_logits_soft_cap=*/true, /*use_alibi_bias=*/false>;
+
+    {get_insts("AttentionVariant4", dtype_out)}
+
+    }}"""
 
 
 if __name__ == "__main__":
