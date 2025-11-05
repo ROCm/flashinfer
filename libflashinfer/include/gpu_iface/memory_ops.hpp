@@ -28,16 +28,16 @@ enum class PrefetchMode {
 // Include platform-specific implementations
 #if defined(PLATFORM_CUDA_DEVICE)
 #include "backend/cuda/memory_ops.cuh"
-namespace detail = flashinfer::gpu_iface::memory::detail::cuda;
+namespace mem_detail = flashinfer::gpu_iface::memory::detail::cuda;
 #elif defined(PLATFORM_HIP_DEVICE)
 #include "backend/hip/memory_ops_hip.h"
-namespace detail = flashinfer::gpu_iface::memory::detail::hip;
+namespace mem_detail = flashinfer::gpu_iface::memory::detail::hip;
 #endif
 
 /**
  * @brief Commits pending asynchronous memory operations to a group
  */
-__device__ __forceinline__ void commit_group() { detail::commit_group(); }
+__device__ __forceinline__ void commit_group() { mem_detail::commit_group(); }
 
 /**
  * @brief Waits until N most recent groups of async operations are complete
@@ -46,7 +46,7 @@ __device__ __forceinline__ void commit_group() { detail::commit_group(); }
  */
 template <size_t N>
 __device__ __forceinline__ void wait_group() {
-  detail::wait_group<N>();
+  mem_detail::wait_group<N>();
 }
 
 /**
@@ -59,13 +59,13 @@ __device__ __forceinline__ void wait_group() {
  */
 template <PrefetchMode PrefetchOpt, typename T>
 __device__ __forceinline__ void load_128b(T* smem_ptr, const T* gmem_ptr) {
-  detail::load_128b<PrefetchOpt>(smem_ptr, gmem_ptr);
+  mem_detail::load_128b<PrefetchOpt>(smem_ptr, gmem_ptr);
 }
 
 template <PrefetchMode PrefetchOpt, typename T>
 __device__ __forceinline__ void load_64b(T* smem_ptr, const T* gmem_ptr) {
 #if defined(PLATFORM_HIP_DEVICE)
-  detail::load_64b<PrefetchOpt>(smem_ptr, gmem_ptr);
+  mem_detail::load_64b<PrefetchOpt>(smem_ptr, gmem_ptr);
 #else
 #error "load_64b not implemented for this platform"
 #endif
@@ -83,13 +83,13 @@ __device__ __forceinline__ void load_64b(T* smem_ptr, const T* gmem_ptr) {
  */
 template <PrefetchMode PrefetchOpt, SharedMemFillMode FillOpt, typename T>
 __device__ __forceinline__ void pred_load_128b(T* smem_ptr, const T* gmem_ptr, bool predicate) {
-  detail::pred_load_128b<PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
+  mem_detail::pred_load_128b<PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
 }
 
 template <PrefetchMode PrefetchOpt, SharedMemFillMode FillOpt, typename T>
 __device__ __forceinline__ void pred_load_64b(T* smem_ptr, const T* gmem_ptr, bool predicate) {
 #if defined(PLATFORM_HIP_DEVICE)
-  detail::pred_load_64b<PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
+  mem_detail::pred_load_64b<PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
 #else
 #error "pred_load_64b not implemented for this platform"
 #endif
@@ -106,7 +106,7 @@ __device__ __forceinline__ void pred_load_64b(T* smem_ptr, const T* gmem_ptr, bo
  */
 template <size_t NumBits, PrefetchMode PrefetchOpt, typename T>
 __device__ __forceinline__ void load(T* smem_ptr, const T* gmem_ptr) {
-  detail::load<NumBits, PrefetchOpt>(smem_ptr, gmem_ptr);
+  mem_detail::load<NumBits, PrefetchOpt>(smem_ptr, gmem_ptr);
 }
 
 /**
@@ -122,7 +122,7 @@ __device__ __forceinline__ void load(T* smem_ptr, const T* gmem_ptr) {
  */
 template <size_t NumBits, PrefetchMode PrefetchOpt, SharedMemFillMode FillOpt, typename T>
 __device__ __forceinline__ void pred_load(T* smem_ptr, const T* gmem_ptr, bool predicate) {
-  detail::pred_load<NumBits, PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
+  mem_detail::pred_load<NumBits, PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
 }
 
 }  // namespace memory

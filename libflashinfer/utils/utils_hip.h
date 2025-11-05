@@ -1,7 +1,7 @@
-// SPDX - FileCopyrightText : 2023 - 2025 Flashinfer team
-// SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
+// SPDX-FileCopyrightText : 2023-2035 FlashInfer team.
+// SPDX-FileCopyrightText : 2025 Advanced Micro Devices, Inc.
 //
-// SPDX - License - Identifier : Apache 2.0
+// SPDX-License-Identifier : Apache-2.0
 
 #pragma once
 
@@ -51,10 +51,37 @@
 
 namespace utils {
 
+enum Predicate {
+  Linear,
+  Ones,
+  Zeros,
+};
+
+template <typename T, Predicate Pred>
+void generate_data(std::vector<T>& vec) {
+  if constexpr (Pred == Predicate::Linear) {
+    assert(vec.size() > 0);
+    for (int i = 0; i < vec.size(); i++) {
+      vec[i] = fi::con::explicit_casting<float, T>(static_cast<float>(i));
+    }
+  } else if constexpr (Pred == Predicate::Ones) {
+    vec_fill_(vec, fi::con::explicit_casting<float, T>(1.0f));
+  } else if constexpr (Pred == Predicate::Zeros) {
+    vec_zero_(vec);
+  }
+}
+
+template <typename T>
+void vec_lexicographic_(std::vector<T>& vec) {
+  for (int i = 0; i < vec.size(); i++) {
+    vec[i] = fi::con::explicit_casting<float, T>(static_cast<float>(i));
+  }
+}
+
 template <typename T>
 void vec_normal_(std::vector<T>& vec, float mean = 0.f, float std = 1.f) {
   std::random_device rd{};
-  std::mt19937 gen{rd()};
+  std::mt19937 gen{1234};
   std::normal_distribution d{mean, std};
   for (size_t i = 0; i < vec.size(); ++i) {
     float value = static_cast<float>(d(gen));
@@ -65,7 +92,7 @@ void vec_normal_(std::vector<T>& vec, float mean = 0.f, float std = 1.f) {
 template <typename T>
 void vec_uniform_(std::vector<T>& vec, float a = 0.f, float b = 1.f) {
   std::random_device rd{};
-  std::mt19937 gen{rd()};
+  std::mt19937 gen{1234};
   std::uniform_real_distribution d{a, b};
   for (size_t i = 0; i < vec.size(); ++i) {
     float value = static_cast<float>(d(gen));
@@ -86,7 +113,7 @@ void vec_fill_(std::vector<T>& vec, T val) {
 template <typename T>
 void vec_randint_(std::vector<T>& vec, int low, int high) {
   std::random_device rd{};
-  std::mt19937 gen{rd()};
+  std::mt19937 gen{1234};
   std::uniform_int_distribution d{low, high};
   for (size_t i = 0; i < vec.size(); ++i) {
     float value = static_cast<float>(d(gen));

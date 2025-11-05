@@ -1,4 +1,4 @@
-ARG ROCM_VERSION=6.4
+ARG ROCM_VERSION=6.4.1
 
 FROM mambaorg/micromamba:2.1.1 as micromamba
 
@@ -6,16 +6,20 @@ FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete
 
 ARG ROCM_VERSION
 ARG PY_VERSION=3.12
-ARG TORCH_VERSION=2.6
+ARG TORCH_VERSION=2.7.1
 
 # Update package lists and install system dependencies
 RUN apt-get update && apt-get install -y \
-    curl \
-    wget \
-    git \
     clang-format \
     clangd-19 \
+    curl \
+    emacs \
+    git \
+    libstdc++-14-dev \
+    sudo \
+    tmux \
     vim \
+    wget \
     zsh \
     && rm -rf /var/lib/apt/lists/*
 
@@ -29,22 +33,22 @@ ENV MAMBA_USER=$USERNAME
 ENV MAMBA_ROOT_PREFIX="/opt/conda"
 ENV MAMBA_EXE="/bin/micromamba"
 
-# To silence warning where the UID and GID are out of the usual range
+# Silence warning where the UID and GID are out of the usual range,
+# create a non-root user.
 RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
-    sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs
+    sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
+    groupadd --gid $USER_GID $USERNAME && \
+    useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
+    echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME && \
+    chmod 0440 /etc/sudoers.d/$USERNAME && \
+    usermod -a -G render $USERNAME
 
-RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
-    # [Optional] Add sudo support
-    && apt-get update \
-    && apt-get install -y sudo \
-    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
-    && chmod 0440 /etc/sudoers.d/$USERNAME \
-    && rm -rf /var/lib/apt/lists/*
+RUN echo "set-option -g default-command \"/bin/bash -i\"" >> /home/$USERNAME/.tmux.conf
 
-RUN usermod -a -G render $USERNAME
+# Remove default 'ubuntu' user (UID 1000) to prevent devcontainer permission conflicts
+RUN rm -rf /home/ubuntu && if grep ubuntu:x:1000:1000 /etc/passwd >/dev/null; then userdel -f -r ubuntu; fi
 
-# Copy over needed files from the micromamba image
+# Adding micromamba functionality to an existing Docker image requires copying over needed files from the micromamba image
 # Refer: https://micromamba-docker.readthedocs.io/en/latest/advanced_usage.html
 COPY --from=micromamba "$MAMBA_EXE" "$MAMBA_EXE"
 COPY --from=micromamba /usr/local/bin/_activate_current_env.sh /usr/local/bin/_activate_current_env.sh
@@ -58,23 +62,26 @@ RUN /usr/local/bin/_dockerfile_initialize_user_accounts.sh && \
 
 # Switch to non-root user
 USER $USERNAME
+# Set home directory to the user's home directory
 WORKDIR /home/$USERNAME
 
-# Setup useful git aliases
-RUN git config --global alias.st status
-RUN git config --global alias.co checkout
-RUN git config --global alias.br branch
-RUN git config --global alias.ci commit
+# Set clangd path
+ENV PATH="/usr/lib/llvm-19/bin:$PATH"
 
 # Create the new micromamba environment
 ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_VERSION}
+ENV MAMBA_ENV_NAME=${MAMBA_ENV_NAME}
 
-RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION}
+RUN \
+    sed -i 's/^#\(force_color_prompt=yes\)/\1/' /home/$USERNAME/.bashrc && \
+    echo '' >> /home/$USERNAME/.bashrc && \
+    echo 'eval "$(micromamba shell hook --shell bash)"' >> /home/$USERNAME/.bashrc && \
+    echo "micromamba activate ${MAMBA_ENV_NAME}" >> /home/$USERNAME/.bashrc
 
-# Install needed packages for flashinfer development within the environment
-RUN /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/
-RUN /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install cmake ninja scikit-build-core setuptools-scm
-RUN /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install pre-commit
+# Create a new micromamba env and install needed packages for flashinfer development
+RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} gtest gmock bash-completion -c conda-forge && \
+    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir cmake ninja scikit-build-core setuptools-scm pre-commit numpy pytest pytest-cov pybind11 black ruff ipython && \
+    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/
 
 SHELL ["/usr/local/bin/_dockerfile_shell.sh"]
 

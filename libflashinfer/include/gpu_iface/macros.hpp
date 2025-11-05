@@ -15,6 +15,11 @@
 #ifndef __forceinline__
 #define __forceinline__ inline
 #endif
+
+#ifndef __grid_constant__
+#define __grid_constant__
+#endif
+
 #elif defined(__CUDACC__) || defined(__CUDA_ARCH__)
 #define PLATFORM_CUDA_DEVICE
 #endif
