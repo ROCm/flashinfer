@@ -64,13 +64,9 @@ void generate_data(std::vector<T>& vec) {
     for (int i = 0; i < vec.size(); i++) {
       vec[i] = fi::con::explicit_casting<float, T>(static_cast<float>(i));
     }
-  }
-
-  else if constexpr (Pred == Predicate::Ones) {
+  } else if constexpr (Pred == Predicate::Ones) {
     vec_fill_(vec, fi::con::explicit_casting<float, T>(1.0f));
-  }
-
-  else if constexpr (Pred == Predicate::Zeros) {
+  } else if constexpr (Pred == Predicate::Zeros) {
     vec_zero_(vec);
   }
 }
