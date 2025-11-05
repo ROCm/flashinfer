@@ -1,8 +1,7 @@
-// SPDX - FileCopyrightText : 2023 - 2025 Flashinfer team
-// SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
+// SPDX-FileCopyrightText : 2023-2035 FlashInfer team.
+// SPDX-FileCopyrightText : 2025 Advanced Micro Devices, Inc.
 //
-// SPDX - License - Identifier : Apache 2.0
-
+// SPDX-License-Identifier : Apache-2.0
 #pragma once
 
 #include <hip/hip_bf16.h>
