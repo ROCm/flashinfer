@@ -355,6 +355,10 @@ def determine_attention_backend(
 
 
 def is_sm90a_supported(device: torch.device) -> bool:
+
+    if torch.version.hip is not None:
+        return False
+
     major, _ = get_compute_capability(device)
     return major == 9 and torch.version.cuda >= "12.3"
 
