@@ -442,6 +442,10 @@ def has_cuda_cudart() -> bool:
 
 
 def is_sm90a_supported(device: torch.device) -> bool:
+
+    if torch.version.hip is not None:
+        return False
+
     major, _ = get_compute_capability(device)
     return major == 9 and version_at_least(torch.version.cuda, "12.3")
 

@@ -89,30 +89,142 @@ def get_fmha_module(
         raise ValueError("SM100A is not supported on this device")
 
 
-def make_hashable_cache(func):
-    """
-    Decorator that converts unhashable arguments (like lists) to hashable ones (tuples)
-    before applying functools.cache.
-    """
+def get_single_prefill_module(backend):
+    def backend_module(*args):
+        global _single_prefill_modules, _single_prefill_sm90_modules
+        modules_dict = (
+            _single_prefill_modules
+            if backend == "fa2"
+            else _single_prefill_sm90_modules
+        )
+        if args not in modules_dict:
+            uri = get_single_prefill_uri(backend, *args)
+            if has_prebuilt_ops and uri in prebuilt_ops_uri:
+                if backend == "fa2":
+                    _kernels = torch.ops.flashinfer_hip_kernels
 
-    @functools.cache
-    def cached_wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        # Convert unhashable arguments to hashable ones
-        hashable_args = []
-        for arg in args:
-            if isinstance(arg, list):
-                hashable_args.append(tuple(arg))
+                    run_func = _kernels.single_prefill_with_kv_cache.default
+                else:
+                    _kernels_sm90 = torch.ops.flashinfer_kernels_sm90
+                    run_func = _kernels_sm90.single_prefill_with_kv_cache_sm90.default
             else:
-                hashable_args.append(arg)
+                module = gen_single_prefill_module(backend, *args).build_and_load()
+                run_func = module.run.default
 
-        hashable_kwargs = {}
-        for key, value in kwargs.items():
-            if isinstance(value, list):
-                hashable_kwargs[key] = tuple(value)
+            # torch library for single_prefill_with_kv_cache
+            @register_custom_op(
+                f"flashinfer::{uri}_run", mutates_args=("tmp", "o", "maybe_lse")
+            )
+            def run_single_prefill(
+                q: torch.Tensor,
+                k: torch.Tensor,
+                v: torch.Tensor,
+                tmp: torch.Tensor,
+                o: torch.Tensor,
+                maybe_lse: Optional[torch.Tensor],
+                mask_mode: int,
+                layout: int,
+                window_left: int,
+                maybe_packed_custom_mask: Optional[torch.Tensor],
+                maybe_alibi_slopes: Optional[torch.Tensor],
+                logits_soft_cap: float,
+                sm_scale: float,
+                rope_scale: float,
+                rope_theta: float,
+            ) -> None:
+                if backend == "fa3":
+                    run_func(
+                        q,
+                        k,
+                        v,
+                        tmp,
+                        o,
+                        maybe_lse,
+                        mask_mode,
+                        layout,
+                        window_left,
+                        logits_soft_cap,
+                        sm_scale,
+                    )
+                else:
+                    run_func(
+                        q,
+                        k,
+                        v,
+                        tmp,
+                        o,
+                        maybe_lse,
+                        mask_mode,
+                        layout,
+                        window_left,
+                        maybe_packed_custom_mask,
+                        maybe_alibi_slopes,
+                        logits_soft_cap,
+                        sm_scale,
+                        1.0 / rope_scale,  # rope_rcp_scale
+                        1.0 / rope_theta,  # rope_rcp_theta
+                    )
+                return o
+
+            @register_fake_op(f"flashinfer::{uri}_run")
+            def _fake_run_single_prefill(
+                q: torch.Tensor,
+                k: torch.Tensor,
+                v: torch.Tensor,
+                tmp: torch.Tensor,
+                o: torch.Tensor,
+                maybe_lse: Optional[torch.Tensor],
+                mask_mode: int,
+                layout: int,
+                window_left: int,
+                maybe_packed_custom_mask: Optional[torch.Tensor],
+                maybe_alibi_slopes: Optional[torch.Tensor],
+                logits_soft_cap: float,
+                sm_scale: float,
+                rope_scale: float,
+                rope_theta: float,
+            ) -> None:
+                pass
+
+            # Register the module
+            modules_dict[args] = SimpleNamespace(run=run_single_prefill)
+
+        return modules_dict[args]
+
+    return backend_module
+
+
+def get_batch_prefill_module(backend):
+    def backend_module(*args):
+        global _batch_prefill_modules, _batch_prefill_sm90_modules
+        modules_dict = (
+            _batch_prefill_modules if backend == "fa2" else _batch_prefill_sm90_modules
+        )
+        if args not in modules_dict:
+            uri = get_batch_prefill_uri(backend, *args)
+            if has_prebuilt_ops and uri in prebuilt_ops_uri:
+                if backend == "fa2":
+                    _kernels = torch.ops.flashinfer_kernels
+
+                    plan_func = _kernels.batch_prefill_with_kv_cache_plan.default
+                    ragged_run_func = (
+                        _kernels.batch_prefill_with_ragged_kv_cache_run.default
+                    )
+                    paged_run_func = (
+                        _kernels.batch_prefill_with_paged_kv_cache_run.default
+                    )
+                else:
+                    _kernels_sm90 = torch.ops.flashinfer_kernels_sm90
+
+                    plan_func = (
+                        _kernels_sm90.batch_prefill_with_kv_cache_sm90_plan.default
+                    )
+                    ragged_run_func = (
+                        _kernels_sm90.batch_prefill_with_ragged_kv_cache_sm90_run.default
+                    )
+                    paged_run_func = (
+                        _kernels_sm90.batch_prefill_with_paged_kv_cache_sm90_run.default
+                    )
             else:
                 hashable_kwargs[key] = value
 

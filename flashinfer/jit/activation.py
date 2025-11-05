@@ -15,7 +15,7 @@ from .utils import write_if_different
 if check_hip_availability():
     activation_templ = r"""
   #include <gpu_iface/platform.h>
-  #include <flashinfer/attention/generic/activation.hip.h>
+  #include <flashinfer/attention/generic/activation.cuh>
   #include "pytorch_extension_utils.h"
   #include <hip/hip_runtime.h>
 
