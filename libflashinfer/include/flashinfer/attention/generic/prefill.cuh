@@ -1511,7 +1511,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
                 *reinterpret_cast<float2*>(&o_frag[mma_q][mma_d][j * 2]);
 
             *reinterpret_cast<float2*>(base_addr + 8 + col_offset * 2) =
-                *reinterpret_cast<float2*>(&o_frag[mma_q][mma_d][$ + j * 2]);
+                *reinterpret_cast<float2*>(&o_frag[mma_q][mma_d][4 + j * 2]);
 #endif
           }
         }
