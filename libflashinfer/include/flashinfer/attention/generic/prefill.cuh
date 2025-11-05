@@ -1,7 +1,7 @@
-// SPDX - FileCopyrightText : 2023-2025 FlashInfer team.
-// SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
+// SPDX-FileCopyrightText : 2023-2025 FlashInfer team.
+// SPDX-FileCopyrightText : 2025 Advanced Micro Devices, Inc.
 //
-// SPDX - License - Identifier : Apache - 2.0
+// SPDX-License-Identifier : Apache - 2.0
 #ifndef FLASHINFER_PREFILL_CUH_
 #define FLASHINFER_PREFILL_CUH_
 
@@ -31,8 +31,8 @@ namespace flashinfer {
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
 DEFINE_HAS_MEMBER(maybe_k_rope_offset)
 
-namespace cg = flashinfer::gpu_iface::cg;
-namespace memory = flashinfer::gpu_iface::memory;
+namespace cg = gpu_iface::cg;
+namespace memory = gpu_iface::memory;
 namespace mma = gpu_iface::mma;
 
 using gpu_iface::vec_dtypes::vec_cast;
