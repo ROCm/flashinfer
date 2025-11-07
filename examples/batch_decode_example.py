@@ -4,7 +4,6 @@ import flashinfer
 
 
 def verify_tensors(tensor1, tensor2, rtol=1e-3, atol=1e-3):
-
     for i in range(tensor1.shape[0]):
         for j in range(tensor1.shape[1]):
             if torch.abs(tensor1[i][j] - tensor2[i][j]) > atol + rtol * torch.abs(
@@ -17,7 +16,7 @@ def verify_tensors(tensor1, tensor2, rtol=1e-3, atol=1e-3):
     return True
 
 
-def test_batch_decode_with_paged_kv_cache(
+def batch_decode_with_paged_kv_cache(
     batch_size,
     kv_len,
     page_size,
@@ -123,9 +122,7 @@ def test_batch_decode_with_paged_kv_cache(
             ],
             dim=0,
         ).to(kv_dtype)
-        # print(qi.shape, ki.shape, vi.shape)
         o_ref_i = flashinfer.single_decode_with_kv_cache(qi, ki, vi)
-        # torch.testing.assert_close(o[i], o_ref_i, rtol=1e-3, atol=1e-3)
         result += verify_tensors(o[i], o_ref_i, rtol=1e-3, atol=1e-3)
 
     # test user-allocated output
@@ -140,35 +137,18 @@ def test_batch_decode_with_paged_kv_cache(
 
 
 if __name__ == "__main__":
-
-    batch_size = 256
-    page_size = 8
-
-    num_qo_heads = 32
-    num_kv_heads = 4
-    head_dim = 256
-    kv_len = 8192
-
-    kv_layout = "NHD"
-    pos_encoding_mode = "NONE"
-    logits_soft_cap = 0.0
-    return_lse = False
-    q_dtype = torch.float16
-    kv_dtype = torch.float16
-    contiguous_kv = True
-
-    test_batch_decode_with_paged_kv_cache(
-        batch_size,
-        kv_len,
-        page_size,
-        num_kv_heads,
-        num_qo_heads,
-        head_dim,
-        kv_layout,
-        pos_encoding_mode,
-        logits_soft_cap,
-        return_lse,
-        q_dtype,
-        kv_dtype,
-        contiguous_kv,
+    batch_decode_with_paged_kv_cache(
+        batch_size=256,
+        kv_len=8192,
+        page_size=8,
+        num_kv_heads=4,
+        num_qo_heads=32,
+        head_dim=256,
+        kv_layout="NHD",
+        pos_encoding_mode="NONE",
+        logits_soft_cap=0.0,
+        return_lse=False,
+        q_dtype=torch.float16,
+        kv_dtype=torch.float16,
+        contiguous_kv=True,
     )
