@@ -59,3 +59,12 @@ repos:
     hooks:
       - id: cmake-format
         additional_dependencies: [pyyaml>=5.1]
+  # REUSE compliance check for specific directories only
+  - repo: local
+    hooks:
+      - id: reuse-selective
+        name: reuse (selective files)
+        entry: ./scripts/reuse-check-selective.sh
+        language: system
+        files: ^(libflashinfer/include/flashinfer/attention/generic/|libflashinfer/include/gpu_iface/).*\.(cuh|hpp|h)$
+        pass_filenames: true
