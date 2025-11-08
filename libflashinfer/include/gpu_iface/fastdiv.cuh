@@ -1,6 +1,5 @@
 // SPDX-FileCopyrightText: 2014 Maxim Milakov
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
-//
 // SPDX-License-Identifier: Apache-2.0
 
 #ifndef FLASHINFER_FASTDIV_CUH_
