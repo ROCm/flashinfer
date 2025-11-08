@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
@@ -156,7 +157,7 @@ constexpr FLASHINFER_INLINE int get_mantissa_bits() {
  * permute weights order.
  * \ref
  * https://github.com/vllm-project/vllm/blob/6dffa4b0a6120159ef2fe44d695a46817aff65bc/csrc/quantization/fp8/fp8_marlin.cu#L120
-//
+ */
 template <typename fp8_dtype, typename fp16_dtype>
 __device__ void fast_dequant_f8f16x4(uint32_t* input, uint2* output) {
   uint32_t q = *input;
