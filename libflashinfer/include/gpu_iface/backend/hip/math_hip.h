@@ -1,7 +1,6 @@
-//
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: Apache-2.0
 //
+// SPDX-License-Identifier: Apache-2.0
 
 #pragma once
 #ifndef FLASHINFER_MATH_CUH_
