@@ -1,6 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
-//
 // SPDX-License-Identifier: Apache-2.0
 #ifndef VEC_DTYPES_CUH_
 #define VEC_DTYPES_CUH_
