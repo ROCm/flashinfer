@@ -1,6 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2025 Flashinfer team
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
-//
 // SPDX-License-Identifier: Apache-2.0
 
 #include <gtest/gtest.h>
@@ -21,8 +20,7 @@ template <typename DTypeQ, typename DTypeKV, typename DTypeO>
 void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t num_qo_heads,
                                          size_t num_kv_heads, size_t head_dim, bool causal,
                                          QKVLayout kv_layout, PosEncodingMode pos_encoding_mode,
-                                         bool use_fp16_qk_reduction, uint32_t debug_thread_id,
-                                         uint32_t debug_warp_id, float rtol = 1e-3,
+                                         bool use_fp16_qk_reduction, float rtol = 1e-3,
                                          float atol = 1e-3) {
   std::vector<DTypeQ> q(qo_len * num_qo_heads * head_dim);
   std::vector<DTypeKV> k(kv_len * num_kv_heads * head_dim);
@@ -56,7 +54,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t nu
   hipError_t status = flashinfer::SinglePrefillWithKVCache<DTypeQ, DTypeKV, DTypeO>(
       q_d, k_d, v_d, o_d, tmp_d,
       /*lse=*/nullptr, num_qo_heads, num_kv_heads, qo_len, kv_len, head_dim, causal, kv_layout,
-      pos_encoding_mode, use_fp16_qk_reduction, debug_thread_id, debug_warp_id);
+      pos_encoding_mode, use_fp16_qk_reduction);
 
   EXPECT_EQ(status, hipSuccess) << "SinglePrefillWithKVCache kernel launch failed, error message: "
                                 << hipGetErrorString(status);
@@ -85,7 +83,6 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t nu
 
     num_results_error_atol += (!utils::isclose(o_ref_val, o_h_val, rtol, atol));
   }
-
   float result_accuracy = 1. - float(num_results_error_atol) / float(o_ref.size());
   std::cout << "num_qo_heads=" << num_qo_heads << ", num_kv_heads=" << num_kv_heads
             << ", qo_len=" << qo_len << ", kv_len=" << kv_len << ", head_dim=" << head_dim
@@ -95,7 +92,6 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t nu
 
   EXPECT_GT(result_accuracy, 0.90) << "Result correctness test failed.";
   EXPECT_FALSE(nan_detected) << "Nan detected in the result.";
-
   FI_GPU_CALL(hipFree(q_d));
   FI_GPU_CALL(hipFree(k_d));
   FI_GPU_CALL(hipFree(v_d));
@@ -108,8 +104,6 @@ int main(int argc, char** argv) {
   // return RUN_ALL_TESTS();
   using DTypeIn = __half;
   using DTypeO = __half;
-  uint32_t debug_thread_id = 0;
-  uint32_t debug_warp_id = 0;
   bool use_fp16_qk_reduction = false;
   size_t qo_len = 128;
   size_t kv_len = 128;
@@ -122,13 +116,7 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
 
-    if (arg == "--thread" && i + 1 < argc) {
-      debug_thread_id = std::stoi(argv[++i]);
-      std::cout << "Debug thread ID set to: " << debug_thread_id << std::endl;
-    } else if (arg == "--warp" && i + 1 < argc) {
-      debug_warp_id = std::stoi(argv[++i]);
-      std::cout << "Debug warp ID set to: " << debug_warp_id << std::endl;
-    } else if (arg == "--qo_len" && i + 1 < argc) {
+    if (arg == "--qo_len" && i + 1 < argc) {
       qo_len = std::stoi(argv[++i]);
     } else if (arg == "--kv_len" && i + 1 < argc) {
       kv_len = std::stoi(argv[++i]);
@@ -137,8 +125,6 @@ int main(int argc, char** argv) {
     } else if (arg == "--help") {
       std::cout << "Usage: " << argv[0] << " [options]\n"
                 << "Options:\n"
-                << "  --thread <id>    Debug thread ID (0-255 for 4 warps)\n"
-                << "  --warp   <id>    Debug warp ID (0-3 for 4 warps)\n"
                 << "  --qo_len <len>   Query/Output length (default: 128)\n"
                 << "  --kv_len <len>   Key/Value length (default: 128)\n"
                 << "  --heads <num>    Number of heads (default: 1)\n"
@@ -149,5 +135,5 @@ int main(int argc, char** argv) {
 
   _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
       qo_len, kv_len, num_heads, num_heads, head_dim, causal, QKVLayout(kv_layout),
-      PosEncodingMode(pos_encoding_mode), use_fp16_qk_reduction, debug_thread_id, debug_warp_id);
+      PosEncodingMode(pos_encoding_mode), use_fp16_qk_reduction);
 }

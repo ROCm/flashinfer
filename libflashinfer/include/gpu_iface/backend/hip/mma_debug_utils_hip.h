@@ -120,11 +120,15 @@ template <typename T>
 __device__ void print_lds_array(T* lds_array, uint32_t dimY, uint32_t dimX,
                                 const char* title = "LDS Array") {
   static_assert(std::is_same_v<T, __half>, "Only supported for __half types");
-  if (threadIdx.x == 0) {
-    printf("%s (%dx%d):\n", title, dimX, dimY);
+  if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+    printf("%s (%dx%d):\n", title, dimY, dimX);
     for (int y = 0; y < dimY; ++y) {
       for (int x = 0; x < dimX; ++x) {
-        printf("%5.1f,", __half2float(lds_array[y * dimX + x]));
+        if (x == dimX - 1) {
+          printf("%10.6f", (float)lds_array[y * dimX + x]);
+        } else {
+          printf("%10.6f ", float(lds_array[y * dimX + x]));
+        }
       }
       printf("\n");
     }
@@ -150,7 +154,6 @@ __device__ void print_lds_array(float* lds_array, uint32_t dimY, uint32_t dimX,
     }
     printf("\n");
   }
-  __syncthreads();
 }
 
 /// @brief Prints a 1D LDS array of floats to the console from a single thread.

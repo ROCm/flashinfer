@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
-
 #ifndef FLASHINFER_PREFILL_CUH_
 #define FLASHINFER_PREFILL_CUH_
 
@@ -25,6 +24,10 @@
 #include "permuted_smem.cuh"
 #include "pos_enc.cuh"
 #include "variants.cuh"
+
+#if Debug
+#include "gpu_iface/backend/hip/mma_debug_utils_hip.h"
+#endif
 
 namespace flashinfer {
 
@@ -1154,8 +1157,7 @@ __device__ __forceinline__ void compute_sfm_v(
     uint32_t* v_smem_offset_r,
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const dim3 tid = threadIdx,
-    typename KTraits::DTypeQKAccum* qk_scratch = nullptr) {
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
   constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
@@ -1487,6 +1489,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
   constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+  constexpr uint32_t COLUMN_RESET_OFFSET = KTraits::NUM_MMA_D_VO / 4 * WARP_THREAD_COLS;
 
   const uint32_t warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
   const uint32_t lane_idx = tid.x;
@@ -1527,26 +1530,48 @@ __device__ __forceinline__ void write_o_reg_gmem(
           vec_cast<DTypeO, float>::template cast<HALF_ELEMS_PER_THREAD>((DTypeO*)o_frag_f16,
                                                                         o_frag[mma_q][mma_d]);
 
+#if defined(PLATFORM_CUDA_DEVICE)
 #ifdef FLASHINFER_STMATRIX_M8N8X4_ENABLED
-          uint32_t o_smem_offset_w = o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
+          uint32_t o_smem_offset_w = o_smem->get_permuted_offset<UPCAST_STRIDE_O>(
               (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 + lane_idx % 16,
               mma_d * 2 + lane_idx / 16);
           o_smem->stmatrix_m8n8x4(o_smem_offset_w, o_frag_f16);
 #else
-          uint32_t o_smem_offset_w = o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
-              (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 + lane_idx / TPR, mma_d * 2);
-#if defined(PLATFORM_HIP_DEVICE)
-          ((uint32_t*)(o_smem->base + o_smem_offset_w))[lane_idx % TPR] = o_frag_f16[0];
-          uint32_t offset_2 = o_smem_offset_w + 2;
-          ((uint32_t*)(o_smem->base + offset_2))[lane_idx % 16] = o_frag_f16[1];
-#else
-          ((uint32_t*)(o_smem->base + o_smem_offset_w))[lane_idx % TPR] = o_frag_f16[0];
+          uint32_t o_smem_offset_w = o_smem->get_permuted_offset<UPCAST_STRIDE_O>(
+              (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 + lane_idx / 4, mma_d * 2);
+          ((uint32_t*)(o_smem->base + o_smem_offset_w))[lane_idx % 4] = o_frag_f16[0];
           ((uint32_t*)(o_smem->base + o_smem_offset_w + 8 * UPCAST_STRIDE_O))[lane_idx % 4] =
               o_frag_f16[1];
-          ((uint32_t*)(o_smem->base + (o_smem_offset_w ^ 0x1)))[lane_idx % TPR] = o_frag_f16[2];
+          ((uint32_t*)(o_smem->base + (o_smem_offset_w ^ 0x1)))[lane_idx % 4] = o_frag_f16[2];
           ((uint32_t*)(o_smem->base + (o_smem_offset_w ^ 0x1) +
                        8 * UPCAST_STRIDE_O))[lane_idx % 4] = o_frag_f16[3];
 #endif
+#elif defined(PLATFORM_HIP_DEVICE)
+          const int lane_id_in_warp = tid.x % 64;
+          const int warp_idx_q = get_warp_idx_q<KTraits>(tid.y);
+          const uint32_t warp_base_row = warp_idx_q * KTraits::NUM_MMA_Q * 16;
+          const uint32_t frag_row_offset = mma_q * 16;
+          const uint32_t frag_col_offset = mma_d * 16;
+          const uint32_t thread_start_row_in_frag = (lane_id_in_warp / 16) * NAPTR;
+          const uint32_t thread_col_in_frag = (lane_id_in_warp % 16);
+          // Calculate base row (the first of 4 rows this thread writes)
+          const uint32_t base_row = warp_base_row + frag_row_offset + thread_start_row_in_frag;
+          // Column in units of 4-element vectors
+          const uint32_t col_vec = (frag_col_offset + thread_col_in_frag) / 4;
+          // Index within the 4-element vector (0-3)
+          const uint32_t col_idx = (frag_col_offset + thread_col_in_frag) % 4;
+          // FIXME: Get byte offset to the base of the vector using get_permuted_offset
+          // uint32_t o_smem_offset = o_smem->template get_permuted_offset<UPCAST_STRIDE_O*4*4>(
+          //     base_row, col_vec);
+
+          // Cast to DTypeO* and write all 4 elements with row strides
+          DTypeO* o_frag_f16_half = reinterpret_cast<DTypeO*>(o_frag_f16);
+          DTypeO* o_smem_typed =
+              reinterpret_cast<DTypeO*>(o_smem->base) + base_row * 64 + col_vec * 4 + col_idx;
+          *(o_smem_typed) = o_frag_f16_half[0];
+          *(o_smem_typed + KTraits::HEAD_DIM_VO) = o_frag_f16_half[1];
+          *(o_smem_typed + 2 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[2];
+          *(o_smem_typed + 3 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[3];
 #endif
         }
       }
@@ -1576,11 +1601,17 @@ __device__ __forceinline__ void write_o_reg_gmem(
           }
           o_smem_offset_w =
               o_smem->template advance_offset_by_row<4, UPCAST_STRIDE_O>(o_smem_offset_w) -
-              2 * KTraits::NUM_MMA_D_VO;
+              COLUMN_RESET_OFFSET;
         }
       }
     }
   }
+
+#if Debug
+  DTypeO* o_smem_ptr = reinterpret_cast<DTypeO*>(o_smem->base);
+  flashinfer::gpu_iface::debug_utils::hip::print_lds_array<DTypeO>(
+      o_smem_ptr, 128, 64, ("O frag fp16 copied to o_smem"));
+#endif
 }
 
 }  // namespace
@@ -1694,6 +1725,12 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     }
     init_states<KTraits>(variant, o_frag, m, d);
 
+#if Debug
+    // Statically allocate a shared memory array specifically for debugging s_frag.
+    // This avoids modifying the main SharedStorage union.
+    __shared__ DTypeQKAccum qk_scratch[CTA_TILE_Q * CTA_TILE_KV];
+#endif
+
     // cooperative fetch q fragment from gmem to reg
     const uint32_t qo_packed_idx_base =
         (bx * NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) * NUM_MMA_Q * 16;
@@ -1778,6 +1815,49 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(v_smem, &v_smem_offset_w, &v_ptr,
                                                             v_stride_n, 0, chunk_size, tid);
     memory::commit_group();
+#if Debug
+#if 0
+        // Test Q
+        if (warp_idx == 0 && lane_idx == 0) {
+            printf("\n DEBUG Q ORIGINAL (HIP):\n");
+            uint32_t q_smem_offset_r_debug;
+            for (auto i = 0; i < NUM_MMA_Q * 16 * 4; ++i) {
+                for (auto j = 0; j < NUM_MMA_D_QK * 4; ++j) {
+                    q_smem_offset_r_debug =
+                        qo_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(
+                            i, j);
+                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                    qo_smem.load_fragment(q_smem_offset_r_debug, a_frag);
+                    auto frag_T = reinterpret_cast<__half *>(a_frag);
+                    for (auto i = 0ul; i < 4; ++i) {
+                        printf("%f ", (float)(*(frag_T + i)));
+                    }
+                }
+                printf("\n");
+                qo_smem.template advance_offset_by_row<
+                    16, KTraits::UPCAST_STRIDE_Q>(q_smem_offset_r_debug);
+            }
+        }
+#endif
+
+    if (warp_idx == 0 && lane_idx == 0) {
+      printf("\n DEBUG K Global (HIP):\n");
+      printf("k_stride_n : %d\n", k_stride_n);
+      printf("k_stride_h : %d\n", k_stride_h);
+      printf("kv_head_idx : %d\n", kv_head_idx);
+      printf("num_qo_heads : %d\n", num_qo_heads);
+      printf("num_kv_heads : %d\n", num_kv_heads);
+      printf("k_stride_n : %d\n", k_stride_n);
+      printf("KTraits::NUM_MMA_D_QK : %d\n", KTraits::NUM_MMA_D_QK);
+      printf("KTraits::CTA_TILE_Q : %d\n", KTraits::CTA_TILE_Q);
+      printf("KTraits::HEAD_DIM_VO  : %d\n", KTraits::HEAD_DIM_VO);
+      printf("NUM_MMA_KV : %d\n", NUM_MMA_KV);
+      printf("NUM_MMA_Q : %d\n", NUM_MMA_Q);
+      printf("NUM_MMA_D_VO : %d\n", NUM_MMA_D_VO);
+      printf("sm_scale : %f\n", variant.sm_scale_log2);
+      printf("sizeof(DTypeO) : %lu\n", sizeof(typename KTraits::DTypeO));
+    }
+#endif
 
 #pragma unroll 1
     for (uint32_t iter = 0; iter < num_iterations; ++iter) {
@@ -1789,9 +1869,85 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
         block.sync();
       }
 
+#if Debug1
+#if 0
+        if (warp_idx == 0 && lane_idx == 0) {
+            printf("\n DEBUG K LDS ORIGINAL (HIP) Iter %d:\n", iter);
+            uint32_t k_smem_offset_r_debug;
+            for (auto i = 0; i < NUM_MMA_KV * 16; ++i) {
+                for (auto j = 0; j < NUM_MMA_D_QK * 4; ++j) {
+                    k_smem_offset_r_debug =
+                        k_smem.template get_permuted_offset<UPCAST_STRIDE_Q>(i,
+                                                                             j);
+                    uint32_t a_frag[KTraits::INT32_ELEMS_PER_THREAD];
+                    k_smem.load_fragment(k_smem_offset_r_debug, a_frag);
+                    auto frag_T = reinterpret_cast<__half *>(a_frag);
+                    for (auto i = 0ul; i < 4; ++i) {
+                        printf("%f ", (float)(*(frag_T + i)));
+                    }
+                }
+                printf("\n");
+                k_smem.template advance_offset_by_row<16, KTraits::UPCAST_STRIDE_K>(
+                    k_smem_offset_r_debug);
+            }
+        }
+#endif
+
+#if 0
+      if (warp_idx == 0 && lane_idx == 0) {
+        uint32_t b_frag[KTraits::INT32_ELEMS_PER_THREAD];
+        k_smem.load_fragment(k_smem_offset_r, b_frag);
+        auto frag_T = reinterpret_cast<__half*>(b_frag);
+        for (auto reg_id = 0ul; reg_id < 4; ++reg_id) {
+          for (auto i = 0ul; i < 4; ++i) {
+            printf("%f ", (float)(*(frag_T + i)));
+          }
+        }
+        printf("\n------------\n");
+        k_smem.load_fragment(k_smem_offset_r, b_frag);
+        frag_T = reinterpret_cast<__half*>(b_frag);
+        for (auto reg_id = 0ul; reg_id < 4; ++reg_id) {
+          for (auto i = 0ul; i < 4; ++i) {
+            printf("%f ", (float)(*(frag_T + i)));
+          }
+        }
+        printf("\n-----===============-------\n");
+      }
+#endif
+#endif
+
+#if Debug1
+      if (warp_idx == 0 && lane_idx == 0) {
+        printf("\n DEBUG V LDS (iter=%d):\n", iter);
+        uint32_t v_smem_offset_debug;
+        for (auto i = 0; i < NUM_MMA_KV * 16; ++i) {
+          for (auto j = 0; j < NUM_MMA_D_VO * 4; ++j) {
+            v_smem_offset_debug = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(i, j);
+            uint32_t v_frag[KTraits::INT32_ELEMS_PER_THREAD];
+            v_smem.load_fragment(v_smem_offset_debug, v_frag);
+            auto frag_T = reinterpret_cast<__half*>(v_frag);
+            for (auto k = 0ul; k < 4; ++k) {
+              printf("%f ", (float)(*(frag_T + k)));
+            }
+          }
+          printf("\n");
+          v_smem.template advance_offset_by_row<16, KTraits::UPCAST_STRIDE_V>(v_smem_offset_debug);
+        }
+      }
+      block.sync();
+#endif
+
       // compute attention score
       compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag);
-      // Apply logits transformation
+#if Debug1
+      flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
+                                                                      CTA_TILE_KV, tid);
+      // Print the materialized LDS array to see the final result for this iteration.
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+          qk_scratch, CTA_TILE_Q, CTA_TILE_KV, ("S frag after compute_qk for one iteration\n"));
+#endif
+
       logits_transform<KTraits>(
           params, variant, /*batch_idx=*/0, qo_packed_idx_base,
           chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
@@ -1803,8 +1959,56 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
             chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
             qo_len, kv_len, chunk_end, group_size, s_frag, tid, kv_head_idx);
       }
+#if Debug1
+      flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
+                                                                      CTA_TILE_KV, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+          qk_scratch, CTA_TILE_Q, CTA_TILE_KV,
+          ("S frag before update_mdo and after logits_transform for iteration\n"));
+
+#endif
+
+#if Debug1
+      flashinfer::gpu_iface::debug_utils::hip::write_m_to_lds<float, NUM_MMA_Q,
+                                                              NUM_ACCUM_ROWS_PER_THREAD>(
+          m, qk_scratch, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+          qk_scratch, CTA_TILE_Q, "--- m values before update_mdo_states for an iteration ---");
+#endif
       // compute m,d states in online softmax
       update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
+
+#if Debug1
+      flashinfer::gpu_iface::debug_utils::hip::write_m_to_lds<float, NUM_MMA_Q,
+                                                              NUM_ACCUM_ROWS_PER_THREAD>(
+          m, qk_scratch, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+          qk_scratch, CTA_TILE_Q, "--- m values after update_mdo_states for an iteration ---");
+#endif
+
+#if Debug1
+      // Debug: Print S matrix before S*V GEMM
+      flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<float, NUM_MMA_Q, NUM_MMA_KV>(
+          s_frag, qk_scratch, CTA_TILE_KV, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+          qk_scratch, CTA_TILE_Q, CTA_TILE_KV,
+          "S frag after update_mdo and before compute_sfm_v for iteration\n");
+#endif
+#if Debug1
+      flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
+          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
+                                                                      CTA_TILE_KV, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+          qk_scratch, CTA_TILE_Q, CTA_TILE_KV, ("S frag after update_mdo for iteration\n"));
+
+      // c) Print d values after update_mdo_states
+      flashinfer::gpu_iface::debug_utils::hip::write_d_to_lds<float, NUM_MMA_Q,
+                                                              NUM_ACCUM_ROWS_PER_THREAD>(
+          d, qk_scratch, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+          qk_scratch, CTA_TILE_Q, "--- d values after update_mdo_states ---");
+#endif
       block.sync();
       produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
           k_smem, &k_smem_offset_w, &k_ptr, k_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
@@ -1813,8 +2017,16 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       block.sync();
 
       // compute sfm*v
-      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid);
+      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
       block.sync();
+#if Debug1
+      // Debug: Print o_frag values after compute_sfm_v (S*V GEMM)
+      flashinfer::gpu_iface::debug_utils::hip::write_o_frag_to_lds<float, NUM_MMA_Q, NUM_MMA_D_VO>(
+          o_frag, qk_scratch, HEAD_DIM_VO, tid);
+      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+          qk_scratch, CTA_TILE_Q, HEAD_DIM_VO,
+          "--- o_frag values after compute_sfm_v (S*V GEMM) ---");
+#endif
       produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
           v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
       memory::commit_group();
@@ -1826,13 +2038,55 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 
     // threadblock synchronization
     threadblock_sync_mdo_states<KTraits>(o_frag, &smem_storage, m, d, warp_idx, lane_idx, tid);
+#if Debug1
+    flashinfer::gpu_iface::debug_utils::hip::write_m_to_lds<float, NUM_MMA_Q,
+                                                            NUM_ACCUM_ROWS_PER_THREAD>(
+        d, qk_scratch, tid);
+    flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+        qk_scratch, CTA_TILE_Q, "--- d values before normalize_d ---");
+#endif
+
     // normalize d
     normalize_d<KTraits>(o_frag, m, d);
+
+#if Debug1
+    block.sync();
+    // Print d values after update_mdo_states
+    flashinfer::gpu_iface::debug_utils::hip::write_d_to_lds<float, NUM_MMA_Q,
+                                                            NUM_ACCUM_ROWS_PER_THREAD>(
+        d, qk_scratch, tid);
+    flashinfer::gpu_iface::debug_utils::hip::print_lds_array_1d(
+        qk_scratch, CTA_TILE_Q, "--- d values after normalize_d ---");
+#endif
+
+#if Debug
+    flashinfer::gpu_iface::debug_utils::hip::write_o_frag_to_lds<float, NUM_MMA_Q, NUM_MMA_D_VO>(
+        o_frag, qk_scratch, HEAD_DIM_VO, tid);
+    flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
+        qk_scratch, CTA_TILE_Q, HEAD_DIM_VO, "--- FINAL o_frag values after normalize_d ---");
+#endif
+
     // write back
     write_o_reg_gmem<KTraits>(o_frag, &qo_smem, o_ptr_base, qo_packed_idx_base, qo_len,
                               /*o_stride_n=*/
                               partition_kv ? num_chunks * o_stride_n : o_stride_n,
                               /*o_stride_h=*/o_stride_h, group_size, tid);
+
+#if Debug
+    // Read back O from global memory to validate write_o_reg_gmem
+    block.sync();
+    flashinfer::gpu_iface::debug_utils::hip::debug_print_o_from_gmem<DTypeO>(
+        o_ptr_base,
+        partition_kv ? num_chunks * o_stride_n : o_stride_n,  // o_stride_n
+        o_stride_h,                                           // o_stride_h
+        CTA_TILE_Q,                                           // num_rows
+        HEAD_DIM_VO,                                          // num_cols
+        qo_packed_idx_base,                                   // qo_packed_idx_base
+        group_size,                                           // group_size
+        kv_head_idx,                                          // kv_head_idx
+        "--- O from global memory after write_o_reg_gmem ---", tid);
+#endif
+
     // write lse
     if constexpr (variant.use_softmax) {
       if (lse != nullptr || partition_kv) {
