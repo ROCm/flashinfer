@@ -18,15 +18,19 @@ for file in "$@"; do
         continue
     fi
 
-    # Check for malformed headers (spaces around hyphens or colons)
-    if grep -q "^// SPDX.*[[:space:]]-[[:space:]]" "$file" 2>/dev/null; then
-        echo "✗ $file: Malformed SPDX header (spaces around hyphens)"
+    # Check for malformed SPDX tag names - specifically spaces around the first hyphen after SPDX
+    # Bad patterns: "SPDX - FileCopyrightText", "SPDX -FileCopyrightText", "SPDX- FileCopyrightText"
+    # Good pattern: "SPDX-FileCopyrightText" (no spaces around the hyphen right after SPDX)
+    if grep -q "^// SPDX \+-\|^// SPDX- " "$file" 2>/dev/null; then
+        echo "✗ $file: Malformed SPDX header (spaces around hyphen after SPDX)"
         exit_code=1
         continue
     fi
 
-    if grep -q "^// SPDX.*[[:space:]]:[[:space:]]" "$file" 2>/dev/null; then
-        echo "✗ $file: Malformed SPDX header (spaces around colons)"
+    # Check for spaces before the colon in SPDX tags
+    # Match patterns like "SPDX-FileCopyrightText :" or "SPDX-License-Identifier :"
+    if grep -q "^// SPDX-\(FileCopyrightText\|License-Identifier\) \+:" "$file" 2>/dev/null; then
+        echo "✗ $file: Malformed SPDX header (space before colon)"
         exit_code=1
         continue
     fi
