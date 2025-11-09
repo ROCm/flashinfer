@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-/// gpu_runtime_compat.hpp - Minimal compatibility layer for CUDA/HIP
-/// differences
-
 #pragma once
 #include "macros.hpp"
 
