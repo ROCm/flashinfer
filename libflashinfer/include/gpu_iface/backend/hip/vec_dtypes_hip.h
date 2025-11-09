@@ -1,7 +1,6 @@
-// SPDX - FileCopyrightText : 2023 - 2025 Flashinfer team
-// SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
-//
-// SPDX - License - Identifier : Apache 2.0
+// SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
+// SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 #pragma once
 #ifndef VEC_DTYPES_CUH_
@@ -1630,5 +1629,5 @@ struct vec_t<float, vec_size> {
     }
   }
 };
-}
-}
+}  // namespace hip
+}  // namespace detail

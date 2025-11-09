@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// gpu_iface/cooperative_groups.hpp
 #pragma once
 #include "macros.hpp"
 
