@@ -1,7 +1,6 @@
-// SPDX - FileCopyrightText : 2023-2035 FlashInfer team.
-// SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
-//
-// SPDX - License - Identifier : Apache 2.0
+// SPDX-FileCopyrightText: 2023-2035 FlashInfer team.
+// SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef FLASHINFER_ATTENTION_HEAP_H
 #define FLASHINFER_ATTENTION_HEAP_H
