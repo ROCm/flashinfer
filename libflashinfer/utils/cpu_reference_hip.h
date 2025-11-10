@@ -121,7 +121,8 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
                   k.data() + info.get_kv_elem_offset(kv_idx, kv_head_idx, 0), head_dim, kv_idx,
                   rope_scale, rope_theta));
               for (size_t feat_idx = 0; feat_idx < head_dim; ++feat_idx) {
-                att[kv_idx] += q_rotary_local[feat_idx] * k_rotary_local[feat_idx] * sm_scale;
+                float qk_scale = use_soft_cap ? 1.0f : sm_scale;
+                att[kv_idx] += q_rotary_local[feat_idx] * k_rotary_local[feat_idx] * qk_scale;
               }
               break;
             }
