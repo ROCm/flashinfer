@@ -20,7 +20,8 @@ template <typename DTypeQ, typename DTypeKV, typename DTypeO>
 void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t num_qo_heads,
                                          size_t num_kv_heads, size_t head_dim, bool causal,
                                          QKVLayout kv_layout, PosEncodingMode pos_encoding_mode,
-                                         bool use_fp16_qk_reduction, float rtol = 1e-3,
+                                         bool use_fp16_qk_reduction, bool use_soft_cap,
+                                         float logits_soft_cap, float rtol = 1e-3,
                                          float atol = 1e-3) {
   std::vector<DTypeQ> q(qo_len * num_qo_heads * head_dim);
   std::vector<DTypeKV> k(kv_len * num_kv_heads * head_dim);
@@ -51,10 +52,18 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t nu
   DTypeO* tmp_d;
   FI_GPU_CALL(hipMalloc(&tmp_d, 16 * 1024 * 1024 * sizeof(DTypeO)));
 
-  hipError_t status = flashinfer::SinglePrefillWithKVCache<DTypeQ, DTypeKV, DTypeO>(
-      q_d, k_d, v_d, o_d, tmp_d,
-      /*lse=*/nullptr, num_qo_heads, num_kv_heads, qo_len, kv_len, head_dim, causal, kv_layout,
-      pos_encoding_mode, use_fp16_qk_reduction);
+  hipError_t status;
+  if (use_soft_cap) {
+    status = flashinfer::SinglePrefillWithKVCache<DTypeQ, DTypeKV, DTypeO>(
+        q_d, k_d, v_d, o_d, tmp_d,
+        /*lse=*/nullptr, num_qo_heads, num_kv_heads, qo_len, kv_len, head_dim, causal, kv_layout,
+        pos_encoding_mode, use_fp16_qk_reduction);
+  } else {
+    status = flashinfer::SinglePrefillWithKVCacheNoSoftCap<DTypeQ, DTypeKV, DTypeO>(
+        q_d, k_d, v_d, o_d, tmp_d,
+        /*lse=*/nullptr, num_qo_heads, num_kv_heads, qo_len, kv_len, head_dim, causal, kv_layout,
+        pos_encoding_mode, use_fp16_qk_reduction);
+  }
 
   EXPECT_EQ(status, hipSuccess) << "SinglePrefillWithKVCache kernel launch failed, error message: "
                                 << hipGetErrorString(status);
@@ -68,8 +77,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t nu
   std::vector<float> att_out;
   std::vector<DTypeO> o_ref = cpu_reference::single_mha<DTypeQ, DTypeKV, DTypeO>(
       q, k, v, qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim, causal, kv_layout,
-      pos_encoding_mode, /*logits_soft_cap=*/8.0f, /*rope_scale=*/1.f, /*rope_theta=*/1e4,
-      /*use_soft_cap=*/true);
+      pos_encoding_mode, logits_soft_cap, /*rope_scale=*/1.f, /*rope_theta=*/1e4, use_soft_cap);
   size_t num_results_error_atol = 0;
   bool nan_detected = false;
 
@@ -88,6 +96,7 @@ void _TestSinglePrefillKernelCorrectness(size_t qo_len, size_t kv_len, size_t nu
             << ", qo_len=" << qo_len << ", kv_len=" << kv_len << ", head_dim=" << head_dim
             << ", causal=" << causal << ", kv_layout=" << QKVLayoutToString(kv_layout)
             << ", pos_encoding_mode=" << PosEncodingModeToString(pos_encoding_mode)
+            << ", use_soft_cap=" << use_soft_cap << ", logits_soft_cap=" << logits_soft_cap
             << ", result_accuracy=" << result_accuracy << std::endl;
 
   EXPECT_GT(result_accuracy, 0.90) << "Result correctness test failed.";
@@ -133,7 +142,15 @@ int main(int argc, char** argv) {
     }
   }
 
+  std::cout << "Testing WITHOUT soft cap:" << std::endl;
   _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
       qo_len, kv_len, num_heads, num_heads, head_dim, causal, QKVLayout(kv_layout),
-      PosEncodingMode(pos_encoding_mode), use_fp16_qk_reduction);
+      PosEncodingMode(pos_encoding_mode), use_fp16_qk_reduction,
+      /*use_soft_cap=*/false, /*logits_soft_cap=*/0.0f);
+
+  std::cout << "\nTesting WITH soft cap:" << std::endl;
+  _TestSinglePrefillKernelCorrectness<DTypeIn, DTypeIn, DTypeO>(
+      qo_len, kv_len, num_heads, num_heads, head_dim, causal, QKVLayout(kv_layout),
+      PosEncodingMode(pos_encoding_mode), use_fp16_qk_reduction,
+      /*use_soft_cap=*/true, /*logits_soft_cap=*/8.0f);
 }
