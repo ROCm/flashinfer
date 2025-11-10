@@ -29,6 +29,12 @@
 #include "gpu_iface/backend/hip/mma_debug_utils_hip.h"
 #endif
 
+namespace {
+constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
+constexpr uint32_t MMA_COLS = 16;
+constexpr uint32_t MMA_ROWS = 16;
+}  // namespace
+
 namespace flashinfer {
 
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
@@ -40,8 +46,6 @@ namespace mma = gpu_iface::mma;
 
 using gpu_iface::vec_dtypes::vec_cast;
 using mma::MMAMode;
-
-constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
 
 constexpr uint32_t get_num_warps_q(const uint32_t cta_tile_q) {
   if (cta_tile_q > 16) {
@@ -1547,27 +1551,28 @@ __device__ __forceinline__ void write_o_reg_gmem(
                        8 * UPCAST_STRIDE_O))[lane_idx % 4] = o_frag_f16[3];
 #endif
 #elif defined(PLATFORM_HIP_DEVICE)
-          const int lane_id_in_warp = tid.x % 64;
+          const int lane_id_in_warp = tid.x % WARP_SIZE;
           const int warp_idx_q = get_warp_idx_q<KTraits>(tid.y);
-          const uint32_t warp_base_row = warp_idx_q * KTraits::NUM_MMA_Q * 16;
-          const uint32_t frag_row_offset = mma_q * 16;
-          const uint32_t frag_col_offset = mma_d * 16;
-          const uint32_t thread_start_row_in_frag = (lane_id_in_warp / 16) * NAPTR;
-          const uint32_t thread_col_in_frag = (lane_id_in_warp % 16);
+          const uint32_t warp_base_row = warp_idx_q * KTraits::NUM_MMA_Q * MMA_ROWS;
+          const uint32_t frag_row_offset = mma_q * MMA_ROWS;
+          const uint32_t frag_col_offset = mma_d * MMA_COLS;
+          const uint32_t thread_start_row_in_frag = (lane_id_in_warp / MMA_ROWS) * NAPTR;
+          const uint32_t thread_col_in_frag = (lane_id_in_warp % MMA_COLS);
           // Calculate base row (the first of 4 rows this thread writes)
           const uint32_t base_row = warp_base_row + frag_row_offset + thread_start_row_in_frag;
           // Column in units of 4-element vectors
-          const uint32_t col_vec = (frag_col_offset + thread_col_in_frag) / 4;
+          const uint32_t col_vec = (frag_col_offset + thread_col_in_frag) / HALF_ELEMS_PER_THREAD;
           // Index within the 4-element vector (0-3)
-          const uint32_t col_idx = (frag_col_offset + thread_col_in_frag) % 4;
-          // FIXME: Get byte offset to the base of the vector using get_permuted_offset
-          // uint32_t o_smem_offset = o_smem->template get_permuted_offset<UPCAST_STRIDE_O*4*4>(
-          //     base_row, col_vec);
-
+          const uint32_t col_idx = (frag_col_offset + thread_col_in_frag) % HALF_ELEMS_PER_THREAD;
           // Cast to DTypeO* and write all 4 elements with row strides
           DTypeO* o_frag_f16_half = reinterpret_cast<DTypeO*>(o_frag_f16);
-          DTypeO* o_smem_typed =
-              reinterpret_cast<DTypeO*>(o_smem->base) + base_row * 64 + col_vec * 4 + col_idx;
+          // NOTE: Currently, swizzled access of shared memory is not used for
+          // CDNA3. As such, the offset is computed using a straightforward
+          // linear indexing. The below logic needs to be revisited and the
+          // offset computation done using `get_permuted_offset`.
+          DTypeO* o_smem_typed = reinterpret_cast<DTypeO*>(o_smem->base) +
+                                 base_row * KTraits::HEAD_DIM_VO + col_vec * HALF_ELEMS_PER_THREAD +
+                                 col_idx;
           *(o_smem_typed) = o_frag_f16_half[0];
           *(o_smem_typed + KTraits::HEAD_DIM_VO) = o_frag_f16_half[1];
           *(o_smem_typed + 2 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[2];
