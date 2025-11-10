@@ -96,8 +96,6 @@ __host__ __device__ __inline__ __half explicit_casting<__hip_fp8_e4m3fnuz, __hal
   return __float2half(temp);
 }
 
-// *************
-
 template <>
 __host__ __device__ __inline__ __hip_fp8_e5m2fnuz explicit_casting<float, __hip_fp8_e5m2fnuz>(
     float value) {
