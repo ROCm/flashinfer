@@ -29,12 +29,6 @@
 #include "gpu_iface/backend/hip/mma_debug_utils_hip.h"
 #endif
 
-namespace {
-constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
-constexpr uint32_t MMA_COLS = 16;
-constexpr uint32_t MMA_ROWS = 16;
-}  // namespace
-
 namespace flashinfer {
 
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
@@ -46,6 +40,8 @@ namespace mma = gpu_iface::mma;
 
 using gpu_iface::vec_dtypes::vec_cast;
 using mma::MMAMode;
+
+constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
 
 constexpr uint32_t get_num_warps_q(const uint32_t cta_tile_q) {
   if (cta_tile_q > 16) {
@@ -1553,11 +1549,11 @@ __device__ __forceinline__ void write_o_reg_gmem(
 #elif defined(PLATFORM_HIP_DEVICE)
           const int lane_id_in_warp = tid.x % WARP_SIZE;
           const int warp_idx_q = get_warp_idx_q<KTraits>(tid.y);
-          const uint32_t warp_base_row = warp_idx_q * KTraits::NUM_MMA_Q * MMA_ROWS;
-          const uint32_t frag_row_offset = mma_q * MMA_ROWS;
-          const uint32_t frag_col_offset = mma_d * MMA_COLS;
-          const uint32_t thread_start_row_in_frag = (lane_id_in_warp / MMA_ROWS) * NAPTR;
-          const uint32_t thread_col_in_frag = (lane_id_in_warp % MMA_COLS);
+          const uint32_t warp_base_row = warp_idx_q * KTraits::NUM_MMA_Q * 16;
+          const uint32_t frag_row_offset = mma_q * 16;
+          const uint32_t frag_col_offset = mma_d * 16;
+          const uint32_t thread_start_row_in_frag = (lane_id_in_warp / 16) * NAPTR;
+          const uint32_t thread_col_in_frag = (lane_id_in_warp % 16);
           // Calculate base row (the first of 4 rows this thread writes)
           const uint32_t base_row = warp_base_row + frag_row_offset + thread_start_row_in_frag;
           // Column in units of 4-element vectors
