@@ -598,11 +598,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(const Params params) {
  */
 constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeof_dtype) {
   if (group_size == 8U) {
-    if (sizeof_dtype == 1U) {
-      return 256U;  // not enough registers for 512 threads
-    } else {
-      return 512U;
-    }
+    return 512U;
   } else {
     // At 128 threads and 32 threads per warp, the CUDA implementation deploys 4 warps per block.
     // We have 64 threads per wavefront so we use 256 threads
@@ -661,7 +657,9 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     constexpr uint32_t bdz = num_threads / (bdx * bdy);
 
     // AMD CDNA3 Reduce tile size to accomodate for CDNA3 architecture's hardware threshold.
-    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1U) ? 2U : 1U;
+    constexpr uint32_t tile_size_per_bdx = (sizeof(DTypeKV) == 1 ? 2U
+                                            : (GROUP_SIZE == 1)  ? 2U
+                                                                 : 1U);
 
     // This has been hard coded to 2U. Previous implementation involved a macro redirection that
     // always resulted in 2U for H100 or CDNA3 architecture. Please take a look at

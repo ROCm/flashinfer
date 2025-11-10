@@ -74,8 +74,8 @@ dtype_map = {
 dtype_map_hip = {
     torch.float16: "__half",
     torch.bfloat16: "__hip_bfloat16",
-    torch.float8_e4m3fn: "__hip_fp8_e4m3_fnuz",
-    torch.float8_e5m2: "__hip_fp8_e5m2_fnuz",
+    torch.float8_e4m3fnuz: "__hip_fp8_e4m3_fnuz",
+    torch.float8_e5m2fnuz: "__hip_fp8_e5m2_fnuz",
     torch.int8: "int8_t",
     torch.uint8: "uint8_t",
     torch.int32: "int32_t",
@@ -87,8 +87,8 @@ dtype_map_hip = {
 filename_safe_dtype_map = {
     torch.float16: "f16",
     torch.bfloat16: "bf16",
-    torch.float8_e4m3fn: "e4m3",
-    torch.float8_e5m2: "e5m2",
+    torch.float8_e4m3fnuz: "e4m3fnuz",
+    torch.float8_e5m2fnuz: "e5m2fnuz",
     torch.int8: "i8",
     torch.uint8: "u8",
     torch.int32: "i32",
