@@ -1,6 +1,7 @@
-import torch
 import math
 from typing import Optional
+
+import torch
 
 import flashinfer
 
@@ -68,7 +69,7 @@ def naive_attention(
     return out
 
 
-def single_prefill_with_kv_cache(
+def single_prefill_with_kv_cache_example(
     qo_len: int,
     kv_len: int,
     num_kv_heads: int,
@@ -167,7 +168,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     # Test configuration 1: Basic test with GQA
-    single_prefill_with_kv_cache(
+    single_prefill_with_kv_cache_example(
         qo_len=128,
         kv_len=512,
         num_kv_heads=4,

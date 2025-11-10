@@ -16,7 +16,7 @@ def verify_tensors(tensor1, tensor2, rtol=1e-3, atol=1e-3):
     return True
 
 
-def batch_decode_with_paged_kv_cache(
+def batch_decode_with_paged_kv_cache_example(
     batch_size,
     kv_len,
     page_size,
@@ -137,7 +137,7 @@ def batch_decode_with_paged_kv_cache(
 
 
 if __name__ == "__main__":
-    batch_decode_with_paged_kv_cache(
+    batch_decode_with_paged_kv_cache_example(
         batch_size=256,
         kv_len=8192,
         page_size=8,
