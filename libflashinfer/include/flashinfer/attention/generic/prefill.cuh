@@ -1668,7 +1668,6 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     [[maybe_unused]] constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     [[maybe_unused]] constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
         KTraits::NUM_ACCUM_ROWS_PER_THREAD;
-    [[maybe_unused]] constexpr uint32_t LOGITS_INDEX_STRIDE = KTraits::LOGITS_INDEX_STRIDE;
     [[maybe_unused]] constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET =
         KTraits::THREADS_PER_BMATRIX_ROW_SET;
     [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
@@ -1862,9 +1861,12 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 #pragma unroll
             for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j) {
               uint32_t q, r;
-              group_size.divmod(qo_packed_idx_base + lane_idx / THREADS_PER_BMATRIX_ROW_SET +
-                                    j * LOGITS_INDEX_STRIDE + mma_q * 16,
-                                q, r);
+
+              group_size.divmod(
+                  qo_packed_idx_base +
+                      (lane_idx / THREADS_PER_BMATRIX_ROW_SET) * NUM_ACCUM_ROWS_PER_THREAD + j +
+                      mma_q * 16,
+                  q, r);
               const uint32_t qo_head_idx = kv_head_idx * group_size + r;
               const uint32_t qo_idx = q;
               if (qo_idx < qo_len) {
