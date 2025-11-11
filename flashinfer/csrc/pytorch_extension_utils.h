@@ -98,7 +98,7 @@ using dtype_half = __half;
 using dtype_bfloat16 = __hip_bfloat16;
 #endif
 
-#if defined(FLASHINFER_ENABLE_FP8_E4M3) || defined(FLASHINFER_ENABLE_FP8_E5M2)
+#if defined(FLASHINFER_ENABLE_FP8)
 using dtype_fp8_e4m3 = __hip_fp8_e4m3_fnuz;
 using dtype_fp8_e5m2 = __hip_fp8_e5m2_fnuz;
 #endif
@@ -113,7 +113,7 @@ using dtype_half = nv_half;
 using dtype_bfloat16 = nv_bfloat16;
 #endif
 
-#if defined(FLASHINFER_ENABLE_FP8_E4M3) || defined(FLASHINFER_ENABLE_FP8_E5M2)
+#if defined(FLASHINFER_ENABLE_FP8)
 using dtype_fp8_e4m3 = nv_fp8_e4m3;
 using dtype_fp8_e5m2 = nv_fp8_e5m2;
 #endif

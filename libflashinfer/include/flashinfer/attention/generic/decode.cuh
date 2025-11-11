@@ -657,9 +657,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     constexpr uint32_t bdz = num_threads / (bdx * bdy);
 
     // AMD CDNA3 Reduce tile size to accomodate for CDNA3 architecture's hardware threshold.
-    constexpr uint32_t tile_size_per_bdx = (sizeof(DTypeKV) == 1 ? 2U
-                                            : (GROUP_SIZE == 1)  ? 2U
-                                                                 : 1U);
+    constexpr uint32_t tile_size_per_bdx = (sizeof(DTypeKV) == 1 || GROUP_SIZE == 1) ? 2U : 1U;
 
     // This has been hard coded to 2U. Previous implementation involved a macro redirection that
     // always resulted in 2U for H100 or CDNA3 architecture. Please take a look at
