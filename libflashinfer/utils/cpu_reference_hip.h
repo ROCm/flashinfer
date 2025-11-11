@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText : 2023-2035 FlashInfer team.
-// SPDX-FileCopyrightText : 2025 Advanced Micro Devices, Inc.
-//
-// SPDX-License-Identifier : Apache-2.0
+// SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
+// SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 #pragma once
 
 #include <hip/hip_bf16.h>
@@ -98,11 +98,18 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
           switch (pos_encoding_mode) {
             case PosEncodingMode::kNone: {
               for (size_t feat_idx = 0; feat_idx < head_dim; ++feat_idx) {
-                att[kv_idx] += fi::con::explicit_casting<dtype_q, float>(
-                                   q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)]) *
-                               fi::con::explicit_casting<dtype_kv, float>(
-                                   k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)]) *
-                               sm_scale;
+                if (use_soft_cap) {
+                  att[kv_idx] += fi::con::explicit_casting<dtype_q, float>(
+                                     q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)]) *
+                                 fi::con::explicit_casting<dtype_kv, float>(
+                                     k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)]);
+                } else {
+                  att[kv_idx] += fi::con::explicit_casting<dtype_q, float>(
+                                     q[info.get_q_elem_offset(q_idx, qo_head_idx, feat_idx)]) *
+                                 fi::con::explicit_casting<dtype_kv, float>(
+                                     k[info.get_kv_elem_offset(kv_idx, kv_head_idx, feat_idx)]) *
+                                 sm_scale;
+                }
               }
               break;
             }
@@ -111,7 +118,8 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
                   k.data() + info.get_kv_elem_offset(kv_idx, kv_head_idx, 0), head_dim, kv_idx,
                   rope_scale, rope_theta));
               for (size_t feat_idx = 0; feat_idx < head_dim; ++feat_idx) {
-                att[kv_idx] += q_rotary_local[feat_idx] * k_rotary_local[feat_idx] * sm_scale;
+                float qk_scale = use_soft_cap ? 1.0f : sm_scale;
+                att[kv_idx] += q_rotary_local[feat_idx] * k_rotary_local[feat_idx] * qk_scale;
               }
               break;
             }
@@ -124,7 +132,7 @@ std::vector<dtype_out> single_mha(const std::vector<dtype_q>& q, const std::vect
           // apply soft cap if enabled
           if (use_soft_cap) {
             float soft_cap_pre_tanh_scale = sm_scale / logits_soft_cap;
-            att[kv_idx] = std::tanh(att[kv_idx] / sm_scale * soft_cap_pre_tanh_scale);
+            att[kv_idx] = logits_soft_cap * std::tanh(att[kv_idx] * soft_cap_pre_tanh_scale);
           }
           // apply mask
           if (causal && kv_idx > kv_len + q_idx - qo_len) {
