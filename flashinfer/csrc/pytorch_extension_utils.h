@@ -89,35 +89,27 @@ FLASHINFER_EXT_MODULE_INIT_EXPAND(TORCH_EXTENSION_NAME)
 #endif
 
 #ifdef FLASHINFER_ENABLE_HIP
-
 #ifdef FLASHINFER_ENABLE_F16
 using dtype_half = __half;
 #endif
-
 #ifdef FLASHINFER_ENABLE_BF16
 using dtype_bfloat16 = __hip_bfloat16;
 #endif
-
 #if defined(FLASHINFER_ENABLE_FP8)
 using dtype_fp8_e4m3 = __hip_fp8_e4m3_fnuz;
 using dtype_fp8_e5m2 = __hip_fp8_e5m2_fnuz;
 #endif
-
 #else
-
 #ifdef FLASHINFER_ENABLE_F16
 using dtype_half = nv_half;
 #endif
-
 #ifdef FLASHINFER_ENABLE_BF16
 using dtype_bfloat16 = nv_bfloat16;
 #endif
-
 #if defined(FLASHINFER_ENABLE_FP8)
 using dtype_fp8_e4m3 = nv_fp8_e4m3;
 using dtype_fp8_e5m2 = nv_fp8_e5m2;
 #endif
-
 #endif
 
 #ifdef FLASHINFER_ENABLE_F16
