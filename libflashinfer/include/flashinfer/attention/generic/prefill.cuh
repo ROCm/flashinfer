@@ -8,6 +8,7 @@
 #include "gpu_iface/fastdiv.cuh"
 #include "gpu_iface/math_ops.hpp"
 #include "gpu_iface/memory_ops.hpp"
+#include "gpu_iface/mma_layout.hpp"
 #include "gpu_iface/mma_ops.hpp"
 #include "gpu_iface/platform.hpp"
 #include "gpu_iface/utils.cuh"
@@ -106,16 +107,21 @@ struct KernelTraits {
   using IdType = IdType_;
   using AttentionVariant = AttentionVariant_;
 
+  static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * WARP_SIZE;
+  static constexpr uint32_t FRAG_SIZE =
+      mma::wmma_generic_layout<mma::WmmaOp::M16N16K16, DTypeKV>::FRAG_SIZE;
+  static constexpr uint32_t FRAG_BITWIDTH =
+      mma::wmma_generic_layout<mma::WmmaOp::M16N16K16, DTypeKV>::FRAG_BITWIDTH;
+  static constexpr uint32_t INT32_WORDS_PER_FRAG =
+      mma::wmma_generic_layout<mma::WmmaOp::M16N16K16, DTypeKV>::INT32_WORDS_PER_FRAG;
+
 #if defined(PLATFORM_HIP_DEVICE)
   static_assert(sizeof(DTypeKV_) != 1, "8-bit types not supported for CDNA3");
 
   using SmemBasePtrTy = uint2;
-  static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 64;
+
   static constexpr uint32_t WARP_THREAD_ROWS = 4;
   static constexpr uint32_t WARP_THREAD_COLS = 16;
-  static constexpr uint32_t HALF_ELEMS_PER_THREAD = 4;
-  static constexpr uint32_t INT32_ELEMS_PER_THREAD = 2;
-  static constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
   // FIXME: Update with a proper swizzle pattern. Linear is used primarily
   // for intial testing.
   static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::kLinear;
@@ -139,13 +145,9 @@ struct KernelTraits {
   static constexpr uint32_t LOGITS_INDEX_STRIDE = 4;
 #else
   using SmemBasePtrTy = uint4;
-  static constexpr uint32_t NUM_THREADS = NUM_WARPS_Q * NUM_WARPS_KV * 32;
+
   constexpr uint32_t WARP_THREAD_ROWS = 4;
   constexpr uint32_t WARP_THREAD_COLS = 8;
-  constexpr uint32_t HALF_ELEMS_PER_THREAD = 8;
-  constexpr uint32_t INT32_ELEMS_PER_THREAD = 4;
-  constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
-
   static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B;
   static constexpr SwizzleMode SWIZZLE_MODE_KV =
       (sizeof(DTypeKV_) == 1 && HEAD_DIM_VO == 64) ? SwizzleMode::k64B : SwizzleMode::k128B;
@@ -163,14 +165,10 @@ struct KernelTraits {
   static constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET = 4;
   static constexpr uint32_t LOGITS_INDEX_STRIDE = 8;
 #endif
-  static constexpr uint32_t UPCAST_STRIDE_Q =
-      HEAD_DIM_QK / upcast_size<DTypeQ_, VECTOR_BIT_WIDTH>();
-  static constexpr uint32_t UPCAST_STRIDE_K =
-      HEAD_DIM_QK / upcast_size<DTypeKV_, VECTOR_BIT_WIDTH>();
-  static constexpr uint32_t UPCAST_STRIDE_V =
-      HEAD_DIM_VO / upcast_size<DTypeKV_, VECTOR_BIT_WIDTH>();
-  static constexpr uint32_t UPCAST_STRIDE_O =
-      HEAD_DIM_VO / upcast_size<DTypeO_, VECTOR_BIT_WIDTH>();
+  static constexpr uint32_t UPCAST_STRIDE_Q = HEAD_DIM_QK / upcast_size<DTypeQ_, FRAG_BITWIDTH>();
+  static constexpr uint32_t UPCAST_STRIDE_K = HEAD_DIM_QK / upcast_size<DTypeKV_, FRAG_BITWIDTH>();
+  static constexpr uint32_t UPCAST_STRIDE_V = HEAD_DIM_VO / upcast_size<DTypeKV_, FRAG_BITWIDTH>();
+  static constexpr uint32_t UPCAST_STRIDE_O = HEAD_DIM_VO / upcast_size<DTypeO_, FRAG_BITWIDTH>();
 
   static constexpr bool IsInvalid() {
     return ((NUM_MMA_D_VO < 4) || (NUM_MMA_D_VO == 4 && NUM_MMA_KV % 2 == 1) ||
@@ -241,13 +239,13 @@ __device__ __forceinline__ uint32_t get_warp_idx(const uint32_t tid_y = threadId
  * \note The sin/cos computation is slow, especially for A100 GPUs which has low
  *   non tensor-ops flops, will optimize in the future.
  */
-template <typename T, uint32_t HALF_ELEMS_PER_THREAD>
+template <typename T, uint32_t FRAG_SIZE>
 __device__ __forceinline__ void k_frag_apply_llama_rope(T* x_first_half, T* x_second_half,
                                                         const float* rope_freq,
                                                         const uint32_t kv_offset) {
   static_assert(sizeof(T) == 2);
 #pragma unroll
-  for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
+  for (uint32_t reg_id = 0; reg_id < FRAG_SIZE; ++reg_id) {
     float cos, sin, tmp;
     // 0 1 | 2 3
     // ---------
@@ -265,13 +263,13 @@ __device__ __forceinline__ void k_frag_apply_llama_rope(T* x_first_half, T* x_se
   }
 }
 
-template <typename T, uint32_t HALF_ELEMS_PER_THREAD>
+template <typename T, uint32_t FRAG_SIZE>
 __device__ __forceinline__ void q_frag_apply_llama_rope(T* x_first_half, T* x_second_half,
                                                         const float* rope_freq,
                                                         const uint32_t qo_packed_offset,
                                                         const uint_fastdiv group_size) {
 #pragma unroll
-  for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
+  for (uint32_t reg_id = 0; reg_id < FRAG_SIZE; ++reg_id) {
     float cos, sin, tmp;
 #if defined(PLATFORM_HIP_DEVICE)
     uint32_t freq_idx = reg_id;
@@ -291,7 +289,7 @@ __device__ __forceinline__ void q_frag_apply_llama_rope(T* x_first_half, T* x_se
   }
 }
 
-template <typename T, typename IdType, uint32_t HALF_ELEMS_PER_THREAD>
+template <typename T, typename IdType, uint32_t FRAG_SIZE>
 __device__ __forceinline__ void q_frag_apply_llama_rope_with_pos(T* x_first_half, T* x_second_half,
                                                                  const float* rope_freq,
                                                                  const uint32_t qo_packed_offset,
@@ -300,7 +298,7 @@ __device__ __forceinline__ void q_frag_apply_llama_rope_with_pos(T* x_first_half
   float pos[2] = {static_cast<float>(q_rope_offset[qo_packed_offset / group_size]),
                   static_cast<float>(q_rope_offset[(qo_packed_offset + 8) / group_size])};
 #pragma unroll
-  for (uint32_t reg_id = 0; reg_id < HALF_ELEMS_PER_THREAD; ++reg_id) {
+  for (uint32_t reg_id = 0; reg_id < FRAG_SIZE; ++reg_id) {
     float cos, sin, tmp;
     // 0 1 | 4 5
     // ---------
@@ -332,7 +330,7 @@ __device__ __forceinline__ void produce_kv_impl_cuda_(
   constexpr uint32_t NUM_MMA_D = produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
   constexpr uint32_t UPCAST_STRIDE =
       produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
-  constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+  constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
 
   if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
     uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / 8;
@@ -344,14 +342,14 @@ __device__ __forceinline__ void produce_kv_impl_cuda_(
       for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
         smem.template load_128b_async<fill_mode>(*smem_offset, *gptr, kv_idx < kv_len);
         *smem_offset = smem.template advance_offset_by_column<8>(*smem_offset, j);
-        *gptr += 8 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+        *gptr += 8 * upcast_size<DTypeKV, FRAG_BITWIDTH>();
       }
       kv_idx += NUM_WARPS * 4;
       *smem_offset =
           smem.template advance_offset_by_row<NUM_WARPS * 4, UPCAST_STRIDE>(*smem_offset) -
           sizeof(DTypeKV) * NUM_MMA_D;
       *gptr += NUM_WARPS * 4 * stride_n -
-               sizeof(DTypeKV) * NUM_MMA_D * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+               sizeof(DTypeKV) * NUM_MMA_D * upcast_size<DTypeKV, FRAG_BITWIDTH>();
     }
     *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
   } else {
@@ -386,7 +384,7 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
   constexpr uint32_t NUM_MMA_D = produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
   constexpr uint32_t UPCAST_STRIDE =
       produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
-  constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+  constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
 
   // NOTE: NUM_MMA_KV*4/NUM_WARPS_Q = NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
   static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
@@ -398,13 +396,13 @@ __device__ __forceinline__ void produce_kv_impl_cdna3_(
     for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
       smem.template load_vector_async<fill_mode>(*smem_offset, *gptr, kv_idx < kv_len);
       *smem_offset = smem.template advance_offset_by_column<16>(*smem_offset, j);
-      *gptr += 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+      *gptr += 16 * upcast_size<DTypeKV, FRAG_BITWIDTH>();
     }
     kv_idx += NUM_WARPS * 4;
     *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4, UPCAST_STRIDE>(*smem_offset) -
                    (sizeof(DTypeKV) * NUM_MMA_D * 2);
     *gptr += NUM_WARPS * 4 * stride_n -
-             sizeof(DTypeKV) * NUM_MMA_D * 2 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+             sizeof(DTypeKV) * NUM_MMA_D * 2 * upcast_size<DTypeKV, FRAG_BITWIDTH>();
   }
   *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
 }
@@ -454,7 +452,7 @@ __device__ __forceinline__ void page_produce_kv(
   constexpr uint32_t NUM_MMA_D = produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
   constexpr uint32_t UPCAST_STRIDE =
       produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
-  constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+  constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
 
   const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z), lane_idx = tid.x;
   if constexpr (KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B) {
@@ -469,7 +467,7 @@ __device__ __forceinline__ void page_produce_kv(
       for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DType)); ++j) {
         smem.template load_vector_async<fill_mode>(*smem_offset, gptr, kv_idx < kv_len);
         *smem_offset = smem.template advance_offset_by_column<8>(*smem_offset, j);
-        gptr += 8 * upcast_size<DType, VECTOR_BIT_WIDTH>();
+        gptr += 8 * upcast_size<DType, FRAG_BITWIDTH>();
       }
       kv_idx += NUM_WARPS * 4;
       *smem_offset =
@@ -549,7 +547,7 @@ __device__ __forceinline__ void init_rope_freq(float (*rope_freq)[4], const floa
 template <typename KTraits>
 __device__ __forceinline__ void init_states(
     typename KTraits::AttentionVariant variant,
-    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
+    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::FRAG_SIZE],
     typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
     float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
   constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
@@ -558,7 +556,7 @@ __device__ __forceinline__ void init_states(
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
 #pragma unroll
-      for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
+      for (uint32_t reg_id = 0; reg_id < KTraits::FRAG_SIZE; ++reg_id) {
         o_frag[mma_q][mma_d][reg_id] = 0.f;
       }
     }
@@ -585,10 +583,10 @@ __device__ __forceinline__ void load_q_global_smem(
   using DTypeQ = typename KTraits::DTypeQ;
   constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
   constexpr uint32_t WARP_THREAD_ROWS = KTraits::WARP_THREAD_ROWS;
-  constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+  constexpr uint32_t FRAG_SIZE = KTraits::FRAG_SIZE;
   constexpr uint32_t NUM_MMA_D_QK = KTraits::NUM_MMA_D_QK;
   constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
-  constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+  constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
 
 #if defined(PLATFORM_HIP_DEVICE)
   constexpr uint32_t COLUMN_RESET_OFFSET = (NUM_MMA_D_QK / 4) * WARP_THREAD_COLS;
@@ -612,7 +610,7 @@ __device__ __forceinline__ void load_q_global_smem(
         group_size.divmod(packed_offset + row + mma_q * 16 + j * 4, q, r);
         const uint32_t q_idx = q;
         DTypeQ* q_ptr = q_ptr_base + q * q_stride_n + r * q_stride_h +
-                        col * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
+                        col * upcast_size<DTypeQ, FRAG_BITWIDTH>();
 #pragma unroll
         for (uint32_t mma_do = 0; mma_do < KTraits::NUM_MMA_D_QK / 4; ++mma_do) {
           // load q fragment from gmem to smem
@@ -620,7 +618,7 @@ __device__ __forceinline__ void load_q_global_smem(
                                                                          q_idx < qo_upper_bound);
           q_smem_offset_w =
               q_smem->template advance_offset_by_column<WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
-          q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
+          q_ptr += FRAG_SIZE * upcast_size<DTypeQ, FRAG_BITWIDTH>();
         }
         q_smem_offset_w = q_smem->template advance_offset_by_row<WARP_THREAD_ROWS, UPCAST_STRIDE_Q>(
                               q_smem_offset_w) -
@@ -639,7 +637,7 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary(
   if (get_warp_idx_kv<KTraits>(tid.z) != 0) return;
 
   constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
-  constexpr uint32_t COL_ADVANCE_TO_NEXT = 16 / KTraits::HALF_ELEMS_PER_THREAD;
+  constexpr uint32_t COL_ADVANCE_TO_NEXT = 16 / KTraits::FRAG_SIZE;
 
 #if defined(PLATFORM_HIP_DEVICE)
   constexpr uint32_t COL_ADVANCE_TO_LAST_HALF = KTraits::NUM_MMA_D_QK * 2;
@@ -648,7 +646,7 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary(
 #endif
 
   const uint32_t lane_idx = tid.x;
-  uint32_t q_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
+  uint32_t q_frag_local[2][KTraits::INT32_WORDS_PER_FRAG];
   static_assert(KTraits::NUM_MMA_D_QK % 4 == 0, "NUM_MMA_D_QK must be a multiple of 4");
 #pragma unroll
   for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
@@ -667,7 +665,7 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary(
           q_smem->template advance_offset_by_column<COL_ADVANCE_TO_LAST_HALF>(
               q_smem_offset_r_first_half, 0);
       q_smem->load_fragment(q_smem_offset_r_last_half, q_frag_local[1]);
-      q_frag_apply_llama_rope<typename KTraits::DTypeQ, KTraits::HALF_ELEMS_PER_THREAD>(
+      q_frag_apply_llama_rope<typename KTraits::DTypeQ, KTraits::FRAG_SIZE>(
           (typename KTraits::DTypeQ*)q_frag_local[0], (typename KTraits::DTypeQ*)q_frag_local[1],
           rope_freq[mma_di], seq_id, group_size);
       q_smem->store_fragment(q_smem_offset_r_last_half, q_frag_local[1]);
@@ -689,7 +687,7 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary_with_pos(
   if (get_warp_idx_kv<KTraits>(tid.z) == 0) {
     constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
     const uint32_t lane_idx = tid.x;
-    uint32_t q_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
+    uint32_t q_frag_local[2][KTraits::INT32_WORDS_PER_FRAG];
     static_assert(KTraits::NUM_MMA_D_QK % 4 == 0, "NUM_MMA_D_QK must be a multiple of 4");
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
@@ -702,7 +700,7 @@ __device__ __forceinline__ void q_smem_inplace_apply_rotary_with_pos(
                 q_smem_offset_r_first_half, 0);
         q_smem->load_fragment(q_smem_offset_r_last_half, q_frag_local[1]);
         q_frag_apply_llama_rope_with_pos<typename KTraits::DTypeQ, typename KTraits::IdType,
-                                         KTraits::HALF_ELEMS_PER_THREAD>(
+                                         KTraits::FRAG_SIZE>(
             (typename KTraits::DTypeQ*)q_frag_local[0], (typename KTraits::DTypeQ*)q_frag_local[1],
             rope_freq[mma_di],
             q_packed_idx_base + mma_q * 16 + lane_idx / KTraits::THREADS_PER_BMATRIX_ROW_SET,
@@ -727,8 +725,8 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
   static_assert(sizeof(DTypeKV) == 2);
   constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
   constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET = KTraits::THREADS_PER_BMATRIX_ROW_SET;
-  constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
-  uint32_t k_frag_local[2][KTraits::INT32_ELEMS_PER_THREAD];
+  constexpr uint32_t FRAG_SIZE = KTraits::FRAG_SIZE;
+  uint32_t k_frag_local[2][KTraits::INT32_WORDS_PER_FRAG];
   const uint32_t lane_idx = tid.x;
   if constexpr (KTraits::NUM_MMA_D_QK == 4 && KTraits::NUM_WARPS_Q == 4) {
     static_assert(KTraits::NUM_WARPS_KV == 1);
@@ -751,7 +749,7 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
       uint32_t k_smem_offset_r_last_half =
           k_smem->template advance_offset_by_column<4>(k_smem_offset_r_first_half, 0);
       k_smem->load_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
-      k_frag_apply_llama_rope<DTypeKV, HALF_ELEMS_PER_THREAD>(
+      k_frag_apply_llama_rope<DTypeKV, FRAG_SIZE>(
           (DTypeKV*)k_frag_local[0], (DTypeKV*)k_frag_local[1], rope_freq[mma_di], kv_idx);
       k_smem->store_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
       k_smem->store_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
@@ -784,7 +782,7 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
             k_smem->template advance_offset_by_column<KTraits::NUM_MMA_D_QK>(
                 k_smem_offset_r_first_half, 0);
         k_smem->load_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
-        k_frag_apply_llama_rope<DTypeKV, HALF_ELEMS_PER_THREAD>(
+        k_frag_apply_llama_rope<DTypeKV, FRAG_SIZE>(
             (DTypeKV*)k_frag_local[0], (DTypeKV*)k_frag_local[1], rope_freq[mma_di], kv_idx);
         k_smem->store_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
         k_smem->store_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
@@ -806,13 +804,13 @@ __device__ __forceinline__ void compute_qk(
     uint32_t* q_smem_offset_r,
     smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy>* k_smem,
     uint32_t* k_smem_offset_r,
-    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD]) {
+    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::FRAG_SIZE]) {
   constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
   constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
-  constexpr uint32_t QK_SMEM_COLUMN_ADVANCE = 16 / KTraits::HALF_ELEMS_PER_THREAD;
+  constexpr uint32_t QK_SMEM_COLUMN_ADVANCE = 16 / KTraits::FRAG_SIZE;
 
-  uint32_t a_frag[KTraits::NUM_MMA_Q][KTraits::INT32_ELEMS_PER_THREAD],
-      b_frag[KTraits::INT32_ELEMS_PER_THREAD];
+  uint32_t a_frag[KTraits::NUM_MMA_Q][KTraits::INT32_WORDS_PER_FRAG],
+      b_frag[KTraits::INT32_WORDS_PER_FRAG];
   // compute q*k^T
 #pragma unroll
   for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_QK; ++mma_d) {
@@ -904,8 +902,8 @@ __device__ __forceinline__ void logits_transform(
     const Params& params, typename KTraits::AttentionVariant variant, const uint32_t batch_idx,
     const uint32_t qo_packed_idx_base, const uint32_t kv_idx_base, const uint32_t qo_len,
     const uint32_t kv_len, const uint_fastdiv group_size,
-    DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
-    const dim3 tid = threadIdx, const uint32_t kv_head_idx = blockIdx.z) {
+    DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::FRAG_SIZE], const dim3 tid = threadIdx,
+    const uint32_t kv_head_idx = blockIdx.z) {
   constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
   constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
   constexpr uint32_t LIS = KTraits::LOGITS_INDEX_STRIDE;
@@ -928,7 +926,7 @@ __device__ __forceinline__ void logits_transform(
 #pragma unroll
     for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
 #pragma unroll
-      for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
+      for (uint32_t reg_id = 0; reg_id < KTraits::FRAG_SIZE; ++reg_id) {
 #if defined(PLATFORM_HIP_DEVICE)
         const uint32_t q_idx = q[mma_q][reg_id % NAPTR];
         const uint32_t qo_head_idx = kv_head_idx * group_size + r[mma_q][reg_id % NAPTR];
@@ -974,7 +972,7 @@ __device__ __forceinline__ void logits_mask(
     const Params& params, typename KTraits::AttentionVariant variant, const uint32_t batch_idx,
     const uint32_t qo_packed_idx_base, const uint32_t kv_idx_base, const uint32_t qo_len,
     const uint32_t kv_len, const uint32_t chunk_end, const uint_fastdiv group_size,
-    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
+    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::FRAG_SIZE],
     const dim3 tid = threadIdx, const uint32_t kv_head_idx = blockIdx.z) {
   const uint32_t lane_idx = tid.x;
   constexpr uint32_t NUM_MMA_Q = KTraits::NUM_MMA_Q;
@@ -999,7 +997,7 @@ __device__ __forceinline__ void logits_mask(
 #pragma unroll
     for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
 #pragma unroll
-      for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
+      for (uint32_t reg_id = 0; reg_id < KTraits::FRAG_SIZE; ++reg_id) {
 #if defined(PLATFORM_HIP_DEVICE)
         const uint32_t q_idx = q[mma_q][(reg_id % NAPTR)];
         const uint32_t kv_idx = kv_idx_base + mma_kv * 16 + (lane_idx % TPR);
@@ -1025,8 +1023,8 @@ __device__ __forceinline__ void logits_mask(
 template <typename KTraits>
 __device__ __forceinline__ void update_mdo_states(
     typename KTraits::AttentionVariant variant,
-    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
+    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::FRAG_SIZE],
+    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::FRAG_SIZE],
     typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
     float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
   using DTypeQKAccum = typename KTraits::DTypeQKAccum;
@@ -1151,22 +1149,21 @@ template <typename KTraits>
 __device__ __forceinline__ void compute_sfm_v(
     smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy>* v_smem,
     uint32_t* v_smem_offset_r,
-    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
+    typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::FRAG_SIZE],
+    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::FRAG_SIZE],
     float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
   constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
-  constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
-  constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
-  constexpr uint32_t V_SMEM_COLUMN_ADVANCE = 16 / KTraits::HALF_ELEMS_PER_THREAD;
-  typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
-                                     [HALF_ELEMS_PER_THREAD];
+  constexpr uint32_t FRAG_SIZE = KTraits::FRAG_SIZE;
+  constexpr uint32_t INT32_WORDS_PER_FRAG = KTraits::INT32_WORDS_PER_FRAG;
+  constexpr uint32_t V_SMEM_COLUMN_ADVANCE = 16 / KTraits::FRAG_SIZE;
+  typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV][FRAG_SIZE];
 
   if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
       for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-        vec_cast<typename KTraits::DTypeQ, float>::template cast<HALF_ELEMS_PER_THREAD>(
+        vec_cast<typename KTraits::DTypeQ, float>::template cast<FRAG_SIZE>(
             s_frag_f16[mma_q][mma_kv], s_frag[mma_q][mma_kv]);
       }
     }
@@ -1206,7 +1203,7 @@ __device__ __forceinline__ void compute_sfm_v(
   for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-      uint32_t b_frag[INT32_ELEMS_PER_THREAD];
+      uint32_t b_frag[INT32_WORDS_PER_FRAG];
       if constexpr (sizeof(typename KTraits::DTypeKV) == 1) {
 #if defined(PLATFORM_HIP_DEVICE)
         static_assert(false, "FP8 V path not implemented for CDNA3 yet");
@@ -1265,7 +1262,7 @@ __device__ __forceinline__ void compute_sfm_v(
 
 template <typename KTraits>
 __device__ __forceinline__ void normalize_d(
-    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
+    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::FRAG_SIZE],
     typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
     float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
   using AttentionVariant = typename KTraits::AttentionVariant;
@@ -1289,7 +1286,7 @@ __device__ __forceinline__ void normalize_d(
 #pragma unroll
       for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
 #pragma unroll
-        for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
+        for (uint32_t reg_id = 0; reg_id < KTraits::FRAG_SIZE; ++reg_id) {
 #if defined(PLATFORM_HIP_DEVICE)
           o_frag[mma_q][mma_d][reg_id] =
               o_frag[mma_q][mma_d][reg_id] * d_rcp[mma_q][reg_id % NAPTR];
@@ -1325,7 +1322,7 @@ __device__ __forceinline__ void finalize_m(
  */
 template <typename KTraits>
 __device__ __forceinline__ void threadblock_sync_mdo_states(
-    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
+    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::FRAG_SIZE],
     typename KTraits::SharedStorage* smem_storage,
     typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
     float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const uint32_t warp_idx,
@@ -1345,17 +1342,17 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
     //     NUM_MMA_Q,
     //     NUM_MMA_D_VO,
     //     WARP_SIZE,
-    //     HALF_ELEMS_PER_THREAD]
+    //     FRAG_SIZE]
     // md: [num_warps, NUM_MMA_Q, 16, 2 (m/d)]
 #pragma unroll
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
       for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-        vec_t<float, KTraits::HALF_ELEMS_PER_THREAD>::memcpy(
+        vec_t<float, KTraits::FRAG_SIZE>::memcpy(
             smem_o + (((warp_idx * KTraits::NUM_MMA_Q + mma_q) * KTraits::NUM_MMA_D_VO + mma_d) *
                           WARP_SIZE +
                       lane_idx) *
-                         KTraits::HALF_ELEMS_PER_THREAD,
+                         KTraits::FRAG_SIZE,
             o_frag[mma_q][mma_d]);
       }
     }
@@ -1411,11 +1408,11 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 
 #pragma unroll
         for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-          vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> o_new;
+          vec_t<float, KTraits::FRAG_SIZE> o_new;
           o_new.fill(0.f);
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
-            vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> oi;
+            vec_t<float, KTraits::FRAG_SIZE> oi;
             oi.load(smem_o + ((((i * KTraits::NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
                                     KTraits::NUM_MMA_Q +
                                 mma_q) *
@@ -1423,10 +1420,10 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
                                mma_d) *
                                   WARP_SIZE +
                               lane_idx) *
-                                 KTraits::HALF_ELEMS_PER_THREAD);
+                                 KTraits::FRAG_SIZE);
 
 #pragma unroll
-            for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
+            for (uint32_t reg_id = 0; reg_id < KTraits::FRAG_SIZE; ++reg_id) {
 #if defined(PLATFORM_HIP_DEVICE)
               // CDNA3: Direct mapping - each reg_id corresponds to one accumulator row
               o_new[reg_id] += oi[reg_id] * o_scale[reg_id][i];
@@ -1446,11 +1443,11 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
       for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
         for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-          vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> o_new;
+          vec_t<float, KTraits::FRAG_SIZE> o_new;
           o_new.fill(0.f);
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
-            vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> oi;
+            vec_t<float, KTraits::FRAG_SIZE> oi;
             oi.load(smem_o + ((((i * KTraits::NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
                                     KTraits::NUM_MMA_Q +
                                 mma_q) *
@@ -1458,9 +1455,9 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
                                mma_d) *
                                   WARP_SIZE +
                               lane_idx) *
-                                 KTraits::HALF_ELEMS_PER_THREAD);
+                                 KTraits::FRAG_SIZE);
 #pragma unroll
-            for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
+            for (uint32_t reg_id = 0; reg_id < KTraits::FRAG_SIZE; ++reg_id) {
               o_new[reg_id] += oi[reg_id];
             }
           }
@@ -1473,7 +1470,7 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 
 template <typename KTraits>
 __device__ __forceinline__ void write_o_reg_gmem(
-    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
+    float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::FRAG_SIZE],
     smem_t<KTraits::SWIZZLE_MODE_Q, typename KTraits::SmemBasePtrTy>* o_smem,
     typename KTraits::DTypeO* o_ptr_base, const uint32_t o_packed_idx_base,
     const uint32_t qo_upper_bound, const uint32_t o_stride_n, const uint32_t o_stride_h,
@@ -1482,9 +1479,9 @@ __device__ __forceinline__ void write_o_reg_gmem(
   constexpr uint32_t UPCAST_STRIDE_O = KTraits::UPCAST_STRIDE_O;
   constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
   constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
-  constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+  constexpr uint32_t FRAG_SIZE = KTraits::FRAG_SIZE;
   constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
-  constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+  constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
   constexpr uint32_t COLUMN_RESET_OFFSET = KTraits::NUM_MMA_D_VO / 4 * WARP_THREAD_COLS;
 
   const uint32_t warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
@@ -1522,9 +1519,9 @@ __device__ __forceinline__ void write_o_reg_gmem(
       for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
         for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-          uint32_t o_frag_f16[HALF_ELEMS_PER_THREAD / 2];
-          vec_cast<DTypeO, float>::template cast<HALF_ELEMS_PER_THREAD>((DTypeO*)o_frag_f16,
-                                                                        o_frag[mma_q][mma_d]);
+          uint32_t o_frag_f16[FRAG_SIZE / 2];
+          vec_cast<DTypeO, float>::template cast<FRAG_SIZE>((DTypeO*)o_frag_f16,
+                                                            o_frag[mma_q][mma_d]);
 
 #if defined(PLATFORM_CUDA_DEVICE)
 #ifdef FLASHINFER_STMATRIX_M8N8X4_ENABLED
@@ -1553,9 +1550,9 @@ __device__ __forceinline__ void write_o_reg_gmem(
           // Calculate base row (the first of 4 rows this thread writes)
           const uint32_t base_row = warp_base_row + frag_row_offset + thread_start_row_in_frag;
           // Column in units of 4-element vectors
-          const uint32_t col_vec = (frag_col_offset + thread_col_in_frag) / HALF_ELEMS_PER_THREAD;
+          const uint32_t col_vec = (frag_col_offset + thread_col_in_frag) / FRAG_SIZE;
           // Index within the 4-element vector (0-3)
-          const uint32_t col_idx = (frag_col_offset + thread_col_in_frag) % HALF_ELEMS_PER_THREAD;
+          const uint32_t col_idx = (frag_col_offset + thread_col_in_frag) % FRAG_SIZE;
           // Cast to DTypeO* and write all 4 elements with row strides
           DTypeO* o_frag_f16_half = reinterpret_cast<DTypeO*>(o_frag_f16);
           // NOTE: Currently, swizzled access of shared memory is not used for
@@ -1563,8 +1560,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
           // linear indexing. The below logic needs to be revisited and the
           // offset computation done using `get_permuted_offset`.
           DTypeO* o_smem_typed = reinterpret_cast<DTypeO*>(o_smem->base) +
-                                 base_row * KTraits::HEAD_DIM_VO + col_vec * HALF_ELEMS_PER_THREAD +
-                                 col_idx;
+                                 base_row * KTraits::HEAD_DIM_VO + col_vec * FRAG_SIZE + col_idx;
           *(o_smem_typed) = o_frag_f16_half[0];
           *(o_smem_typed + KTraits::HEAD_DIM_VO) = o_frag_f16_half[1];
           *(o_smem_typed + 2 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[2];
@@ -1586,13 +1582,13 @@ __device__ __forceinline__ void write_o_reg_gmem(
                             r);
           const uint32_t o_idx = q;
           DTypeO* o_ptr = o_ptr_base + q * o_stride_n + r * o_stride_h +
-                          (lane_idx % WARP_THREAD_COLS) * upcast_size<DTypeO, VECTOR_BIT_WIDTH>();
+                          (lane_idx % WARP_THREAD_COLS) * upcast_size<DTypeO, FRAG_BITWIDTH>();
 #pragma unroll
           for (uint32_t mma_do = 0; mma_do < KTraits::NUM_MMA_D_VO / 4; ++mma_do) {
             if (o_idx < qo_upper_bound) {
               o_smem->store_vector(o_smem_offset_w, o_ptr);
             }
-            o_ptr += WARP_THREAD_COLS * upcast_size<DTypeO, VECTOR_BIT_WIDTH>();
+            o_ptr += WARP_THREAD_COLS * upcast_size<DTypeO, FRAG_BITWIDTH>();
             o_smem_offset_w = o_smem->template advance_offset_by_column<WARP_THREAD_COLS>(
                 o_smem_offset_w, mma_do);
           }
@@ -1665,12 +1661,12 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_ROW = KTraits::KV_THR_LAYOUT_ROW;
     [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;
     [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
-    [[maybe_unused]] constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
+    [[maybe_unused]] constexpr uint32_t FRAG_SIZE = KTraits::FRAG_SIZE;
     [[maybe_unused]] constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
         KTraits::NUM_ACCUM_ROWS_PER_THREAD;
     [[maybe_unused]] constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET =
         KTraits::THREADS_PER_BMATRIX_ROW_SET;
-    [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+    [[maybe_unused]] constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
 
     DTypeQ* q = params.q;
     DTypeKV* k = params.k;
@@ -1703,8 +1699,8 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     AttentionVariant variant(params, /*batch_idx=*/0, smem);
     const uint32_t window_left = variant.window_left;
 
-    DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][HALF_ELEMS_PER_THREAD];
-    alignas(16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][HALF_ELEMS_PER_THREAD];
+    DTypeQKAccum s_frag[NUM_MMA_Q][NUM_MMA_KV][FRAG_SIZE];
+    alignas(16) float o_frag[NUM_MMA_Q][NUM_MMA_D_VO][FRAG_SIZE];
     DTypeQKAccum m[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
     float d[NUM_MMA_Q][NUM_ACCUM_ROWS_PER_THREAD];
     float rope_freq[NUM_MMA_D_QK / 2][4];
@@ -1767,12 +1763,12 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
         k +
         (chunk_start + warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL) * k_stride_n +
         kv_head_idx * k_stride_h +
-        (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+        (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, FRAG_BITWIDTH>();
     DTypeKV* v_ptr =
         v +
         (chunk_start + warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL) * v_stride_n +
         kv_head_idx * v_stride_h +
-        (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+        (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, FRAG_BITWIDTH>();
 
 #if defined(PLATFORM_HIP_DEVICE)
     uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
@@ -2057,7 +2053,7 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
     [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_ROW = KTraits::KV_THR_LAYOUT_ROW;
     [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;
     [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
-    [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+    [[maybe_unused]] constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
 
     DTypeQ* q = params.q;
     IdType* request_indices = params.request_indices;
@@ -2201,13 +2197,13 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
                       lane_idx / KV_THR_LAYOUT_COL) *
                          k_stride_n +
                      kv_head_idx * k_stride_h +
-                     (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+                     (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, FRAG_BITWIDTH>();
     DTypeKV* v_ptr = v +
                      (kv_indptr[request_idx] + chunk_start + warp_idx * KV_THR_LAYOUT_ROW +
                       lane_idx / KV_THR_LAYOUT_COL) *
                          v_stride_n +
                      kv_head_idx * v_stride_h +
-                     (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+                     (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, FRAG_BITWIDTH>();
 
     produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(k_smem, &k_smem_offset_w, &k_ptr,
                                                            k_stride_n, 0, chunk_size, tid);
@@ -2353,7 +2349,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_ROW = KTraits::KV_THR_LAYOUT_ROW;
     [[maybe_unused]] constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;
     [[maybe_unused]] constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
-    [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+    [[maybe_unused]] constexpr uint32_t FRAG_BITWIDTH = KTraits::FRAG_BITWIDTH;
 
     IdType* request_indices = params.request_indices;
     IdType* qo_tile_indices = params.qo_tile_indices;
@@ -2472,7 +2468,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
                                 page_iter, entry_idx);
       thr_local_kv_offset[i] = paged_kv.protective_get_kv_offset(
           page_iter, kv_head_idx, entry_idx,
-          (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>(), last_indptr);
+          (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, FRAG_BITWIDTH>(), last_indptr);
     }
     page_produce_kv<false, KTraits>(k_smem, &k_smem_offset_w, paged_kv, 0, thr_local_kv_offset,
                                     chunk_size, tid);
@@ -2515,7 +2511,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
                                   page_iter, entry_idx);
         thr_local_kv_offset[i] = paged_kv.protective_get_kv_offset(
             page_iter, kv_head_idx, entry_idx,
-            (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>(), last_indptr);
+            (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV, FRAG_BITWIDTH>(), last_indptr);
       }
       memory::wait_group<1>();
       block.sync();
