@@ -195,7 +195,7 @@ if __name__ == "__main__":
         kv_layout="NHD",
         pos_encoding_mode="NONE",  # No RoPE/ALiBi
         logits_soft_cap=8.0,  # soft cap enabled
-        causal=False,  # causal mask
+        causal=False,  # no causal mask
         return_lse=False,  # no log sum exp
         q_dtype=torch.float16,
         kv_dtype=torch.float16,
@@ -209,10 +209,10 @@ if __name__ == "__main__":
         num_kv_heads=1,
         head_dim=64,
         kv_layout="NHD",
-        pos_encoding_mode="NONE",  # No RoPE/ALiBi
+        pos_encoding_mode="NONE",
         logits_soft_cap=0.0,  # soft cap disabled
-        causal=False,  # causal mask
-        return_lse=False,  # no log sum exp
+        causal=False,
+        return_lse=False,
         q_dtype=torch.float16,
         kv_dtype=torch.float16,
     )
