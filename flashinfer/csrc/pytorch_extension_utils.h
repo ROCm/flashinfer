@@ -30,7 +30,7 @@
 #include <hip/hip_fp16.h>
 #endif
 
-#if defined(FLASHINFER_ENABLE_FP8_E4M3) || defined(FLASHINFER_ENABLE_FP8_E5M2)
+#if defined(FLASHINFER_ENABLE_FP8)
 #include <hip/hip_fp8.h>
 #endif
 
@@ -46,7 +46,7 @@
 #include <cuda_fp16.h>
 #endif
 
-#if defined(FLASHINFER_ENABLE_FP8_E4M3) || defined(FLASHINFER_ENABLE_FP8_E5M2)
+#if defined(FLASHINFER_ENABLE_FP8)
 #include <cuda_fp8.h>
 #endif
 
@@ -95,7 +95,7 @@ using dtype_half = __half;
 #ifdef FLASHINFER_ENABLE_BF16
 using dtype_bfloat16 = __hip_bfloat16;
 #endif
-#if defined(FLASHINFER_ENABLE_FP8_E4M3) || defined(FLASHINFER_ENABLE_FP8_E5M2)
+#if defined(FLASHINFER_ENABLE_FP8)
 using dtype_fp8_e4m3 = __hip_fp8_e4m3_fnuz;
 using dtype_fp8_e5m2 = __hip_fp8_e5m2_fnuz;
 #endif
@@ -106,7 +106,7 @@ using dtype_half = nv_half;
 #ifdef FLASHINFER_ENABLE_BF16
 using dtype_bfloat16 = nv_bfloat16;
 #endif
-#if defined(FLASHINFER_ENABLE_FP8_E4M3) || defined(FLASHINFER_ENABLE_FP8_E5M2)
+#if defined(FLASHINFER_ENABLE_FP8)
 using dtype_fp8_e4m3 = nv_fp8_e4m3;
 using dtype_fp8_e5m2 = nv_fp8_e5m2;
 #endif
@@ -134,7 +134,7 @@ using dtype_fp8_e5m2 = nv_fp8_e5m2;
 
 #ifdef FLASHINFER_ENABLE_FP8_E4M3
 #define _DISPATCH_CASE_FP8_E4M3(c_type, ...) \
-  case at::ScalarType::Float8_e4m3fn: {      \
+  case at::ScalarType::Float8_e4m3fnuz: {    \
     using c_type = dtype_fp8_e4m3;           \
     return __VA_ARGS__();                    \
   }
@@ -144,7 +144,7 @@ using dtype_fp8_e5m2 = nv_fp8_e5m2;
 
 #ifdef FLASHINFER_ENABLE_FP8_E5M2
 #define _DISPATCH_CASE_FP8_E5M2(c_type, ...) \
-  case at::ScalarType::Float8_e5m2: {        \
+  case at::ScalarType::Float8_e5m2fnuz: {    \
     using c_type = dtype_fp8_e5m2;           \
     return __VA_ARGS__();                    \
   }
@@ -281,6 +281,6 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
 #define CHECK_GE(a, b) TORCH_CHECK((a) >= (b), "CHECK_GE(" #a ", " #b ") failed. ", a, " vs ", b)
 
 inline bool is_float8_tensor(const at::Tensor& tensor) {
-  return tensor.scalar_type() == at::ScalarType::Float8_e4m3fn ||
-         tensor.scalar_type() == at::ScalarType::Float8_e5m2;
+  return tensor.scalar_type() == at::ScalarType::Float8_e4m3fnuz ||
+         tensor.scalar_type() == at::ScalarType::Float8_e5m2fnuz;
 }

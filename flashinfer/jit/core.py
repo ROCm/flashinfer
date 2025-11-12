@@ -148,6 +148,9 @@ def gen_jit_spec(
         cflags += [
             "--offload-arch=gfx942",
             "-DFLASHINFER_ENABLE_HIP",
+            "-DFLASHINFER_ENABLE_FP8",
+            "-DFLASHINFER_ENABLE_FP8_E4M3",
+            "-DFLASHINFER_ENABLE_FP8_E5M2",
             "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
         ]
     cuda_cflags = [
@@ -156,6 +159,7 @@ def gen_jit_spec(
         "-use_fast_math",
         "-DFLASHINFER_ENABLE_F16",
         "-DFLASHINFER_ENABLE_BF16",
+        "-DFLASHINFER_ENABLE_FP8",
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",
     ]
