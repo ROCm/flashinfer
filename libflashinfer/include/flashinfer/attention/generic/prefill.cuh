@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
-
 #ifndef FLASHINFER_PREFILL_CUH_
 #define FLASHINFER_PREFILL_CUH_
 
@@ -1154,8 +1153,7 @@ __device__ __forceinline__ void compute_sfm_v(
     uint32_t* v_smem_offset_r,
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const dim3 tid = threadIdx,
-    typename KTraits::DTypeQKAccum* qk_scratch = nullptr) {
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
   constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
@@ -1487,6 +1485,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t WARP_THREAD_COLS = KTraits::WARP_THREAD_COLS;
   constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+  constexpr uint32_t COLUMN_RESET_OFFSET = KTraits::NUM_MMA_D_VO / 4 * WARP_THREAD_COLS;
 
   const uint32_t warp_idx_x = get_warp_idx_q<KTraits>(tid.y);
   const uint32_t lane_idx = tid.x;
@@ -1527,26 +1526,49 @@ __device__ __forceinline__ void write_o_reg_gmem(
           vec_cast<DTypeO, float>::template cast<HALF_ELEMS_PER_THREAD>((DTypeO*)o_frag_f16,
                                                                         o_frag[mma_q][mma_d]);
 
+#if defined(PLATFORM_CUDA_DEVICE)
 #ifdef FLASHINFER_STMATRIX_M8N8X4_ENABLED
-          uint32_t o_smem_offset_w = o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
+          uint32_t o_smem_offset_w = o_smem->get_permuted_offset<UPCAST_STRIDE_O>(
               (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 + lane_idx % 16,
               mma_d * 2 + lane_idx / 16);
           o_smem->stmatrix_m8n8x4(o_smem_offset_w, o_frag_f16);
 #else
-          uint32_t o_smem_offset_w = o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(
-              (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 + lane_idx / TPR, mma_d * 2);
-#if defined(PLATFORM_HIP_DEVICE)
-          ((uint32_t*)(o_smem->base + o_smem_offset_w))[lane_idx % TPR] = o_frag_f16[0];
-          uint32_t offset_2 = o_smem_offset_w + 2;
-          ((uint32_t*)(o_smem->base + offset_2))[lane_idx % 16] = o_frag_f16[1];
-#else
-          ((uint32_t*)(o_smem->base + o_smem_offset_w))[lane_idx % TPR] = o_frag_f16[0];
+          uint32_t o_smem_offset_w = o_smem->get_permuted_offset<UPCAST_STRIDE_O>(
+              (warp_idx_x * KTraits::NUM_MMA_Q + mma_q) * 16 + lane_idx / 4, mma_d * 2);
+          ((uint32_t*)(o_smem->base + o_smem_offset_w))[lane_idx % 4] = o_frag_f16[0];
           ((uint32_t*)(o_smem->base + o_smem_offset_w + 8 * UPCAST_STRIDE_O))[lane_idx % 4] =
               o_frag_f16[1];
-          ((uint32_t*)(o_smem->base + (o_smem_offset_w ^ 0x1)))[lane_idx % TPR] = o_frag_f16[2];
+          ((uint32_t*)(o_smem->base + (o_smem_offset_w ^ 0x1)))[lane_idx % 4] = o_frag_f16[2];
           ((uint32_t*)(o_smem->base + (o_smem_offset_w ^ 0x1) +
                        8 * UPCAST_STRIDE_O))[lane_idx % 4] = o_frag_f16[3];
 #endif
+#elif defined(PLATFORM_HIP_DEVICE)
+          const int lane_id_in_warp = tid.x % WARP_SIZE;
+          const int warp_idx_q = get_warp_idx_q<KTraits>(tid.y);
+          const uint32_t warp_base_row = warp_idx_q * KTraits::NUM_MMA_Q * 16;
+          const uint32_t frag_row_offset = mma_q * 16;
+          const uint32_t frag_col_offset = mma_d * 16;
+          const uint32_t thread_start_row_in_frag = (lane_id_in_warp / 16) * NAPTR;
+          const uint32_t thread_col_in_frag = (lane_id_in_warp % 16);
+          // Calculate base row (the first of 4 rows this thread writes)
+          const uint32_t base_row = warp_base_row + frag_row_offset + thread_start_row_in_frag;
+          // Column in units of 4-element vectors
+          const uint32_t col_vec = (frag_col_offset + thread_col_in_frag) / HALF_ELEMS_PER_THREAD;
+          // Index within the 4-element vector (0-3)
+          const uint32_t col_idx = (frag_col_offset + thread_col_in_frag) % HALF_ELEMS_PER_THREAD;
+          // Cast to DTypeO* and write all 4 elements with row strides
+          DTypeO* o_frag_f16_half = reinterpret_cast<DTypeO*>(o_frag_f16);
+          // NOTE: Currently, swizzled access of shared memory is not used for
+          // CDNA3. As such, the offset is computed using a straightforward
+          // linear indexing. The below logic needs to be revisited and the
+          // offset computation done using `get_permuted_offset`.
+          DTypeO* o_smem_typed = reinterpret_cast<DTypeO*>(o_smem->base) +
+                                 base_row * KTraits::HEAD_DIM_VO + col_vec * HALF_ELEMS_PER_THREAD +
+                                 col_idx;
+          *(o_smem_typed) = o_frag_f16_half[0];
+          *(o_smem_typed + KTraits::HEAD_DIM_VO) = o_frag_f16_half[1];
+          *(o_smem_typed + 2 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[2];
+          *(o_smem_typed + 3 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[3];
 #endif
         }
       }
@@ -1576,7 +1598,7 @@ __device__ __forceinline__ void write_o_reg_gmem(
           }
           o_smem_offset_w =
               o_smem->template advance_offset_by_row<4, UPCAST_STRIDE_O>(o_smem_offset_w) -
-              2 * KTraits::NUM_MMA_D_VO;
+              COLUMN_RESET_OFFSET;
         }
       }
     }
@@ -1646,7 +1668,6 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     [[maybe_unused]] constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
     [[maybe_unused]] constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD =
         KTraits::NUM_ACCUM_ROWS_PER_THREAD;
-    [[maybe_unused]] constexpr uint32_t LOGITS_INDEX_STRIDE = KTraits::LOGITS_INDEX_STRIDE;
     [[maybe_unused]] constexpr uint32_t THREADS_PER_BMATRIX_ROW_SET =
         KTraits::THREADS_PER_BMATRIX_ROW_SET;
     [[maybe_unused]] constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
@@ -1788,10 +1809,9 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
                                              &k_smem_offset_r, rope_freq, tid);
         block.sync();
       }
-
       // compute attention score
       compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag);
-      // Apply logits transformation
+      // logits transformation
       logits_transform<KTraits>(
           params, variant, /*batch_idx=*/0, qo_packed_idx_base,
           chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16,
@@ -1813,7 +1833,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       block.sync();
 
       // compute sfm*v
-      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid);
+      compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
       block.sync();
       produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
           v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
@@ -1823,7 +1843,6 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     block.sync();
 
     finalize_m<KTraits>(variant, m);
-
     // threadblock synchronization
     threadblock_sync_mdo_states<KTraits>(o_frag, &smem_storage, m, d, warp_idx, lane_idx, tid);
     // normalize d
@@ -1842,9 +1861,12 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 #pragma unroll
             for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j) {
               uint32_t q, r;
-              group_size.divmod(qo_packed_idx_base + lane_idx / THREADS_PER_BMATRIX_ROW_SET +
-                                    j * LOGITS_INDEX_STRIDE + mma_q * 16,
-                                q, r);
+
+              group_size.divmod(
+                  qo_packed_idx_base +
+                      (lane_idx / THREADS_PER_BMATRIX_ROW_SET) * NUM_ACCUM_ROWS_PER_THREAD + j +
+                      mma_q * 16,
+                  q, r);
               const uint32_t qo_head_idx = kv_head_idx * group_size + r;
               const uint32_t qo_idx = q;
               if (qo_idx < qo_len) {

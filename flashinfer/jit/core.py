@@ -61,11 +61,11 @@ def check_cuda_arch():
 
 
 def check_rocm_arch():
-    allowd_arch = [
+    allowed_arch = [
         "--offload-arch=gfx942",
     ]
     hip_arch_flags = torch_cpp_ext._get_rocm_arch_flags()
-    for arch in allowd_arch:
+    for arch in allowed_arch:
         if arch not in hip_arch_flags:
             raise RuntimeError(f"FlashInfer requires {', '.join(arch)}")
 
