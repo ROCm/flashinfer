@@ -1,6 +1,5 @@
-# SPDX-FileCopyrightText : 2023-2035 FlashInfer team.
+# SPDX-FileCopyrightText : 2023-2025 FlashInfer team.
 # SPDX-FileCopyrightText : 2025 Advanced Micro Devices, Inc.
-#
 # SPDX-License-Identifier : Apache-2.0
 
 import math
@@ -17,6 +16,7 @@ def naive_attention(
     v: torch.Tensor,
     causal: bool = False,
     sm_scale: Optional[float] = None,
+    logits_soft_cap: Optional[float] = None,
 ) -> torch.Tensor:
     """
     Naive PyTorch implementation of attention for reference.
@@ -27,6 +27,7 @@ def naive_attention(
         v: value tensor, shape: [kv_len, num_kv_heads, head_dim]
         causal: whether to apply causal masking
         sm_scale: softmax scale (default: 1/sqrt(head_dim))
+        logits_soft_cap: if not None, applies soft cap to logits: soft_cap * tanh(logits / soft_cap)
 
     Returns:
         o: output tensor, shape: [qo_len, num_qo_heads, head_dim]
@@ -53,6 +54,11 @@ def naive_attention(
     # Compute attention scores: [num_qo_heads, qo_len, kv_len]
     scores = torch.matmul(q_t, k_t.transpose(1, 2)) * sm_scale
 
+    # Apply logits soft cap if specified
+    # Formula: soft_cap * tanh(logits / soft_cap)
+    if logits_soft_cap is not None and logits_soft_cap > 0:
+        scores = logits_soft_cap * torch.tanh(scores / logits_soft_cap)
+
     # Apply causal mask if needed
     if causal:
         # Create causal mask
@@ -77,8 +83,8 @@ def naive_attention(
 def single_prefill_with_kv_cache_example(
     qo_len: int,
     kv_len: int,
-    num_kv_heads: int,
     num_qo_heads: int,
+    num_kv_heads: int,
     head_dim: int,
     kv_layout: str,
     pos_encoding_mode: str,
@@ -101,8 +107,10 @@ def single_prefill_with_kv_cache_example(
     print(f"  num_kv_heads={num_kv_heads}")
     print(f"  head_dim={head_dim}")
     print(f"  kv_layout={kv_layout}")
-    print(f"  causal={causal}")
     print(f"  pos_encoding_mode={pos_encoding_mode}")
+    print(f"  logits_soft_cap={logits_soft_cap}")
+    print(f"  causal={causal}")
+    print(f"  return_lse={return_lse}")
     print(f"  q_dtype={q_dtype}")
     print(f"  kv_dtype={kv_dtype}")
 
@@ -137,7 +145,7 @@ def single_prefill_with_kv_cache_example(
             backend="auto",
             return_lse=True,
         )
-        print(f"  Output shape: {o.shape}, LSE shape: {lse.shape}")
+        print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
     else:
         o = flashinfer.single_prefill_with_kv_cache(
             q,
@@ -150,21 +158,26 @@ def single_prefill_with_kv_cache_example(
             backend="auto",
             return_lse=False,
         )
-        print(f"  Output shape: {o.shape}")
+        print(f"  FlashInfer output shape: {o.shape}")
 
-        # For simple cases without RoPE/ALiBi/soft_cap, verify against naive implementation
+    # For simple cases without RoPE/ALiBi, verify against naive implementation
+    if pos_encoding_mode == "NONE":
         o_ref = naive_attention(
             q.float(),
             k_ref.float(),
             v_ref.float(),
             causal=causal,
+            logits_soft_cap=logits_soft_cap if logits_soft_cap > 0 else None,
         ).to(q_dtype)
+        print(f"  Reference output shape: {o_ref.shape}")
 
         try:
             torch.testing.assert_close(o, o_ref, rtol=1e-3, atol=1e-3)
             print("  ✓ PASS: Output matches reference implementation")
-        except AssertionError:
+        except AssertionError as e:
             print("  ✗ FAIL: Output does not match reference implementation")
+            max_diff = (o - o_ref).abs().max().item()
+            print(f"    Max absolute difference: {max_diff}")
 
 
 if __name__ == "__main__":
@@ -172,18 +185,82 @@ if __name__ == "__main__":
     print("FlashInfer Single Prefill Example")
     print("=" * 60)
 
-    # Test configuration 1: Basic test with GQA
+    # Basic test with logits soft cap
     single_prefill_with_kv_cache_example(
         qo_len=128,
-        kv_len=512,
-        num_kv_heads=4,
-        num_qo_heads=32,
-        head_dim=128,
+        kv_len=128,
+        num_qo_heads=1,
+        num_kv_heads=1,
+        head_dim=64,
+        kv_layout="NHD",
+        pos_encoding_mode="NONE",  # No RoPE/ALiBi
+        logits_soft_cap=8.0,  # soft cap enabled
+        causal=False,  # causal mask
+        return_lse=False,  # no log sum exp
+        q_dtype=torch.float16,
+        kv_dtype=torch.float16,
+    )
+
+    # Without logits soft cap
+    single_prefill_with_kv_cache_example(
+        qo_len=128,
+        kv_len=128,
+        num_qo_heads=1,
+        num_kv_heads=1,
+        head_dim=64,
         kv_layout="NHD",
         pos_encoding_mode="NONE",  # No RoPE/ALiBi
         logits_soft_cap=0.0,  # soft cap disabled
-        causal=True,  # causal mask
+        causal=False,  # causal mask
         return_lse=False,  # no log sum exp
+        q_dtype=torch.float16,
+        kv_dtype=torch.float16,
+    )
+
+    # GQA with num_qo_heads = num_kv_heads > 1
+    single_prefill_with_kv_cache_example(
+        qo_len=128,
+        kv_len=128,
+        num_qo_heads=4,
+        num_kv_heads=4,
+        head_dim=64,
+        kv_layout="NHD",
+        pos_encoding_mode="NONE",
+        logits_soft_cap=8.0,
+        causal=False,
+        return_lse=False,
+        q_dtype=torch.float16,
+        kv_dtype=torch.float16,
+    )
+
+    # GQA with num_qo_heads > num_kv_heads
+    single_prefill_with_kv_cache_example(
+        qo_len=128,
+        kv_len=128,
+        num_qo_heads=8,
+        num_kv_heads=4,
+        head_dim=64,
+        kv_layout="NHD",
+        pos_encoding_mode="NONE",
+        logits_soft_cap=8.0,
+        causal=False,
+        return_lse=False,
+        q_dtype=torch.float16,
+        kv_dtype=torch.float16,
+    )
+
+    # GQA with qo_len < kv_len (typical prefill)
+    single_prefill_with_kv_cache_example(
+        qo_len=15,
+        kv_len=127,
+        num_qo_heads=32,
+        num_kv_heads=4,
+        head_dim=64,
+        kv_layout="NHD",
+        pos_encoding_mode="NONE",
+        logits_soft_cap=8.0,
+        causal=False,
+        return_lse=False,
         q_dtype=torch.float16,
         kv_dtype=torch.float16,
     )
