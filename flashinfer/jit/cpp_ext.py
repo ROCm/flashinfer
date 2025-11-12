@@ -71,6 +71,7 @@ def generate_ninja_build_for_op(
         "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
         "-DFLASHINFER_ENABLE_F16",
         "-DFLASHINFER_ENABLE_BF16",
+        "-DFLASHINFER_ENABLE_FP8",
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",
     ]

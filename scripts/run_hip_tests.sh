@@ -4,6 +4,7 @@
 
 python -m pytest ../tests/test_sliding_window_hip.py \
 ../tests/test_batch_decode_kernels_hip.py \
+../tests/test_batch_decode_kernels_hip_fp8.py \
 ../tests/test_batch_decode_vllm.py \
 ../tests/test_rope.py \
 ../tests/test_page.py \
