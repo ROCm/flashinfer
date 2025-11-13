@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
 
@@ -17,7 +17,7 @@ def naive_attention(
     causal: Optional[bool] = False,
     return_lse: Optional[bool] = False,
     logits_soft_cap: Optional[float] = None,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Naive PyTorch implementation of attention for reference.
 
@@ -30,7 +30,7 @@ def naive_attention(
         return_lse: whether to return the log sum exp value of the attention logits
         logits_soft_cap: if not None, applies soft cap to logits: soft_cap * tanh(logits / soft_cap)
     Returns:
-        o: output tensor, shape: [qo_len, num_qo_heads, head_dim] if return_lse is None or False,
+        o: output tensor, shape: [qo_len, num_qo_heads, head_dim] if return_lse is False,
         otherwise a tuple of two tensors: (o, lse), where o is the output tensor, shape: [qo_len, num_qo_heads, head_dim],
         and lse is the log sum exp value of the attention logits, shape: [qo_len, num_qo_heads]
     """
@@ -70,8 +70,10 @@ def naive_attention(
         scores = scores.masked_fill(~mask.unsqueeze(0), float("-inf"))
 
     # Compute LSE on the final scores (after soft cap is applied) and before softmax
+    lse = None
     if return_lse:
-        lse = torch.logsumexp(scores, dim=-1) / math.log(2)  # [num_qo_heads, qo_len]
+        lse = torch.logsumexp(scores, dim=-1)  # [num_qo_heads, qo_len]
+        lse = lse / math.log(2)  # to match FlashInfer implementation
         lse = lse.transpose(0, 1)  # [qo_len, num_qo_heads]
 
     # Softmax
@@ -83,10 +85,7 @@ def naive_attention(
     # Transpose back: [qo_len, num_qo_heads, head_dim]
     out = out.transpose(0, 1)
 
-    if return_lse:
-        return out, lse
-    else:
-        return out
+    return out, lse
 
 
 def single_prefill_with_kv_cache_example(
@@ -200,7 +199,7 @@ def single_prefill_with_kv_cache_example(
         print(f"  FlashInfer output shape: {o.shape}")
 
         # Compute reference in FP32 for better accuracy
-        o_ref = naive_attention(
+        o_ref, _ = naive_attention(
             q.float(),
             k_ref.float(),
             v_ref.float(),
@@ -209,7 +208,7 @@ def single_prefill_with_kv_cache_example(
             logits_soft_cap=logits_soft_cap,
         )
         # Convert reference back to match FlashInfer dtype
-        o_ref = o_ref.to(q.dtype)
+        o_ref = o_ref.to(o.dtype)
         print(f"  Reference output shape: {o_ref.shape}")
 
         try:
@@ -228,98 +227,29 @@ if __name__ == "__main__":
 
     # Self-attention with logits soft cap
     single_prefill_with_kv_cache_example(
-        qo_len=128,
-        kv_len=128,
-        num_qo_heads=1,
-        num_kv_heads=1,
-        head_dim=64,
-        kv_layout="NHD",
-        pos_encoding_mode="NONE",  # No RoPE/ALiBi
-        logits_soft_cap=8.0,  # soft cap enabled
-        causal=False,  # no causal mask
-        return_lse=False,  # no log sum exp
+        128, 128, 1, 1, 64, "NHD", "NONE", 8.0, False, False
     )
-
     # Self-attention without logits soft cap
     single_prefill_with_kv_cache_example(
-        qo_len=128,
-        kv_len=128,
-        num_qo_heads=1,
-        num_kv_heads=1,
-        head_dim=64,
-        kv_layout="NHD",
-        pos_encoding_mode="NONE",
-        logits_soft_cap=0.0,  # soft cap disabled
-        causal=False,
-        return_lse=False,
+        128, 128, 1, 1, 64, "NHD", "NONE", 0.0, False, False
     )
-
     # Multi-head attention (MHA)
     single_prefill_with_kv_cache_example(
-        qo_len=128,
-        kv_len=128,
-        num_qo_heads=4,
-        num_kv_heads=4,
-        head_dim=64,
-        kv_layout="NHD",
-        pos_encoding_mode="NONE",
-        logits_soft_cap=8.0,
-        causal=False,
-        return_lse=False,
+        128, 128, 4, 4, 64, "NHD", "NONE", 8.0, False, False
     )
-
     # Grouped query attention (GQA)
     single_prefill_with_kv_cache_example(
-        qo_len=128,
-        kv_len=128,
-        num_qo_heads=8,
-        num_kv_heads=4,
-        head_dim=64,
-        kv_layout="NHD",
-        pos_encoding_mode="NONE",
-        logits_soft_cap=8.0,
-        causal=False,
-        return_lse=False,
+        128, 128, 8, 4, 64, "NHD", "NONE", 8.0, False, False
     )
-
     # GQA with qo_len < kv_len (typical prefill)
     single_prefill_with_kv_cache_example(
-        qo_len=15,
-        kv_len=127,
-        num_qo_heads=32,
-        num_kv_heads=4,
-        head_dim=64,
-        kv_layout="NHD",
-        pos_encoding_mode="NONE",
-        logits_soft_cap=8.0,
-        causal=False,
-        return_lse=False,
+        15, 127, 32, 4, 64, "NHD", "NONE", 8.0, False, False
     )
-
     # GQA with LSE enabled
     single_prefill_with_kv_cache_example(
-        qo_len=15,
-        kv_len=127,
-        num_qo_heads=8,
-        num_kv_heads=4,
-        head_dim=64,
-        kv_layout="NHD",
-        pos_encoding_mode="NONE",
-        logits_soft_cap=0.0,
-        causal=False,
-        return_lse=True,
+        15, 127, 8, 4, 64, "NHD", "NONE", 0.0, False, True
     )
-
     # GQA with soft cap and LSE enabled
     single_prefill_with_kv_cache_example(
-        qo_len=15,
-        kv_len=127,
-        num_qo_heads=8,
-        num_kv_heads=4,
-        head_dim=64,
-        kv_layout="NHD",
-        pos_encoding_mode="NONE",
-        logits_soft_cap=8.0,
-        causal=False,
-        return_lse=True,
+        15, 127, 8, 4, 64, "NHD", "NONE", 8.0, False, True
     )
