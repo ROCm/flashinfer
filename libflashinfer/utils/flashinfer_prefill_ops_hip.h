@@ -160,13 +160,13 @@ template <uint32_t CTA_TILE_Q, uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO,
           PosEncodingMode POS_ENCODING_MODE, bool USE_FP16_QK_REDUCTION, MaskMode MASK_MODE,
           typename AttentionVariant, typename Params>
 hipError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
-                                                    float* tmp_s, hipStream_t stream);
+                                                   float* tmp_s, hipStream_t stream);
 
 template <uint32_t CTA_TILE_Q, uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO,
           PosEncodingMode POS_ENCODING_MODE, bool USE_FP16_QK_REDUCTION, MaskMode MASK_MODE,
           typename AttentionVariant, typename Params>
 hipError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
-                                                   float* tmp_s, hipStream_t stream);
+                                                  float* tmp_s, hipStream_t stream);
 
 class BatchPrefillHandler {
  public:
@@ -177,9 +177,9 @@ class BatchPrefillHandler {
 
   template <typename DTypeO, typename IdType>
   hipError_t Plan(void* float_buffer, size_t float_workspace_size_in_bytes, void* int_buffer,
-                   size_t int_workspace_size_in_bytes, IdType* qo_indptr_h, IdType* kv_indptr_h,
-                   uint32_t total_num_rows, uint32_t batch_size, uint32_t num_qo_heads,
-                   uint32_t num_kv_heads, uint32_t head_dim, uint32_t page_size) {
+                  size_t int_workspace_size_in_bytes, IdType* qo_indptr_h, IdType* kv_indptr_h,
+                  uint32_t total_num_rows, uint32_t batch_size, uint32_t num_qo_heads,
+                  uint32_t num_kv_heads, uint32_t head_dim, uint32_t page_size) {
     int_buffer_ = int_buffer;
     float_buffer_ = float_buffer;
     return PrefillPlan<IdType>(float_buffer, float_workspace_size_in_bytes, int_buffer,
