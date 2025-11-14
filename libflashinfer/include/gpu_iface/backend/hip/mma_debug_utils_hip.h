@@ -4,6 +4,7 @@
 #pragma once
 
 #include "gpu_iface/backend/hip/mma_hip.h"
+#include "gpu_iface/fastdiv.cuh"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 
 namespace {
