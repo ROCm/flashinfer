@@ -137,10 +137,9 @@ void _TestBatchPagedPrefillKernelOneHotCorrectness(size_t num_kv_heads, size_t n
           flashinfer::BatchPrefillWithPagedKVCacheWrapper<DTypeQO, DTypeKV, DTypeQO, int32_t>(
               &handler, q_device, q_indptr_device, /*q_rope_offset=*/nullptr, paged_kv, o_device,
               /*lse=*/nullptr, num_qo_heads, causal, pos_encoding_mode, use_fp16_qk_reduction);
-      EXPECT_EQ(status, hipSuccess) << "CUDA error: " + std::string(hipGetErrorString(status));
+      EXPECT_EQ(status, hipSuccess) << "HIP error: " + std::string(hipGetErrorString(status));
     }
 
-    thrust::host_vector<DTypeQO> o_host(o_device);
     std::vector<DTypeQO> o_host(q_len * num_qo_heads * head_dim);
     FI_GPU_CALL(hipMemcpy(o_host.data(), o_device,
                           q_len * num_qo_heads * head_dim * sizeof(DTypeQO),
@@ -166,6 +165,10 @@ void _TestBatchPagedPrefillKernelOneHotCorrectness(size_t num_kv_heads, size_t n
               << ", result_accuracy=" << result_accuracy << std::endl;
     EXPECT_GT(result_accuracy, 0.99) << "Result correctness test failed.";
     EXPECT_EQ(nan_detected, false) << "NaN detected in output.";
+
+    FI_GPU_CALL(hipFree(q_indptr_device));
+    FI_GPU_CALL(hipFree(q_device));
+    FI_GPU_CALL(hipFree(o_device));
   }
 
   FI_GPU_CALL(hipFree(k_data_device));
@@ -175,9 +178,6 @@ void _TestBatchPagedPrefillKernelOneHotCorrectness(size_t num_kv_heads, size_t n
   FI_GPU_CALL(hipFree(kv_last_page_len_device));
   FI_GPU_CALL(hipFree(float_buffer));
   FI_GPU_CALL(hipFree(int_buffer));
-  FI_GPU_CALL(hipFree(q_indptr_device));
-  FI_GPU_CALL(hipFree(q_device));
-  FI_GPU_CALL(hipFree(o_device));
 }
 
 template <typename DTypeQO, typename DTypeKV>
@@ -268,7 +268,7 @@ void _TestBatchRaggedPrefillKernelCorrectness(size_t num_kv_heads, size_t num_qo
       batch_size, num_qo_heads, num_kv_heads, head_dim, causal, kv_layout, pos_encoding_mode,
       use_fp16_qk_reduction);
 
-  EXPECT_EQ(status, hipSuccess) << "CUDA error: " + std::string(hipGetErrorString(status));
+  EXPECT_EQ(status, hipSuccess) << "HIP error: " + std::string(hipGetErrorString(status));
 
   std::vector<DTypeQO> output_host(queries.size());
   FI_GPU_CALL(hipMemcpy(output_host.data(), output_device, queries.size() * sizeof(DTypeQO),
@@ -440,7 +440,7 @@ void _TestBatchPagedPrefillKernelShortContextCorrectness(size_t num_kv_heads, si
   auto status = BatchPrefillWithPagedKVCacheWrapper<DTypeQO, DTypeKV, DTypeQO, int32_t>(
       &handler, q_device, q_indptr_device, /*q_rope_offset=*/nullptr, paged_kv, o_device,
       /*lse=*/nullptr, num_qo_heads, causal, pos_encoding_mode, use_fp16_qk_reduction);
-  EXPECT_EQ(status, hipSuccess) << "CUDA error: " + std::string(hipGetErrorString(status));
+  EXPECT_EQ(status, hipSuccess) << "HIP error: " + std::string(hipGetErrorString(status));
 
   std::vector<DTypeQO> o_host(o_concat_ref.size());
   FI_GPU_CALL(hipMemcpy(o_host.data(), o_device, o_concat_ref.size() * sizeof(DTypeQO),
@@ -614,7 +614,7 @@ void _TestBatchPagedPrefillKernelQMinMaxKVMinMaxCorrectness(
       &handler, q_device, q_indptr_device, /*q_rope_offset=*/nullptr, paged_kv, o_device,
       /*lse=*/nullptr, num_qo_heads, /*causal=*/false,
       /*pos_encoding_mode*/ PosEncodingMode::kNone);
-  EXPECT_EQ(status, hipSuccess) << "CUDA error: " + std::string(hipGetErrorString(status));
+  EXPECT_EQ(status, hipSuccess) << "HIP error: " + std::string(hipGetErrorString(status));
 
   std::vector<DTypeQO> o_host(o_concat_ref.size());
   FI_GPU_CALL(hipMemcpy(o_host.data(), o_device, o_concat_ref.size() * sizeof(DTypeQO),
@@ -760,7 +760,7 @@ void _TestBatchPagedPrefillKernelLongContextCorrectness(size_t num_kv_heads, siz
       &handler, q_device, q_indptr_device,
       /*q_rope_offset=*/nullptr, paged_kv, o_device,
       /*lse=*/nullptr, num_qo_heads, causal, pos_encoding_mode, use_fp16_qk_reduction);
-  EXPECT_EQ(status, hipSuccess) << "CUDA error: " + std::string(hipGetErrorString(status));
+  EXPECT_EQ(status, hipSuccess) << "HIP error: " + std::string(hipGetErrorString(status));
 
   std::vector<DTypeQO> o_host(q_lens[0] * num_qo_heads * head_dim);
   FI_GPU_CALL(hipMemcpy(o_host.data(), o_device,

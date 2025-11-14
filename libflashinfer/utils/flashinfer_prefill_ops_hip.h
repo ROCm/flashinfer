@@ -199,7 +199,11 @@ class BatchPrefillHandler {
       : enable_cuda_graph_(enable_cuda_graph), stream_(nullptr) {
     hipMallocHost(&page_locked_buffer_, 8 * 1024 * 1024);
   }
-  ~BatchPrefillHandler() { hipFreeHost(page_locked_buffer_); }
+  ~BatchPrefillHandler() {
+    if (page_locked_buffer_ != nullptr) {
+      (page_locked_buffer_);
+    }
+  }
 
   PrefillPlanInfo GetPlanInfo() const { return plan_info_; }
 
@@ -266,7 +270,7 @@ class BatchPrefillHandler {
   }
 
  protected:
-  void* page_locked_buffer_;
+  void* page_locked_buffer_{nullptr};
   void* int_buffer_;
   void* float_buffer_;
   PrefillPlanInfo plan_info_;
