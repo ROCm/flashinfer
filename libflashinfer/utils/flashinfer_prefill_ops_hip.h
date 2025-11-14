@@ -171,7 +171,9 @@ hipError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
 class BatchPrefillHandler {
  public:
   void UpdatePageLockedBufferSize(size_t int_workspace_size_in_bytes) {
-    hipFreeHost(page_locked_buffer_);
+    if (page_locked_buffer_ != nullptr) {
+      hipFreeHost(page_locked_buffer_);
+    }
     hipMallocHost(&page_locked_buffer_, int_workspace_size_in_bytes);
   }
 
@@ -199,7 +201,11 @@ class BatchPrefillHandler {
       : enable_cuda_graph_(enable_cuda_graph), stream_(nullptr) {
     hipMallocHost(&page_locked_buffer_, 8 * 1024 * 1024);
   }
-  ~BatchPrefillHandler() { hipFreeHost(page_locked_buffer_); }
+  ~BatchPrefillHandler() {
+    if (page_locked_buffer_ != nullptr) {
+      (page_locked_buffer_);
+    }
+  }
 
   PrefillPlanInfo GetPlanInfo() const { return plan_info_; }
 
@@ -266,7 +272,7 @@ class BatchPrefillHandler {
   }
 
  protected:
-  void* page_locked_buffer_;
+  void* page_locked_buffer_{nullptr};
   void* int_buffer_;
   void* float_buffer_;
   PrefillPlanInfo plan_info_;
