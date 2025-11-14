@@ -171,7 +171,9 @@ hipError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
 class BatchPrefillHandler {
  public:
   void UpdatePageLockedBufferSize(size_t int_workspace_size_in_bytes) {
-    hipFreeHost(page_locked_buffer_);
+    if (page_locked_buffer_ != nullptr) {
+      hipFreeHost(page_locked_buffer_);
+    }
     hipMallocHost(&page_locked_buffer_, int_workspace_size_in_bytes);
   }
 
