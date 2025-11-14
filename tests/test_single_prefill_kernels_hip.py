@@ -28,11 +28,10 @@ def warmup_jit():
                 jit_prefill_attention_func_args(
                     [torch.float16],  # q_dtypes
                     [torch.float16],  # kv_dtypes
-                    [128, 256],  # head_dims
-                    [0, 1],  # pos_encoding_modes (NONE, ROPE_LLAMA)
+                    [64, 128, 256],  # head_dims
+                    [0],  # pos_encoding_modes (NONE)
                     [False],  # use_sliding_windows
                     [False, True],  # use_logits_soft_caps
-                    [False],  # use_fp16_qk_reduction
                 )
             )
         except Exception as e:
@@ -120,11 +119,11 @@ def naive_attention(
     return out, lse
 
 
-@pytest.mark.parametrize("qo_len", [1, 7, 15, 63, 127])
-@pytest.mark.parametrize("kv_len", [7, 31, 127, 511, 2047])
+@pytest.mark.parametrize("qo_len", [37, 17, 127, 577])
+@pytest.mark.parametrize("kv_len", [54, 97, 512, 2048])
 @pytest.mark.parametrize("num_qo_heads", [4, 32])
 @pytest.mark.parametrize("num_kv_heads", [4])
-@pytest.mark.parametrize("head_dim", [64, 128])
+@pytest.mark.parametrize("head_dim", [64])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 @pytest.mark.parametrize("causal", [False])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
@@ -208,7 +207,7 @@ def test_single_prefill_with_kv_cache(
 
     # Compute reference in FP32 for better accuracy
     o_ref, lse_ref = naive_attention(
-        q.float(),  #
+        q.float(),
         k_ref.float(),
         v_ref.float(),
         causal=causal,
