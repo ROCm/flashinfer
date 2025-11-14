@@ -2,90 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import math
-from typing import Optional, Tuple
-
 import torch
 
 import flashinfer
-
-
-def naive_attention(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    causal: Optional[bool] = False,
-    return_lse: Optional[bool] = False,
-    logits_soft_cap: Optional[float] = None,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-    """
-    Naive PyTorch implementation of attention for reference.
-
-    Args:
-        q: query tensor, shape: [qo_len, num_qo_heads, head_dim]
-        k: key tensor, shape: [kv_len, num_kv_heads, head_dim]
-        v: value tensor, shape: [kv_len, num_kv_heads, head_dim]
-    Optional Args:
-        causal: whether to apply causal masking
-        return_lse: whether to return the log sum exp value of the attention logits
-        logits_soft_cap: if not None, applies soft cap to logits: soft_cap * tanh(logits / soft_cap)
-    Returns:
-        o: output tensor, shape: [qo_len, num_qo_heads, head_dim] if return_lse is False,
-        otherwise a tuple of two tensors: (o, lse), where o is the output tensor, shape: [qo_len, num_qo_heads, head_dim],
-        and lse is the log sum exp value of the attention logits, shape: [qo_len, num_qo_heads]
-    """
-    qo_len, num_qo_heads, head_dim = q.shape
-    kv_len, num_kv_heads, _ = k.shape
-
-    sm_scale = 1.0 / math.sqrt(head_dim)  # softmax scale
-
-    # Handle grouped query attention (GQA)
-    group_size = num_qo_heads // num_kv_heads
-
-    # Expand k and v to match q's head dimension if using GQA
-    if group_size > 1:
-        k = k.repeat_interleave(group_size, dim=1)  # [kv_len, num_qo_heads, head_dim]
-        v = v.repeat_interleave(group_size, dim=1)  # [kv_len, num_qo_heads, head_dim]
-
-    # Transpose for batch matrix multiply: [num_heads, seq_len, head_dim]
-    q_t = q.transpose(0, 1)  # [num_qo_heads, qo_len, head_dim]
-    k_t = k.transpose(0, 1)  # [num_qo_heads, kv_len, head_dim]
-    v_t = v.transpose(0, 1)  # [num_qo_heads, kv_len, head_dim]
-
-    # Compute attention scores: [num_qo_heads, qo_len, kv_len]
-    # When soft cap is used: compute raw scores WITHOUT sm_scale
-    # When soft cap is NOT used: apply sm_scale directly
-    if logits_soft_cap is not None:
-        scores = torch.matmul(q_t, k_t.transpose(1, 2))
-        scores = logits_soft_cap * torch.tanh(scores * sm_scale / logits_soft_cap)
-    else:
-        scores = torch.matmul(q_t, k_t.transpose(1, 2)) * sm_scale
-
-    # Apply causal mask if needed (AFTER soft cap)
-    if causal:
-        mask = torch.tril(
-            torch.ones((qo_len, kv_len), device=q.device, dtype=torch.bool),
-            diagonal=(kv_len - qo_len),
-        )
-        scores = scores.masked_fill(~mask.unsqueeze(0), float("-inf"))
-
-    # Compute LSE on the final scores (after soft cap is applied) and before softmax
-    lse = None
-    if return_lse:
-        lse = torch.logsumexp(scores, dim=-1)  # [num_qo_heads, qo_len]
-        lse = lse / math.log(2)  # to match FlashInfer implementation
-        lse = lse.transpose(0, 1)  # [qo_len, num_qo_heads]
-
-    # Softmax
-    attn = torch.softmax(scores, dim=-1)
-
-    # Apply attention to values: [num_qo_heads, qo_len, head_dim]
-    out = torch.matmul(attn, v_t)
-
-    # Transpose back: [qo_len, num_qo_heads, head_dim]
-    out = out.transpose(0, 1)
-
-    return out, lse
+from tests.attention_reference import naive_attention
 
 
 def single_prefill_with_kv_cache_example(
@@ -94,13 +14,11 @@ def single_prefill_with_kv_cache_example(
     num_qo_heads: int,
     num_kv_heads: int,
     head_dim: int,
+    causal: bool,
     kv_layout: str,
     pos_encoding_mode: str,
     logits_soft_cap: float,
-    causal: bool,
     return_lse: bool,
-    q_dtype: Optional[torch.dtype] = torch.float16,
-    kv_dtype: Optional[torch.dtype] = torch.float16,
 ):
     """
     Run single_prefill_with_kv_cache and verify the output against a naive PyTorch reference implementation.
@@ -114,42 +32,38 @@ def single_prefill_with_kv_cache_example(
     print(f"  num_qo_heads={num_qo_heads}")
     print(f"  num_kv_heads={num_kv_heads}")
     print(f"  head_dim={head_dim}")
+    print(f"  causal={causal}")
     print(f"  kv_layout={kv_layout}")
     print(f"  pos_encoding_mode={pos_encoding_mode}")
     print(f"  logits_soft_cap={logits_soft_cap}")
-    print(f"  causal={causal}")
     print(f"  return_lse={return_lse}")
-    print(f"  q_dtype={q_dtype}")
-    print(f"  kv_dtype={kv_dtype}")
 
-    # The current validation only supports simple cases without RoPE/ALiBi
-    if pos_encoding_mode != "NONE":
-        print(
-            "Only pos_encoding_mode == NONE is supported for this validation. Skipping..."
-        )
-        return
+    q = torch.randn(
+        qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
+    )
 
-    logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
-
-    # Create query tensor: [qo_len, num_qo_heads, head_dim]
-    q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=q_dtype)
-
-    # Create key and value tensors based on layout
     if kv_layout == "HND":
-        # [num_kv_heads, kv_len, head_dim]
-        k = torch.randn(num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=kv_dtype)
-        v = torch.randn(num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=kv_dtype)
+        k = torch.randn(
+            num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=torch.float16
+        )
+        v = torch.randn(
+            num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=torch.float16
+        )
         # Convert to NHD for reference implementation
         k_ref = k.transpose(0, 1).contiguous()  # [kv_len, num_kv_heads, head_dim]
         v_ref = v.transpose(0, 1).contiguous()  # [kv_len, num_kv_heads, head_dim]
     else:  # NHD layout
-        # [kv_len, num_kv_heads, head_dim]
-        k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=kv_dtype)
-        v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=kv_dtype)
+        k = torch.randn(
+            kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16
+        )
+        v = torch.randn(
+            kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16
+        )
         k_ref = k
         v_ref = v
 
     # Call flashinfer API
+    logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
     if return_lse:
         o, lse = flashinfer.single_prefill_with_kv_cache_return_lse(
             q,
@@ -159,7 +73,6 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend="auto",
         )
         print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
         # Compute reference in FP32 for better accuracy
@@ -168,8 +81,9 @@ def single_prefill_with_kv_cache_example(
             k_ref.float(),
             v_ref.float(),
             causal=causal,
-            return_lse=True,
+            pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            return_lse=True,
         )
         # Convert reference back to match FlashInfer dtype
         o_ref = o_ref.to(o.dtype)
@@ -194,7 +108,6 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend="auto",
         )
         print(f"  FlashInfer output shape: {o.shape}")
 
@@ -204,8 +117,9 @@ def single_prefill_with_kv_cache_example(
             k_ref.float(),
             v_ref.float(),
             causal=causal,
-            return_lse=False,
+            pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            return_lse=False,
         )
         # Convert reference back to match FlashInfer dtype
         o_ref = o_ref.to(o.dtype)
@@ -227,29 +141,29 @@ if __name__ == "__main__":
 
     # Self-attention with logits soft cap
     single_prefill_with_kv_cache_example(
-        128, 128, 1, 1, 64, "NHD", "NONE", 8.0, False, False
+        128, 128, 1, 1, 64, False, "NHD", "NONE", 8.0, False
     )
     # Self-attention without logits soft cap
     single_prefill_with_kv_cache_example(
-        128, 128, 1, 1, 64, "NHD", "NONE", 0.0, False, False
+        128, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
     )
     # Multi-head attention (MHA)
     single_prefill_with_kv_cache_example(
-        128, 128, 4, 4, 64, "NHD", "NONE", 8.0, False, False
+        128, 128, 4, 4, 64, False, "NHD", "NONE", 8.0, False
     )
     # Grouped query attention (GQA)
     single_prefill_with_kv_cache_example(
-        128, 128, 8, 4, 64, "NHD", "NONE", 8.0, False, False
+        128, 128, 8, 4, 64, False, "NHD", "NONE", 8.0, False
     )
     # GQA with qo_len < kv_len (typical prefill)
     single_prefill_with_kv_cache_example(
-        15, 127, 32, 4, 64, "NHD", "NONE", 8.0, False, False
+        15, 127, 32, 4, 64, False, "NHD", "NONE", 8.0, False
     )
     # GQA with LSE enabled
     single_prefill_with_kv_cache_example(
-        15, 127, 8, 4, 64, "NHD", "NONE", 0.0, False, True
+        15, 127, 8, 4, 64, False, "NHD", "NONE", 0.0, True
     )
     # GQA with soft cap and LSE enabled
     single_prefill_with_kv_cache_example(
-        15, 127, 8, 4, 64, "NHD", "NONE", 8.0, False, True
+        15, 127, 8, 4, 64, False, "NHD", "NONE", 8.0, True
     )
