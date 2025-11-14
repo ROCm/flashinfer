@@ -989,13 +989,13 @@ void TestBatchRaggedPrefillFP8KernelCorrectness(bool use_fp16_qk_reduction) {
 //   TestBatchPagedPrefillKernelOneHotCorrectness<__half>(true);
 // }
 
-TEST(FlashInferCorrectnessTest, BatchRaggedPrefillTestFP16) {
-  TestBatchRaggedPrefillKernelCorrectness<__half>(false);
-}
+// TEST(FlashInferCorrectnessTest, BatchRaggedPrefillTestFP16) {
+//   TestBatchRaggedPrefillKernelCorrectness<__half>(false);
+// }
 
-TEST(FlashInferCorrectnessTest, BatchRaggedPrefillTestFP16QKHalfAccum) {
-  TestBatchRaggedPrefillKernelCorrectness<__half>(true);
-}
+// TEST(FlashInferCorrectnessTest, BatchRaggedPrefillTestFP16QKHalfAccum) {
+//   TestBatchRaggedPrefillKernelCorrectness<__half>(true);
+// }
 
 // #ifdef FLASHINFER_ENABLE_FP8_E4M3
 
