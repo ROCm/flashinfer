@@ -2129,7 +2129,7 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
 
     const uint32_t qo_packed_idx_base =
         (qo_tile_idx * NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) * NUM_MMA_Q * 16;
-    smem_t<SWIZZLE_MODE_Q> qo_smem(smem_storage.q_smem);
+    smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> qo_smem(smem_storage.q_smem);
     const uint32_t o_stride_n = num_qo_heads * HEAD_DIM_VO, o_stride_h = HEAD_DIM_VO;
 
     DTypeQ* q_ptr_base =
@@ -2188,7 +2188,8 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
              : chunk_size) /
         CTA_TILE_KV;
 
-    smem_t<SWIZZLE_MODE_KV> k_smem(smem_storage.k_smem), v_smem(smem_storage.v_smem);
+    smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> k_smem(smem_storage.k_smem);
+    smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> v_smem(smem_storage.v_smem);
 #if defined(PLATFORM_HIP_DEVICE)
     uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
         get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
@@ -2229,6 +2230,7 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
     memory::commit_group();
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(v_smem, &v_smem_offset_w, &v_ptr,
                                                             v_stride_n, 0, chunk_size, tid);
+
     memory::commit_group();
 
 #pragma unroll 1
