@@ -5,9 +5,40 @@
 import math
 from typing import Optional, Tuple
 
+import pytest
 import torch
+from jit_utils import jit_prefill_attention_func_args
 
 import flashinfer
+
+
+@pytest.fixture(autouse=True, scope="module")
+def warmup_jit():
+    """
+    Warmup JIT modules for single prefill kernels.
+    - Pre-compiles all necessary kernel variants
+    - Prevents compilation during tests for faster execution
+    - Aborts test session if warmup fails to avoid unnecessary test failures
+    """
+    if flashinfer.jit.has_prebuilt_ops:
+        yield
+    else:
+        try:
+            flashinfer.jit.parallel_load_modules(
+                jit_prefill_attention_func_args(
+                    [torch.float16],  # q_dtypes
+                    [torch.float16],  # kv_dtypes
+                    [64, 128, 256],  # head_dims
+                    [0],  # pos_encoding_modes (NONE)
+                    [False],  # use_sliding_windows
+                    [False, True],  # use_logits_soft_caps
+                )
+            )
+        except Exception as e:
+            # abort the test session if warmup fails
+            pytest.exit(str(e))
+        finally:
+            yield
 
 
 def naive_attention(
@@ -88,7 +119,17 @@ def naive_attention(
     return out, lse
 
 
-def single_prefill_with_kv_cache_example(
+@pytest.mark.parametrize("qo_len", [37, 17, 127, 577])
+@pytest.mark.parametrize("kv_len", [54, 97, 512, 2048])
+@pytest.mark.parametrize("num_qo_heads", [4, 32])
+@pytest.mark.parametrize("num_kv_heads", [4])
+@pytest.mark.parametrize("head_dim", [64])
+@pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
+@pytest.mark.parametrize("causal", [False])
+@pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
+@pytest.mark.parametrize("logits_soft_cap", [0.0, 8.0])
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_single_prefill_with_kv_cache(
     qo_len: int,
     kv_len: int,
     num_qo_heads: int,
@@ -99,53 +140,42 @@ def single_prefill_with_kv_cache_example(
     logits_soft_cap: float,
     causal: bool,
     return_lse: bool,
-    q_dtype: Optional[torch.dtype] = torch.float16,
-    kv_dtype: Optional[torch.dtype] = torch.float16,
 ):
     """
-    Run single_prefill_with_kv_cache and verify the output against a naive PyTorch reference implementation.
-
-    This function creates random Q, K, V tensors and compares the output
-    of flashinfer's single_prefill_with_kv_cache against a naive PyTorch reference implementation.
+    Comprehensive test for single_prefill_with_kv_cache function.
+    Tests various sequence lengths, head configurations, and options.
     """
-    print("\nRunning configuration:")
-    print(f"  qo_len={qo_len}")
-    print(f"  kv_len={kv_len}")
-    print(f"  num_qo_heads={num_qo_heads}")
-    print(f"  num_kv_heads={num_kv_heads}")
-    print(f"  head_dim={head_dim}")
-    print(f"  kv_layout={kv_layout}")
-    print(f"  pos_encoding_mode={pos_encoding_mode}")
-    print(f"  logits_soft_cap={logits_soft_cap}")
-    print(f"  causal={causal}")
-    print(f"  return_lse={return_lse}")
-    print(f"  q_dtype={q_dtype}")
-    print(f"  kv_dtype={kv_dtype}")
-
     # The current validation only supports simple cases without RoPE/ALiBi
     if pos_encoding_mode != "NONE":
-        print(
-            "Only pos_encoding_mode == NONE is supported for this validation. Skipping..."
-        )
-        return
+        pytest.skip("Only pos_encoding_mode == NONE is supported for this validation")
 
-    logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
+    logits_soft_cap = logits_soft_cap if logits_soft_cap > 0.0 else None
 
     # Create query tensor: [qo_len, num_qo_heads, head_dim]
-    q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=q_dtype)
+    q = torch.randn(
+        qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
+    )
 
     # Create key and value tensors based on layout
     if kv_layout == "HND":
         # [num_kv_heads, kv_len, head_dim]
-        k = torch.randn(num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=kv_dtype)
-        v = torch.randn(num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=kv_dtype)
+        k = torch.randn(
+            num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=torch.float16
+        )
+        v = torch.randn(
+            num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=torch.float16
+        )
         # Convert to NHD for reference implementation
-        k_ref = k.transpose(0, 1).contiguous()  # [kv_len, num_kv_heads, head_dim]
-        v_ref = v.transpose(0, 1).contiguous()  # [kv_len, num_kv_heads, head_dim]
+        k_ref = k.transpose(0, 1).contiguous()
+        v_ref = v.transpose(0, 1).contiguous()
     else:  # NHD layout
         # [kv_len, num_kv_heads, head_dim]
-        k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=kv_dtype)
-        v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=kv_dtype)
+        k = torch.randn(
+            kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16
+        )
+        v = torch.randn(
+            kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16
+        )
         k_ref = k
         v_ref = v
 
@@ -159,32 +189,8 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend="auto",
         )
-        print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
-        # Compute reference in FP32 for better accuracy
-        o_ref, lse_ref = naive_attention(
-            q.float(),
-            k_ref.float(),
-            v_ref.float(),
-            causal=causal,
-            return_lse=True,
-            logits_soft_cap=logits_soft_cap,
-        )
-        # Convert reference back to match FlashInfer dtype
-        o_ref = o_ref.to(o.dtype)
-        lse_ref = lse_ref.to(lse.dtype)
-        print(f"  Reference output shape: {o_ref.shape}, LSE shape: {lse_ref.shape}")
-        try:
-            torch.testing.assert_close(o, o_ref, rtol=1e-3, atol=1e-3)
-            torch.testing.assert_close(lse, lse_ref, rtol=1e-3, atol=1e-3)
-            print("  ✓ PASS: Output and LSE match reference implementation")
-        except AssertionError:
-            print("  ✗ FAIL: Output or LSE does not match reference implementation")
-            max_diff_o = (o - o_ref).abs().max().item()
-            max_diff_lse = (lse - lse_ref).abs().max().item()
-            print(f"    Max absolute difference for output: {max_diff_o}")
-            print(f"    Max absolute difference for LSE: {max_diff_lse}")
+        assert lse.shape == (qo_len, num_qo_heads)
     else:
         o = flashinfer.single_prefill_with_kv_cache(
             q,
@@ -194,62 +200,59 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend="auto",
-        )
-        print(f"  FlashInfer output shape: {o.shape}")
-
-        # Compute reference in FP32 for better accuracy
-        o_ref, _ = naive_attention(
-            q.float(),
-            k_ref.float(),
-            v_ref.float(),
-            causal=causal,
             return_lse=False,
-            logits_soft_cap=logits_soft_cap,
         )
-        # Convert reference back to match FlashInfer dtype
-        o_ref = o_ref.to(o.dtype)
-        print(f"  Reference output shape: {o_ref.shape}")
 
-        try:
-            torch.testing.assert_close(o, o_ref, rtol=1e-3, atol=1e-3)
-            print("  ✓ PASS: Output matches reference implementation")
-        except AssertionError:
-            print("  ✗ FAIL: Output does not match reference implementation")
-            max_diff_o = (o - o_ref).abs().max().item()
-            print(f"    Max absolute difference for output: {max_diff_o}")
+    assert o.shape == (qo_len, num_qo_heads, head_dim)
+
+    # Compute reference in FP32 for better accuracy
+    o_ref, lse_ref = naive_attention(
+        q.float(),
+        k_ref.float(),
+        v_ref.float(),
+        causal=causal,
+        return_lse=return_lse,
+        logits_soft_cap=logits_soft_cap,
+    )
+    torch.testing.assert_close(o, o_ref.to(o.dtype), rtol=1e-3, atol=1e-3)
+    if return_lse:
+        torch.testing.assert_close(
+            lse, lse_ref.to(lse.dtype), rtol=1e-3, atol=1e-3
+        )  # lse is in fp32
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("FlashInfer Single Prefill Example")
-    print("=" * 60)
-
     # Self-attention with logits soft cap
-    single_prefill_with_kv_cache_example(
+    test_single_prefill_with_kv_cache(
         128, 128, 1, 1, 64, "NHD", "NONE", 8.0, False, False
     )
     # Self-attention without logits soft cap
-    single_prefill_with_kv_cache_example(
+    test_single_prefill_with_kv_cache(
         128, 128, 1, 1, 64, "NHD", "NONE", 0.0, False, False
     )
     # Multi-head attention (MHA)
-    single_prefill_with_kv_cache_example(
+    test_single_prefill_with_kv_cache(
         128, 128, 4, 4, 64, "NHD", "NONE", 8.0, False, False
     )
     # Grouped query attention (GQA)
-    single_prefill_with_kv_cache_example(
+    test_single_prefill_with_kv_cache(
         128, 128, 8, 4, 64, "NHD", "NONE", 8.0, False, False
     )
     # GQA with qo_len < kv_len (typical prefill)
-    single_prefill_with_kv_cache_example(
+    test_single_prefill_with_kv_cache(
         15, 127, 32, 4, 64, "NHD", "NONE", 8.0, False, False
     )
     # GQA with LSE enabled
-    single_prefill_with_kv_cache_example(
+    test_single_prefill_with_kv_cache(
         15, 127, 8, 4, 64, "NHD", "NONE", 0.0, False, True
     )
     # GQA with soft cap and LSE enabled
-    single_prefill_with_kv_cache_example(
+    test_single_prefill_with_kv_cache(
         15, 127, 8, 4, 64, "NHD", "NONE", 8.0, False, True
     )
+    # GQA with HND layout
+    test_single_prefill_with_kv_cache(
+        15, 127, 32, 4, 64, "HND", "NONE", 8.0, False, True
+    )
+
+    print("All tests passed!")
