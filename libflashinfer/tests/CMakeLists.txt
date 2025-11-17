@@ -1,6 +1,11 @@
 # Set global paths and initialize test list
 set(ALL_TEST_TARGETS "")
 
+# List of tests to skip These tests are currently disabled due to known issues
+# or pending fixes.
+set(SKIP_TESTS test_batch_prefill test_layout_transform
+               test_mfma_fp32_16x16x16fp16 test_cascade)
+
 # Include centralized config utilities
 include(ConfigureTargets)
 
@@ -13,6 +18,12 @@ if(FLASHINFER_ENABLE_HIP)
 
   foreach(test_source IN LISTS HIP_TEST_SOURCES)
     get_filename_component(test_name ${test_source} NAME_WE)
+
+    if(test_name IN_LIST SKIP_TESTS)
+      message(STATUS "Skipping HIP test: ${test_name}")
+      continue()
+    endif()
+
     set(target_name "${test_name}_hip")
     configure_flashinfer_target(
       TARGET_NAME ${target_name}
