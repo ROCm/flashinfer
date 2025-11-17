@@ -1,10 +1,17 @@
 # Set global paths and initialize test list
 set(ALL_TEST_TARGETS "")
 
-# List of tests to skip These tests are currently disabled due to known issues
+# List of tests to skip. These tests are currently disabled due to known issues
 # or pending fixes.
-set(SKIP_TESTS test_batch_prefill test_layout_transform
-               test_mfma_fp32_16x16x16fp16 test_cascade)
+set(SKIP_TESTS
+    test_batch_prefill # This is being skipped because
+                       # BatchPrefillWithPagedKVCache is not yet implemented for
+                       # HIP.
+    test_layout_transform # This test is being skipped due to incorrect test
+                          # cases
+    test_mfma_fp32_16x16x16fp16 # This test will be fixed in later update. Look
+                                # at PR #52
+    test_cascade)
 
 # Include centralized config utilities
 include(ConfigureTargets)
