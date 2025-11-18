@@ -737,7 +737,7 @@ def gen_batch_prefill_module(
     use_sliding_window: bool,
     use_logits_soft_cap: bool,
     use_fp16_qk_reduction: bool,
-):
+) -> JitSpec:
     uri = get_batch_prefill_uri(
         backend,
         dtype_q,
@@ -1302,7 +1302,11 @@ def gen_customize_batch_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            "batch_prefill_hip.cu" if check_hip_availability() else "batch_prefill.cu",
+            (
+                "batch_prefill_hip.cu"
+                if check_hip_availability()
+                else "batch_prefill.cu"
+            ),
             (
                 "batch_prefill_jit_pybind_hip.cu"
                 if check_hip_availability()
@@ -1323,7 +1327,7 @@ def gen_customize_batch_prefill_module(
             else gen_directory / "batch_prefill_config.inc"
         )
         write_if_different(generated_config_path, generated_inc_str)
-        return build_jit_specs(
+        return gen_jit_spec(
             uri,
             source_paths,
         )
