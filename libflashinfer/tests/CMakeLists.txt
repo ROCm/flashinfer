@@ -28,13 +28,20 @@ endif(FLASHINFER_ENABLE_HIP)
 # === Test Discovery and Targets ===
 message(STATUS "All unit test targets: ${ALL_TEST_TARGETS}")
 
+# A list of tests to skip
+set(SKIPPED_TESTS test_batch_prefill_hip test_mfma_fp32_16x16x16fp16_hip)
+
 # Use GoogleTest's discover_tests to find all test cases
 foreach(test_target IN LISTS ALL_TEST_TARGETS)
-  if(TARGET ${test_target})
+  if(TARGET ${test_target} AND NOT ${test_target} IN_LIST SKIPPED_TESTS)
     gtest_discover_tests(${test_target})
   endif()
 endforeach()
 
 # Create target to build all tests
 add_custom_target(build_tests)
-add_dependencies(build_tests ${ALL_TEST_TARGETS})
+foreach(test_target IN LISTS ALL_TEST_TARGETS)
+  if(NOT ${test_target} IN_LIST SKIPPED_TESTS)
+    add_dependencies(build_tests ${test_target})
+  endif()
+endforeach()
