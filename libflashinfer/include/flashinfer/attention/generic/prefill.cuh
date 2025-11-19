@@ -1920,6 +1920,7 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
   const uint32_t group_size = num_qo_heads / num_kv_heads;
   constexpr uint32_t NUM_MMA_D_QK = HEAD_DIM_QK / 16;
   constexpr uint32_t NUM_MMA_D_VO = HEAD_DIM_VO / 16;
+  constexpr uint32_t ELEMS_PER_FRAGMENT = 16 * 16 / WARP_SIZE;
   int64_t packed_qo_len = qo_len * group_size;
   uint32_t cta_tile_q = FA2DetermineCtaTileQ(packed_qo_len, HEAD_DIM_VO);
 
@@ -1934,20 +1935,12 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
 
     int dev_id = 0;
     FI_GPU_CALL(gpuGetDevice(&dev_id));
-    int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
-    // we expect each sm execute two threadblocks
-    const int num_ctas_per_sm =
-        max_smem_per_sm >= 2 * (CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ) +
-                                (HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV))
-            ? 2
-            : 1;
-    const int max_smem_per_threadblock = max_smem_per_sm / num_ctas_per_sm;
-
+    const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
     const uint32_t max_num_mma_kv_reg =
         (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
          !USE_FP16_QK_REDUCTION)
             ? 2
-            : (8 / NUM_MMA_Q);
+            : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
     const uint32_t max_num_mma_kv_smem =
         (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
         ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));

@@ -146,3 +146,20 @@ inline int getMaxSharedMemPerMultiprocessor(int dev_id) {
 
   return max_smem_per_sm;
 }
+
+/// Returns the maximum shared memory per thread block
+///
+/// @param dev_id Device ID
+/// @return Maximum shared memory per block in bytes
+inline int getMaxSharedMemPerBlock(int dev_id) {
+#if defined(PLATFORM_CUDA_DEVICE)
+  cudaDeviceProp deviceProp;
+  FI_GPU_CALL(cudaGetDeviceProperties(&deviceProp, dev_id));
+#elif defined(PLATFORM_HIP_DEVICE)
+  // CDNA3/MI300X: sharedMemPerBlock = 65,536 bytes (64 KB) - the actual per-block limit
+  //               sharedMemPerMultiprocessor = 19,922,944 bytes (~19 MB) - total LDS per CU
+  hipDeviceProp_t deviceProp;
+  FI_GPU_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
+#endif
+  return deviceProp.sharedMemPerBlock;
+}
