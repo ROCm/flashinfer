@@ -4,10 +4,10 @@
 
 import pytest
 import torch
+from attention_reference import naive_attention
 from jit_utils import jit_prefill_attention_func_args
 
 import flashinfer
-from tests.attention_reference import naive_attention
 
 
 @pytest.fixture(autouse=True, scope="module")
