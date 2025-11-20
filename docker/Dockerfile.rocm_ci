@@ -6,7 +6,7 @@ ARG UBUNTU_VERSION=24.04
 ARG PY_VERSION=3.12
 ARG TORCH_VERSION=2.7.1
 
-FROM rocm/pytorch:rocm${ROCM_VERSION}_ubuntu${UBUNTU_VERSION}_py${PY_VERSION}_pytorch_release_${TORCH_VERSION} AS flashinfer_base
+FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}-complete AS flashinfer_base
 
 # Consume the build arguments in the build stage
 ARG ROCM_VERSION
@@ -17,7 +17,6 @@ ARG GFX_ARCH=gfx942
 
 ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_VERSION}
 
-# RUN apt-get install cmake
 WORKDIR /root/
 
 COPY . /root/flashinfer/
