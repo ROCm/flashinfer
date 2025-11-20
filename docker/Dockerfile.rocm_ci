@@ -20,46 +20,14 @@ ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_V
 # RUN apt-get install cmake
 WORKDIR /root/
 
-COPY . /root/flashinfer/
-
-RUN curl -L micro.mamba.pm/install.sh | bash
-
-RUN ~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
-~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest
-
-RUN ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/
-
-RUN /bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
+COPY flashinfer.tar /root/
+RUN cd /root/ && mkdir flashinfer && tar -xvf flashinfer.tar -C flashinfer/ && \
+curl -L micro.mamba.pm/install.sh | bash && \
+~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
+~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest && \
+~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
+/bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
     micromamba activate ${MAMBA_ENV_NAME} && \
     cd /root/flashinfer/ && \
-    FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} FLASHINFER_AOT_TORCH_EXTS=ON python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v 2>&1 | tee build_log_aot_whl.log && \
+    FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v 2>&1 | tee build_log_aot_whl.log && \
     pip install dist/flashinfer-*.whl"
-
-RUN echo 'eval "$(~/.local/bin/micromamba shell hook --shell bash)"' >> ~/.bashrc && \
-    echo "micromamba activate ${MAMBA_ENV_NAME}" >> ~/.bashrc
-
-# ---------------------------------------------
-# Stage 2: Build Test Dependencies - For CI
-# ---------------------------------------------
-FROM rocm/pytorch:rocm${ROCM_VERSION}_ubuntu${UBUNTU_VERSION}_py${PY_VERSION}_pytorch_release_${TORCH_VERSION} AS flashinfer_tester
-
-ARG GFX_ARCH=gfx942
-ENV HIP_ARCHITECTURES=${GFX_ARCH}
-ENV GPU_TARGETS=${GFX_ARCH}
-ENV ROCM_ARCH=${GFX_ARCH}
-ENV HCC_AMDGPU_TARGET=${GFX_ARCH}
-ENV AMDGPU_TARGETS=${GFX_ARCH}
-
-WORKDIR /root/
-
-COPY . /root/flashinfer/
-
-RUN cd /root/ && \
-    wget https://download.pytorch.org/libtorch/rocm6.4/libtorch-shared-with-deps-2.8.0%2Brocm6.4.zip && \
-    unzip libtorch-shared-with-deps-2.8.0+rocm6.4.zip && \
-    rm libtorch-shared-with-deps-2.8.0+rocm6.4.zip
-
-RUN cd /root/flashinfer/libflashinfer/tests/hip/ && \
-    mkdir -p build && cd build && \
-    cmake -DCMAKE_PREFIX_PATH=/root/libtorch/ -DCMAKE_CXX_COMPILER:PATH=/opt/rocm/bin/amdclang++ -DFLASHINFER_INCLUDE_DIRS=/root/flashinfer/libflashinfer/include -DCMAKE_HIP_ARCHITECTURES=${GFX_ARCH} -DHIP_ARCHITECTURES=${GFX_ARCH} -DGPU_TARGETS=${GFX_ARCH} -DAMDGPU_TARGETS=${GFX_ARCH} .. && \
-    make
