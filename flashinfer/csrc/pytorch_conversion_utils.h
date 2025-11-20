@@ -23,7 +23,7 @@ inline at::Tensor vec_to_tensor(const std::vector<int64_t>& vec) {
 
 inline std::vector<int64_t> tensor_to_vec(const at::Tensor& tensor) {
   const size_t size = tensor.numel();
-  const int64_t* first = tensor.const_data_ptr<int64_t>();
+  const int64_t* first = tensor.data_ptr<int64_t>();
   const int64_t* last = first + size;
   return std::vector(first, last);
 }
