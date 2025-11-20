@@ -168,8 +168,40 @@ ignore = [
     "B020",
     # Return te negated condition directly
     "SIM103",
-    # Function definition does not bind loop variable
-    "B023",
 ]
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]
+
+
+[tool.pytest.ini_options]
+# Ignore deprecation warnings
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+# Verbose output
+addopts = "-v"
+# HIP-specific test files - running 'pytest' with no args runs only these
+testpaths = [
+    "tests/test_batch_decode_kernels_hip_fp8.py",
+    "tests/test_batch_decode_kernels_hip.py",
+    "tests/test_batch_decode_vllm.py",
+    "tests/test_logits_cap_hip.py",
+    "tests/test_non_contiguous_decode_hip.py",
+    "tests/test_norm_hip.py",
+    "tests/test_page.py",
+    "tests/test_rope.py",
+    "tests/test_single_prefill_kernels_hip.py",
+    "tests/test_sliding_window_hip.py",
+]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["flashinfer"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+precision = 2
+
+[tool.coverage.html]
+directory = "htmlcov"
