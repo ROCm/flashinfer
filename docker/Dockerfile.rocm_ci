@@ -13,7 +13,7 @@ ARG ROCM_VERSION
 ARG PY_VERSION
 ARG TORCH_VERSION
 ARG GFX_ARCH=gfx942
-ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_VERSION}
+ARG MAMBA_ENV_NAME=flashinfer-rocm-env
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
