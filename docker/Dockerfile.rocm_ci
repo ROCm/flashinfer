@@ -22,8 +22,7 @@ WORKDIR /root/
 
 COPY . /root/flashinfer/
 
-RUN curl -L micro.mamba.pm/install.sh | bash
-curl -L micro.mamba.pm/install.sh | bash && \
+RUN curl -L micro.mamba.pm/install.sh | bash && \
 ~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
 ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest && \
 ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
