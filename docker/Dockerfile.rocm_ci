@@ -20,13 +20,16 @@ ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_V
 # RUN apt-get install cmake
 WORKDIR /root/
 
-COPY flashinfer.tar /root/
-RUN cd /root/ && mkdir flashinfer && tar -xvf flashinfer.tar -C flashinfer/ && \
-curl -L micro.mamba.pm/install.sh | bash && \
-~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
-~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest && \
-~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
-/bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
+COPY . /root/flashinfer/
+
+RUN curl -L micro.mamba.pm/install.sh | bash
+
+RUN ~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
+~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest
+
+RUN ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/
+
+RUN /bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
     micromamba activate ${MAMBA_ENV_NAME} && \
     cd /root/flashinfer/ && \
     FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v 2>&1 | tee build_log_aot_whl.log && \
