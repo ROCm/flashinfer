@@ -6,28 +6,31 @@ ARG UBUNTU_VERSION=24.04
 ARG PY_VERSION=3.12
 ARG TORCH_VERSION=2.7.1
 
-FROM rocm/pytorch:rocm${ROCM_VERSION}_ubuntu${UBUNTU_VERSION}_py${PY_VERSION}_pytorch_release_${TORCH_VERSION} AS flashinfer_base
+FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}-complete AS flashinfer_base
 
 # Consume the build arguments in the build stage
 ARG ROCM_VERSION
 ARG PY_VERSION
 ARG TORCH_VERSION
-
 ARG GFX_ARCH=gfx942
-
 ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_VERSION}
 
-# RUN apt-get install cmake
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    libstdc++-14-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /root/
 
 COPY . /root/flashinfer/
 
 RUN curl -L micro.mamba.pm/install.sh | bash && \
-~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
-~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest && \
-~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
-/bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
+    ~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
+    ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest && \
+    ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/
+
+RUN /bin/bash -c "eval \"\$(/root/.local/bin/micromamba shell hook --shell bash)\" && \
     micromamba activate ${MAMBA_ENV_NAME} && \
     cd /root/flashinfer/ && \
-    FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v 2>&1 | tee build_log_aot_whl.log && \
+    FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v && \
     pip install dist/flashinfer-*.whl"
