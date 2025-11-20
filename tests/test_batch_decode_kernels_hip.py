@@ -32,7 +32,7 @@ def warmup_jit():
                     [torch.float16],  # q_dtypes
                     [
                         torch.float16,
-                        torch.float8_e4m3fn,
+                        torch.float8_e4m3fnuz,
                     ],  # kv_dtypes
                     [128, 256],  # head_dims
                     [0, 1],  # pos_encoding_modes

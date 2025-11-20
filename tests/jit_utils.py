@@ -189,12 +189,13 @@ def jit_prefill_attention_func_args(
             )
         )
 
-    load_module_func_args.append(
-        (
-            flashinfer.quantization.get_quantization_module,
-            [],
-        )  # required for attention with custom mask
-    )
+    if is_sm90a_supported(torch.device("cuda")):
+        load_module_func_args.append(
+            (
+                flashinfer.quantization.get_quantization_module,
+                [],
+            )  # required for attention with custom mask
+        )
 
     load_module_func_args.append(
         (
