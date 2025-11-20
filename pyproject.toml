@@ -193,3 +193,15 @@ testpaths = [
 ]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["flashinfer"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+precision = 2
+
+[tool.coverage.html]
+directory = "htmlcov"
