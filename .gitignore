@@ -192,3 +192,4 @@ cython_debug/
 *.csv
 *.pkl
 .cline_storage/
+.nfs*
