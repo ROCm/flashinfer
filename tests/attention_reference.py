@@ -22,8 +22,8 @@ def naive_attention(
 
     Args:
         q: query tensor, shape: [qo_len, num_qo_heads, head_dim]
-        k: key tensor, shape: [kv_len, num_kv_heads, head_dim]
-        v: value tensor, shape: [kv_len, num_kv_heads, head_dim]
+        k: key tensor, shape: [kv_len, num_kv_heads, head_dim], NHD layout
+        v: value tensor, shape: [kv_len, num_kv_heads, head_dim], NHD layout
     Optional Args:
         causal: whether to apply causal masking
         pos_encoding_mode: the position encoding mode to use
