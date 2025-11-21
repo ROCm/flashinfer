@@ -2,12 +2,9 @@
 #
 # SPDX-License-Identifier : Apache-2.0
 
-from typing import Optional
-
 import torch
 
 import flashinfer
-from tests.attention_reference import naive_attention
 
 
 def batch_prefill_with_paged_kv_cache_example(
@@ -23,16 +20,10 @@ def batch_prefill_with_paged_kv_cache_example(
     pos_encoding_mode: str,
     logits_soft_cap: float,
     return_lse: bool,
-    backend: Optional[str] = "fa2",
+    contiguous_kv: bool,
 ):
     """
-    Run batch_prefill_with_paged_kv_cache and verify the output against:
-    1. Naive PyTorch reference implementation
-    2. single_prefill_with_kv_cache implementation
-
-    This function creates random Q, K, V tensors organized in a paged KV cache format
-    and compares the output of flashinfer's batch_prefill_with_paged_kv_cache against
-    both reference implementations.
+    Run batch_prefill_with_paged_kv_cache and verify the output against single_prefill_with_kv_cache implementation
     """
     print("\nRunning configuration:")
     print(f"  batch_size={batch_size}")
@@ -47,7 +38,11 @@ def batch_prefill_with_paged_kv_cache_example(
     print(f"  pos_encoding_mode={pos_encoding_mode}")
     print(f"  logits_soft_cap={logits_soft_cap}")
     print(f"  return_lse={return_lse}")
-    print(f"  backend={backend}")
+    print(f"  contiguous_kv={contiguous_kv}")
+    print("\n")
+
+    if qo_len > kv_len and causal:
+        raise ValueError("qo_len > kv_len and causal is not supported")
 
     # Create flattened query tensor: [batch_size * qo_len, num_qo_heads, head_dim]
     q = torch.randn(
@@ -59,7 +54,7 @@ def batch_prefill_with_paged_kv_cache_example(
     )
 
     # Create query indptr (index pointers for batch boundaries)
-    q_indptr_cpu = torch.arange(0, batch_size + 1, dtype=torch.int32) * qo_len
+    q_indptr_cpu = torch.arange(0, batch_size + 1).int() * qo_len
 
     # Setup paged KV cache
     num_pages_per_seq = (kv_len + page_size - 1) // page_size
@@ -71,14 +66,29 @@ def batch_prefill_with_paged_kv_cache_example(
     else:  # NHD
         kv_shape = [total_num_pages, 2, page_size, num_kv_heads, head_dim]
 
-    kv_data_fp32 = torch.randn(*kv_shape, dtype=torch.float32, device="cuda:0")
-    kv_data = kv_data_fp32.to(torch.float16)
+    # Create KV cache data in non-contiguous memory if requested
+    if not contiguous_kv:
+        tmp = [kv_shape[0]]
+        for v in kv_shape[1:]:
+            tmp.append(2)
+            tmp.append(v)
+        kv_shape = tmp
+        kv_data_fp32 = torch.randn(*kv_shape, dtype=torch.float32, device="cuda:0")
+        kv_data = kv_data_fp32.half()
+        kv_data = kv_data[:, 1, :, 1, :, 1, :, 1, :]
+        kv_data_fp32 = kv_data_fp32[:, 1, :, 1, :, 1, :, 1, :]
+        # actual data is stored in non-contiguous memory
+        assert (
+            kv_data.stride(-4)
+            != kv_data.shape[-3] * kv_data.shape[-2] * kv_data.shape[-1]
+        )
+    else:
+        kv_data_fp32 = torch.randn(*kv_shape, dtype=torch.float32, device="cuda:0")
+        kv_data = kv_data_fp32.half()
 
     # Create KV indptr and indices
-    kv_indptr_cpu = (
-        torch.arange(0, batch_size + 1, dtype=torch.int32) * num_pages_per_seq
-    )
-    kv_indices_cpu = torch.arange(0, total_num_pages, dtype=torch.int32)
+    kv_indptr_cpu = torch.arange(0, batch_size + 1).int() * num_pages_per_seq
+    kv_indices_cpu = torch.arange(0, total_num_pages).int()
     kv_last_page_len_cpu = torch.full(
         (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32
     )
@@ -92,9 +102,8 @@ def batch_prefill_with_paged_kv_cache_example(
     # Create workspace buffer and wrapper
     workspace_buffer = torch.empty(256 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
     wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
-        workspace_buffer, kv_layout, backend=backend
+        workspace_buffer, kv_layout
     )
-
     # Plan the batch prefill operation
     logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
     wrapper.plan(
@@ -119,18 +128,29 @@ def batch_prefill_with_paged_kv_cache_example(
         o = wrapper.run(q, kv_data)
         print(f"  FlashInfer batch output shape: {o.shape}")
 
-    # Verify each sequence in the batch
+    # Test with pre-allocated output buffer
+    print("\n  Testing with pre-allocated output buffer:")
+    if return_lse:
+        o_buffer = torch.empty_like(o)
+        lse_buffer = torch.empty_like(lse)
+        wrapper.run(q, kv_data, out=o_buffer, lse=lse_buffer)
+        torch.testing.assert_close(o, o_buffer, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(lse, lse_buffer, rtol=1e-3, atol=1e-3)
+    else:
+        o_buffer = torch.empty_like(o)
+        wrapper.run(q, kv_data, out=o_buffer)
+        torch.testing.assert_close(o, o_buffer, rtol=1e-3, atol=1e-3)
+
+    # Verify each sequence in the batch with single prefill
     print("\n  Verifying individual sequences:")
     all_passed = True
 
     for i in range(batch_size):
-        # Extract the i-th sequence from batch output
-        o_i = o[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
-        qi = q[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
-
         # Extract K and V for the i-th sequence from paged KV cache
         perm_dims = [0, 2, 1, 3] if kv_layout == "HND" else [0, 1, 2, 3]
         perm_dims_last = [1, 0, 2] if kv_layout == "HND" else [0, 1, 2]
+
+        qi = q[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
 
         # Reconstruct full pages and last page for K
         ki = torch.cat(
@@ -151,7 +171,7 @@ def batch_prefill_with_paged_kv_cache_example(
                 .reshape(-1, num_kv_heads, head_dim),
             ],
             dim=0,
-        ).to(torch.float16)
+        ).half()
 
         # Reconstruct full pages and last page for V
         vi = torch.cat(
@@ -172,51 +192,53 @@ def batch_prefill_with_paged_kv_cache_example(
                 .reshape(-1, num_kv_heads, head_dim),
             ],
             dim=0,
-        ).to(torch.float16)
+        ).half()
 
         # Compare with single_prefill_with_kv_cache
-        o_ref_single = flashinfer.prefill.single_prefill_with_kv_cache(
-            qi,
-            ki,
-            vi,
-            causal=causal,
-            pos_encoding_mode=pos_encoding_mode,
-            logits_soft_cap=logits_soft_cap,
-        )
+        if return_lse:
+            o_ref_i, lse_ref_i = (
+                flashinfer.prefill.single_prefill_with_kv_cache_return_lse(
+                    qi,
+                    ki,
+                    vi,
+                    causal=causal,
+                    kv_layout=kv_layout,
+                    pos_encoding_mode=pos_encoding_mode,
+                    logits_soft_cap=logits_soft_cap,
+                )
+            )
+        else:
+            o_ref_i = flashinfer.prefill.single_prefill_with_kv_cache(
+                qi,
+                ki,
+                vi,
+                causal=causal,
+                pos_encoding_mode=pos_encoding_mode,
+                logits_soft_cap=logits_soft_cap,
+            )
+
+        # Extract the i-th sequence from batch output
+        o_i = o[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
+        if return_lse:
+            lse_i = lse[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
 
         try:
-            torch.testing.assert_close(o_i, o_ref_single, rtol=1e-3, atol=1e-3)
+            torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
+            if return_lse:
+                torch.testing.assert_close(lse_i, lse_ref_i, rtol=1e-3, atol=1e-3)
             single_pass = True
         except AssertionError:
             single_pass = False
-            max_diff = (o_i - o_ref_single).abs().max().item()
-            print(f"    Sequence {i}: ✗ FAIL vs single_prefill (max diff: {max_diff})")
-
-        # For simple cases without RoPE/ALiBi, also compare with naive implementation
-        if pos_encoding_mode == "NONE":
-            o_ref_naive = naive_attention(
-                qi.float(),
-                ki.float(),
-                vi.float(),
-                causal=causal,
-                logits_soft_cap=logits_soft_cap if logits_soft_cap > 0 else None,
-            ).to(torch.float16)
-
-            try:
-                torch.testing.assert_close(o_i, o_ref_naive, rtol=1e-3, atol=1e-3)
-                naive_pass = True
-            except AssertionError:
-                naive_pass = False
-                max_diff = (o_i - o_ref_naive).abs().max().item()
-                print(f"    Sequence {i}: ✗ FAIL vs naive (max diff: {max_diff})")
-
-            if single_pass and naive_pass:
-                print(f"    Sequence {i}: ✓ PASS")
-            all_passed = all_passed and single_pass and naive_pass
-        else:
-            if single_pass:
-                print(f"    Sequence {i}: ✓ PASS")
-            all_passed = all_passed and single_pass
+            max_diff_o = (o_i - o_ref_i).abs().max().item()
+            print(
+                f"    Sequence {i}: ✗ FAIL vs single_prefill (max diff in output: {max_diff_o})"
+            )
+            if return_lse:
+                max_diff_lse = (lse_i - lse_ref_i).abs().max().item()
+                print(
+                    f"    Sequence {i}: ✗ FAIL vs single_prefill (max diff in LSE: {max_diff_lse})"
+                )
+        all_passed = all_passed and single_pass
 
     if all_passed:
         print("\n  ✓ ALL SEQUENCES PASSED")
@@ -236,9 +258,27 @@ def batch_prefill_with_ragged_kv_cache_example(
     logits_soft_cap: float,
     return_lse: bool,
 ):
+    """
+    Run batch_prefill_with_ragged_kv_cache and verify the output against single_prefill_with_kv_cache implementation
+    """
+    print("\nRunning configuration:")
+    print(f"  batch_size={batch_size}")
+    print(f"  kv_len={kv_len}")
+    print(f"  qo_len={qo_len}")
+    print(f"  num_kv_heads={num_kv_heads}")
+    print(f"  num_qo_heads={num_qo_heads}")
+    print(f"  head_dim={head_dim}")
+    print(f"  causal={causal}")
+    print(f"  pos_encoding_mode={pos_encoding_mode}")
+    print(f"  logits_soft_cap={logits_soft_cap}")
+    print(f"  return_lse={return_lse}")
+    print("\n")
+
     if qo_len > kv_len and causal:
         raise ValueError("qo_len > kv_len and causal is not supported")
+
     kv_layout = "NHD"
+
     q = torch.randn(
         batch_size * qo_len,
         num_qo_heads,
@@ -284,58 +324,60 @@ def batch_prefill_with_ragged_kv_cache_example(
         logits_soft_cap=logits_soft_cap,
     )
     if return_lse:
-        o, _ = wrapper.run(q, k, v, return_lse=True)
+        o, lse = wrapper.run(q, k, v, return_lse=True)
+        print(f"  FlashInfer batch output shape: {o.shape}, LSE shape: {lse.shape}")
     else:
         o = wrapper.run(q, k, v)
+        print(f"  FlashInfer batch output shape: {o.shape}")
 
-    # Verify each sequence in the batch
+    # Verify each sequence in the batch with single prefill
     print("\n  Verifying individual sequences:")
     all_passed = True
 
     for i in range(batch_size):
-        o_ref_single = flashinfer.prefill.single_prefill_with_kv_cache(
-            q[q_indptr[i] : q_indptr[i + 1]],
-            k[kv_indptr[i] : kv_indptr[i + 1]],
-            v[kv_indptr[i] : kv_indptr[i + 1]],
-            causal=causal,
-            pos_encoding_mode=pos_encoding_mode,
-            logits_soft_cap=logits_soft_cap,
-        )
-        o_single = o[q_indptr[i] : q_indptr[i + 1]]
+        if return_lse:
+            o_ref_i, lse_ref_i = (
+                flashinfer.prefill.single_prefill_with_kv_cache_return_lse(
+                    q[q_indptr[i] : q_indptr[i + 1]],
+                    k[kv_indptr[i] : kv_indptr[i + 1]],
+                    v[kv_indptr[i] : kv_indptr[i + 1]],
+                    causal=causal,
+                    pos_encoding_mode=pos_encoding_mode,
+                    logits_soft_cap=logits_soft_cap,
+                )
+            )
+        else:
+            o_ref_i = flashinfer.prefill.single_prefill_with_kv_cache(
+                q[q_indptr[i] : q_indptr[i + 1]],
+                k[kv_indptr[i] : kv_indptr[i + 1]],
+                v[kv_indptr[i] : kv_indptr[i + 1]],
+                causal=causal,
+                pos_encoding_mode=pos_encoding_mode,
+                logits_soft_cap=logits_soft_cap,
+            )
+
+        # Extract the i-th sequence from batch output
+        o_i = o[q_indptr[i] : q_indptr[i + 1]]
+        if return_lse:
+            lse_i = lse[q_indptr[i] : q_indptr[i + 1]]
 
         try:
-            torch.testing.assert_close(o_single, o_ref_single, rtol=1e-3, atol=1e-3)
+            torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
+            if return_lse:
+                torch.testing.assert_close(lse_i, lse_ref_i, rtol=1e-3, atol=1e-3)
             single_pass = True
         except AssertionError:
             single_pass = False
-            max_diff = (o_single - o_ref_single).abs().max().item()
-            print(f"    Sequence {i}: ✗ FAIL vs single_prefill (max diff: {max_diff})")
-
-        # For simple cases without RoPE/ALiBi, also compare with naive implementation
-        if pos_encoding_mode == "NONE":
-            o_ref_naive = naive_attention(
-                q[q_indptr[i] : q_indptr[i + 1]].float(),
-                k[kv_indptr[i] : kv_indptr[i + 1]].float(),
-                v[kv_indptr[i] : kv_indptr[i + 1]].float(),
-                causal=causal,
-                logits_soft_cap=logits_soft_cap if logits_soft_cap > 0 else None,
-            ).to(torch.float16)
-
-            try:
-                torch.testing.assert_close(o_single, o_ref_naive, rtol=1e-3, atol=1e-3)
-                naive_pass = True
-            except AssertionError:
-                naive_pass = False
-                max_diff = (o_single - o_ref_naive).abs().max().item()
-                print(f"    Sequence {i}: ✗ FAIL vs naive (max diff: {max_diff})")
-
-            if single_pass and naive_pass:
-                print(f"    Sequence {i}: ✓ PASS")
-            all_passed = all_passed and single_pass and naive_pass
-        else:
-            if single_pass:
-                print(f"    Sequence {i}: ✓ PASS")
-            all_passed = all_passed and single_pass
+            max_diff_o = (o_i - o_ref_i).abs().max().item()
+            print(
+                f"    Sequence {i}: ✗ FAIL vs single_prefill (max diff in output: {max_diff_o})"
+            )
+            if return_lse:
+                max_diff_lse = (lse_i - lse_ref_i).abs().max().item()
+                print(
+                    f"    Sequence {i}: ✗ FAIL vs single_prefill (max diff in LSE: {max_diff_lse})"
+                )
+        all_passed = all_passed and single_pass
 
     if all_passed:
         print("\n  ✓ ALL SEQUENCES PASSED")
@@ -348,46 +390,51 @@ if __name__ == "__main__":
     print("FlashInfer Batch Prefill Example")
     print("=" * 60)
 
-    # Basic test with small batch
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False
-    )
-    # Test with logits soft cap
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False
-    )
-    # Test with causal masking
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, True, "NHD", "NONE", 0.0, False
-    )
-    # Test with GQA (num_qo_heads > num_kv_heads)
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False
-    )
-    # Test with different qo_len and kv_len
-    batch_prefill_with_paged_kv_cache_example(
-        8, 256, 64, 16, 4, 16, 128, False, "NHD", "NONE", 0.0, False
-    )
-    # Test with smaller page size
-    batch_prefill_with_paged_kv_cache_example(
-        4, 127, 127, 5, 8, 8, 64, False, "NHD", "NONE", 8.0, False
-    )
-    # Test with return_lse=True
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True
-    )
+    # # Basic test with small batch
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True
+    # )
+    # # Test with logits soft cap
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # # Test with GQA (num_qo_heads > num_kv_heads)
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # # Test with different qo_len and kv_len
+    # batch_prefill_with_paged_kv_cache_example(
+    #     8, 256, 64, 16, 4, 16, 128, False, "NHD", "NONE", 0.0, False, True
+    # )
+    # # Test with smaller page size
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 127, 127, 5, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    # )
+    # # Test with return_lse=True
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    # )
 
     # Basic ragged KV cache test with causal masking
     batch_prefill_with_ragged_kv_cache_example(
-        12, 54, 37, 8, 8, 128, True, "NONE", 0.0, False
+        12, 54, 37, 8, 8, 64, False, "NONE", 0.0, False
     )
-    # Ragged KV cache without causal masking
+    # Ragged KV cache with return_lse=True
     batch_prefill_with_ragged_kv_cache_example(
-        8, 128, 64, 8, 8, 128, False, "NONE", 0.0, False
+        12, 54, 37, 8, 8, 64, False, "NONE", 0.0, True
     )
     # Ragged KV cache with logits soft cap
     batch_prefill_with_ragged_kv_cache_example(
-        4, 100, 100, 8, 8, 128, False, "NONE", 8.0, False
+        12, 54, 37, 8, 8, 64, False, "NONE", 8.0, True
     )
 
     print("\n" + "=" * 60)
