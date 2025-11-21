@@ -206,7 +206,7 @@ void _TestBatchRaggedPrefillKernelCorrectness(size_t num_kv_heads, size_t num_qo
   std::vector<DTypeKV> output_refs;
 
   BatchPrefillHandler handler;
-  size_t float_workspace_size_in_bytes = 128 * 1024 * 1024;
+  size_t float_workspace_size_in_bytes = 256 * 1024 * 1024;
   char* float_buffer;
   FI_GPU_CALL(hipMalloc(&float_buffer, float_workspace_size_in_bytes));
 
