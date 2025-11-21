@@ -1,21 +1,44 @@
 # SPDX - FileCopyrightText : 2024 Flashinfer team.
 # SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
-#
 # SPDX - License - Identifier : Apache 2.0
 
 [project]
-name = "flashinfer"
+name = "amd-flashinfer"
 dynamic = ["version"]
-description = "Fast Attention Algorithms for LLM Inference"
-requires-python = ">=3.9"
+description = "Fast Attention Algorithms for LLM Inference on ROCm"
+requires-python = ">=3.12"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [
-    {name = "FlashInfer Team"}
+    {name = "AMD, Inc."}
 ]
+
+# Runtime dependencies
+# NOTE: torch is intentionally NOT listed here because ROCm users must install
+# torch from AMD's ROCm repository, not from PyPI. For example,
+#   pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/
+# See README.md for complete installation instructions.
 dependencies = [
-    "numpy",
+    "numpy>=1.20",
 ]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Homepage = "https://github.com/rocm/flashinfer"
+Repository = "https://github.com/rocm/flashinfer"
+Documentation = "https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/3rd-party/flashinfer-install.html"
+"Bug Tracker" = "https://github.com/rocm/flashinfer/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -26,7 +49,7 @@ dev = [
 requires = [
     "scikit-build-core>=0.4.3",
     "setuptools_scm>=8.0.0",
-    "torch >= 2.6",
+    "torch >= 2.7",
     "numpy",
     "setuptools-scm >=9.2"
 ]
@@ -40,7 +63,9 @@ logging.level = "INFO"
 build-dir = "_skbuild"
 experimental = true
 metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
-wheel.py-api = "cp39"
+wheel.py-api = "cp312"
+wheel.license-files = ["LICENSE"]
+wheel.packages = ["flashinfer"]
 
 [tool.scikit-build.sdist]
 cmake = false
