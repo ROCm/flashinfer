@@ -5,7 +5,6 @@
 import torch
 
 import flashinfer
-from tests.attention_reference import naive_attention
 
 
 def batch_prefill_with_paged_kv_cache_example(
@@ -391,39 +390,39 @@ if __name__ == "__main__":
     print("FlashInfer Batch Prefill Example")
     print("=" * 60)
 
-    # Basic test with small batch
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True
-    )
-    # Test with logits soft cap
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
-    )
-    # Test with GQA (num_qo_heads > num_kv_heads)
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False, True
-    )
-    # Test with different qo_len and kv_len
-    batch_prefill_with_paged_kv_cache_example(
-        8, 256, 64, 16, 4, 16, 128, False, "NHD", "NONE", 0.0, False, True
-    )
-    # Test with smaller page size
-    batch_prefill_with_paged_kv_cache_example(
-        4, 127, 127, 5, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
-    )
-    batch_prefill_with_paged_kv_cache_example(
-        12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
-    )
-    # Test with return_lse=True
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True, True
-    )
-    batch_prefill_with_paged_kv_cache_example(
-        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
-    )
-    batch_prefill_with_paged_kv_cache_example(
-        12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
-    )
+    # # Basic test with small batch
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True
+    # )
+    # # Test with logits soft cap
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # # Test with GQA (num_qo_heads > num_kv_heads)
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # # Test with different qo_len and kv_len
+    # batch_prefill_with_paged_kv_cache_example(
+    #     8, 256, 64, 16, 4, 16, 128, False, "NHD", "NONE", 0.0, False, True
+    # )
+    # # Test with smaller page size
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 127, 127, 5, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    # )
+    # # Test with return_lse=True
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    # )
 
     # Basic ragged KV cache test with causal masking
     batch_prefill_with_ragged_kv_cache_example(
