@@ -5,7 +5,7 @@
 [project]
 name = "amd-flashinfer"
 dynamic = ["version"]
-description = "ROCm Fast Attention Algorithms for LLM Inference"
+description = "Fast Attention Algorithms for LLM Inference on ROCm"
 requires-python = ">=3.12"
 readme = "README.md"
 license = "Apache-2.0"
