@@ -2719,17 +2719,9 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
   const uint32_t num_qo_heads = params.num_qo_heads;
   const uint32_t num_kv_heads = params.num_kv_heads;
 
-  std::cout << "Padded Batch Size: " << padded_batch_size << std::endl;
-  std::cout << "num_qo_heads: " << num_qo_heads << std::endl;
-  std::cout << "num_kv_heads: " << num_kv_heads << std::endl;
-
   constexpr uint32_t NUM_MMA_Q = get_num_mma_q(CTA_TILE_Q);
   constexpr uint32_t NUM_WARPS_Q = get_num_warps_q(CTA_TILE_Q);
   constexpr uint32_t NUM_WARPS_KV = get_num_warps_kv(CTA_TILE_Q);
-
-  std::cout << "NUM_MMA_Q: " << NUM_MMA_Q << std::endl;
-  std::cout << "NUM_WARPS_Q: " << NUM_WARPS_Q << std::endl;
-  std::cout << "NUM_WARPS_KV: " << NUM_WARPS_KV << std::endl;
 
   if (padded_batch_size == 0) {
     // No request, skip
@@ -2739,16 +2731,11 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
   }
 
   dim3 nblks(padded_batch_size, 1, num_kv_heads);
-  std::cout << "nblks: " << nblks.x << " " << nblks.y << " " << nblks.z << std::endl;
-
   dim3 nthrs(WARP_SIZE, NUM_WARPS_Q, NUM_WARPS_KV);
-  std::cout << "nthrs: " << nthrs.x << " " << nthrs.y << " " << nthrs.z << std::endl;
 
   constexpr uint32_t NUM_MMA_D_QK = HEAD_DIM_QK / 16;
-  std::cout << "NUM_MMA_D_QK: " << NUM_MMA_D_QK << std::endl;
-
   constexpr uint32_t NUM_MMA_D_VO = HEAD_DIM_VO / 16;
-  std::cout << "NUM_MMA_D_VO: " << NUM_MMA_D_VO << std::endl;
+  constexpr uint32_t ELEMS_PER_FRAGMENT = 16 * 16 / WARP_SIZE;
 
   using DTypeQKAccum =
       typename std::conditional<USE_FP16_QK_REDUCTION && std::is_same_v<DTypeQ, half>, half,
@@ -2756,31 +2743,17 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
 
   int dev_id = 0;
   FI_GPU_CALL(gpuGetDevice(&dev_id));
-  int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
-  std::cout << "max_smem_per_sm: " << max_smem_per_sm << std::endl;
-
-  // we expect each sm execute two threadblocks
-  const int num_ctas_per_sm =
-      max_smem_per_sm >= 2 * (CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ) +
-                              (HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV))
-          ? 2
-          : 1;
-  std::cout << "num_ctas_per_sm: " << num_ctas_per_sm << std::endl;
-
-  const int max_smem_per_threadblock = max_smem_per_sm / num_ctas_per_sm;
-  std::cout << "max_smem_per_threadblock: " << max_smem_per_threadblock << std::endl;
+  const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
 
   const uint32_t max_num_mma_kv_reg =
-      (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
-       !USE_FP16_QK_REDUCTION)
-          ? 2
-          : (8 / NUM_MMA_Q);
-  std::cout << "max_num_mma_kv_reg: " << max_num_mma_kv_reg << std::endl;
+        (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
+         !USE_FP16_QK_REDUCTION)
+            ? 2
+            : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
 
   const uint32_t max_num_mma_kv_smem =
-      (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
-      ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
-  std::cout << "max_num_mma_kv_smem: " << max_num_mma_kv_smem << std::endl;
+        (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
+        ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
 
   DISPATCH_NUM_MMA_KV(min(max_num_mma_kv_smem, max_num_mma_kv_reg), NUM_MMA_KV, {
     using KTraits =
@@ -2801,7 +2774,6 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
       FLASHINFER_ERROR(err_msg.str());
     } else {
       size_t smem_size = sizeof(typename KTraits::SharedStorage);
-      std::cout << "smem_size: " << smem_size << std::endl;
       auto kernel = BatchPrefillWithRaggedKVCacheKernel<KTraits, Params>;
       FI_GPU_CALL(
           gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
