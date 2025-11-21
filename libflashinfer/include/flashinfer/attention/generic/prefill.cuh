@@ -2523,10 +2523,10 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> v_smem(smem_storage.v_smem);
 
     // // TODO (rtmadduri): What is this 2? Is this NUM_ACCUM_ROWS_PER_THREAD?
-    // size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / 2 / NUM_WARPS_Q];
+    size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / 2 / NUM_WARPS_Q];
 
-    size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / NUM_ACCUM_ROWS_PER_THREAD /
-                               NUM_WARPS_Q];
+    // size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / NUM_ACCUM_ROWS_PER_THREAD /
+    //                            NUM_WARPS_Q];
 
     uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
         get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
@@ -2833,26 +2833,22 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
 
   constexpr uint32_t NUM_MMA_D_QK = HEAD_DIM_QK / 16;
   constexpr uint32_t NUM_MMA_D_VO = HEAD_DIM_VO / 16;
+  constexpr uint32_t ELEMS_PER_FRAGMENT = 16 * 16 / WARP_SIZE;
+
   using DTypeQKAccum =
       typename std::conditional<USE_FP16_QK_REDUCTION && std::is_same_v<DTypeQ, half>, half,
                                 float>::type;
 
   int dev_id = 0;
   FI_GPU_CALL(gpuGetDevice(&dev_id));
-  int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
-  // we expect each sm execute two threadblocks
-  const int num_ctas_per_sm =
-      max_smem_per_sm >= 2 * (CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ) +
-                              (HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV))
-          ? 2
-          : 1;
-  const int max_smem_per_threadblock = max_smem_per_sm / num_ctas_per_sm;
-
+  const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
+  
   const uint32_t max_num_mma_kv_reg =
       (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
        !USE_FP16_QK_REDUCTION)
           ? 2
-          : (8 / NUM_MMA_Q);
+          : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
+
   const uint32_t max_num_mma_kv_smem =
       (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
       ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
