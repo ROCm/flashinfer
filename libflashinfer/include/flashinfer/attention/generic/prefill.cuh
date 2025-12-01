@@ -1360,8 +1360,7 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
         //   - mma_q * (CTA_TILE_Q * HEAD_DIM_VO): mma_q tile offset within warp
         //   - mma_d * 256: mma_d tile offset (each tile is 16x16)
         //   - (lane_idx / 16) * 4: row group offset (4 contiguous rows per thread group)
-        //   - (lane_idx % 16) * 16: column stride (16 threads per column, CTA_TILE_Q rows per
-        //   column)
+        //   - (lane_idx % 16) * 16: column stride (16 threads per col, CTA_TILE_Q rows per col)
         const uint32_t smem_o_idx =
             warp_idx * (KTraits::NUM_MMA_Q * KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) +
             mma_q * (KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) + mma_d * (16 * 16) +
