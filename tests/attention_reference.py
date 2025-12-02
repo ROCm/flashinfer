@@ -59,6 +59,18 @@ def naive_attention(
     k_t = k.transpose(0, 1)  # [num_qo_heads, kv_len, head_dim]
     v_t = v.transpose(0, 1)  # [num_qo_heads, kv_len, head_dim]
 
+    # DEBUG: Print raw QK scores (before scaling, soft cap, or masking)
+    raw_scores = torch.matmul(
+        q_t, k_t.transpose(1, 2)
+    )  # [num_qo_heads, qo_len, kv_len]
+    print(f"\n{'='*80}")
+    print(f"REFERENCE: Raw QK scores (Q @ K^T, before sm_scale)")
+    print(f"{'='*80}")
+    print(f"Shape: {raw_scores.shape}")
+    print(f"Head 0, raw QK scores [qo_len={qo_len}, kv_len={kv_len}]:")
+    print(raw_scores[0].cpu().numpy())
+    print(f"{'='*80}\n")
+
     # Compute attention scores: [num_qo_heads, qo_len, kv_len]
     # When soft cap is used: compute raw scores WITHOUT sm_scale
     # When soft cap is NOT used: apply sm_scale directly
