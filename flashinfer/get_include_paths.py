@@ -29,7 +29,7 @@ def get_include():
     Returns
     -------
     include_dir : str
-        Path to libflashinfer and Cutlass header files.
+        Path to include and Cutlass header files.
     """
     include_dir = os.path.join(_get_package_root_dir(), "include")
     return str(include_dir)

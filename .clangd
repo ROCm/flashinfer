@@ -3,7 +3,7 @@
 CompileFlags:
   Add:
     # Project includes (relative to workspace root where .clangd is located)
-    - "-I${workspaceFolder}/libflashinfer/include"
+    - "-I${workspaceFolder}/include"
 
     # C++ standard
     - "-std=c++20"

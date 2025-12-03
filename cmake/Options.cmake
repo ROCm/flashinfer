@@ -23,7 +23,7 @@ flashinfer_option(FLASHINFER_TVM_BINDING "Build TVM binding support" OFF)
 flashinfer_option(FLASHINFER_DISTRIBUTED "Build distributed support" OFF)
 flashinfer_option(FLASHINFER_BUILD_WHEELS "Build distributed support" ON)
 
-# PyTorch extensions for kernels that use libflashinfer. The AOT extensions will
+# PyTorch extensions for kernels. The AOT extensions will
 # be built automatically for either CUDA or HIP based on the FLASHINFER_ENABLE_CUDA
 # or FLASHINFER_ENABLE_HIP options.
 flashinfer_option(FLASHINFER_AOT_TORCH_EXTS
@@ -43,18 +43,9 @@ flashinfer_option(FLASHINFER_GEN_MASK_MODES "Mask modes to enable" 0 1 2)
 flashinfer_option(FLASHINFER_GEN_USE_FP16_QK_REDUCTIONS "Use FP16 for QK reductions" OFF)
 flashinfer_option(FLASHINFER_SM90_ALLOWED_HEAD_DIMS "64,64" "128,128" "256,256" "192,128")
 
-# === BUILD TYPE OPTIONS ===
-flashinfer_option(FLASHINFER_UNITTESTS "Build unit tests" OFF)
-flashinfer_option(FLASHINFER_CXX_BENCHMARKS "Build benchmarks" OFF)
-flashinfer_option(FLASHINFER_DIST_UNITTESTS "Build distributed unit tests" OFF)
-
 # === VERSION OPTIONS ===
 # Custom version suffix for builds
 flashinfer_option(FLASHINFER_VERSION_SUFFIX "Custom version suffix for builds" "")
-
-# === FEATURE-SPECIFIC TESTS/BENCHMARKS ===
-flashinfer_option(FLASHINFER_FP8_TESTS "Build FP8 tests" OFF)
-flashinfer_option(FLASHINFER_FP8_BENCHMARKS "Build FP8 benchmarks" OFF)
 
 # === ARCHITECTURE OPTIONS ===
 flashinfer_option(FLASHINFER_CUDA_ARCHITECTURES "CUDA architectures to compile for" "")
@@ -111,6 +102,17 @@ if(FLASHINFER_ENABLE_HIP AND FLASHINFER_ENABLE_CUDA)
   message(FATAL_ERROR "Enabling both CUDA and HIP backends at the same time is not supported.")
 endif()
 
+
+# HIP/ROCm does not support FP8 yet
+if(FLASHINFER_ENABLE_HIP)
+  if(FLASHINFER_ENABLE_FP8 OR FLASHINFER_ENABLE_FP8_E4M3 OR FLASHINFER_ENABLE_FP8_E5M2)
+    message(STATUS "FP8 is not supported for HIP/ROCm builds, disabling FP8 support")
+    set(FLASHINFER_ENABLE_FP8 OFF CACHE BOOL "FP8 not supported on HIP" FORCE)
+    set(FLASHINFER_ENABLE_FP8_E4M3 OFF CACHE BOOL "FP8 E4M3 not supported on HIP" FORCE)
+    set(FLASHINFER_ENABLE_FP8_E5M2 OFF CACHE BOOL "FP8 E5M2 not supported on HIP" FORCE)
+  endif()
+endif()
+
 # Handle CUDA architectures
 if(FLASHINFER_ENABLE_CUDA)
   if(FLASHINFER_CUDA_ARCHITECTURES)
@@ -142,6 +144,17 @@ endif()
 # Enabling both CUDA and HIP at the same time is not supported
 if(FLASHINFER_ENABLE_HIP AND FLASHINFER_ENABLE_CUDA)
   message(FATAL_ERROR "Enabling both CUDA and HIP backends at the same time is not supported.")
+endif()
+
+
+# HIP/ROCm does not support FP8 yet
+if(FLASHINFER_ENABLE_HIP)
+  if(FLASHINFER_ENABLE_FP8 OR FLASHINFER_ENABLE_FP8_E4M3 OR FLASHINFER_ENABLE_FP8_E5M2)
+    message(STATUS "FP8 is not supported for HIP/ROCm builds, disabling FP8 support")
+    set(FLASHINFER_ENABLE_FP8 OFF CACHE BOOL "FP8 not supported on HIP" FORCE)
+    set(FLASHINFER_ENABLE_FP8_E4M3 OFF CACHE BOOL "FP8 E4M3 not supported on HIP" FORCE)
+    set(FLASHINFER_ENABLE_FP8_E5M2 OFF CACHE BOOL "FP8 E5M2 not supported on HIP" FORCE)
+  endif()
 endif()
 
 # Handle CUDA architectures
@@ -180,18 +193,6 @@ if(FLASHINFER_ENABLE_CUDA)
 endif()
 
 # Handle automatic enabling of dependent features
-if(FLASHINFER_FP8_TESTS)
-  set(FLASHINFER_UNITTESTS ON CACHE BOOL "Tests enabled for FP8" FORCE)
-endif()
-
-if(FLASHINFER_FP8_BENCHMARKS)
-  set(FLASHINFER_CXX_BENCHMARKS ON CACHE BOOL "Benchmarks enabled for FP8" FORCE)
-endif()
-
-if(FLASHINFER_DIST_UNITTESTS)
-  set(FLASHINFER_UNITTESTS ON CACHE BOOL "Tests enabled for distributed" FORCE)
-endif()
-
 if(FLASHINFER_TVM_BINDING AND NOT FLASHINFER_BUILD_KERNELS)
   message(FATAL_ERROR "TVM binding requires FLASHINFER_BUILD_KERNELS to be ON")
 endif()
@@ -206,12 +207,6 @@ if(NOT FLASHINFER_ENABLE_FP8)
   # Enable both FP8 formats when FP8 is enabled
   set(FLASHINFER_ENABLE_FP8_E4M3 OFF CACHE BOOL "Disable FP8 E4M3 format" FORCE)
   set(FLASHINFER_ENABLE_FP8_E5M2 OFF CACHE BOOL "Disable FP8 E5M2 format" FORCE)
-endif()
-
-# Ensure FP8 is enabled for FP8 tests/benchmarks
-if(FLASHINFER_FP8_TESTS OR FLASHINFER_FP8_BENCHMARKS)
-  set(FLASHINFER_ENABLE_FP8 ON CACHE BOOL "FP8 enabled for tests/benchmarks" FORCE)
-  set(FLASHINFER_ENABLE_FP8_E4M3 ON CACHE BOOL "FP8_E4M3 enabled for tests/benchmarks" FORCE)
 endif()
 
 # cmake-format: on
