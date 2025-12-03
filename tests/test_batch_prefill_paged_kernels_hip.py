@@ -609,6 +609,7 @@ def test_batch_prefill_with_paged_kv_cache_custom_mask(
         o_causal = wrapper.run(q, kv_data)
     torch.testing.assert_close(o_custom, o_causal, rtol=1e-3, atol=1e-3)
 
+
 if __name__ == "__main__":
     test_batch_prefill_with_paged_kv_cache(
         12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True

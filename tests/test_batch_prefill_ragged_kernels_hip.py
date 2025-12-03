@@ -8,6 +8,7 @@ from jit_utils import jit_prefill_attention_func_args
 
 import flashinfer
 
+
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
     if flashinfer.jit.has_prebuilt_ops:
@@ -33,6 +34,7 @@ def warmup_jit():
             pytest.exit(str(e))
         finally:
             yield
+
 
 @pytest.mark.parametrize("batch_size", [12, 17, 128])
 @pytest.mark.parametrize("kv_len", [54, 97, 512, 2048])
