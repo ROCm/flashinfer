@@ -2510,7 +2510,9 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> k_smem(smem_storage.k_smem);
     smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> v_smem(smem_storage.v_smem);
 
-    size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / 2 / NUM_WARPS_Q];
+    // The thr_local_kv_offset array stores the offsets into the paged kv cache for each
+    // thread. The size of the array should be equal to the trip count of the initialization loop.
+    size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_ROW / NUM_WARPS_Q];
 
     uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
         get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
@@ -2529,9 +2531,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     uint32_t packed_page_iter_base =
         paged_kv.indptr[request_idx] * paged_kv.page_size + chunk_start;
 #pragma unroll
-    for (uint32_t i = 0; i < NUM_MMA_KV * KV_THR_LAYOUT_COL /
-                                 (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q;
-         ++i) {
+    for (uint32_t i = 0; i < NUM_MMA_KV * KV_THR_LAYOUT_ROW / NUM_WARPS_Q; ++i) {
       uint32_t page_iter, entry_idx;
       paged_kv.page_size.divmod(packed_page_iter_base + warp_idx * KV_THR_LAYOUT_ROW +
                                     lane_idx / KV_THR_LAYOUT_COL +
@@ -2573,9 +2573,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     for (uint32_t iter = 0; iter < num_iterations; ++iter) {
       packed_page_iter_base += CTA_TILE_KV;
 #pragma unroll
-      for (uint32_t i = 0; i < NUM_MMA_KV * KV_THR_LAYOUT_COL /
-                                   (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q;
-           ++i) {
+      for (uint32_t i = 0; i < NUM_MMA_KV * KV_THR_LAYOUT_ROW / NUM_WARPS_Q; ++i) {
         uint32_t page_iter, entry_idx;
         paged_kv.page_size.divmod(packed_page_iter_base + warp_idx * KV_THR_LAYOUT_ROW +
                                       lane_idx / KV_THR_LAYOUT_COL +
