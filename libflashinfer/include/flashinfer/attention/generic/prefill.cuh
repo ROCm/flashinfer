@@ -25,10 +25,6 @@
 #include "pos_enc.cuh"
 #include "variants.cuh"
 
-#if 1
-#include "gpu_iface/backend/hip/mma_debug_utils_hip.h"
-#endif
-
 namespace flashinfer {
 
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
@@ -624,7 +620,7 @@ __device__ __forceinline__ void load_q_global_smem(
                                                                          q_idx < qo_upper_bound);
           q_smem_offset_w =
               q_smem->template advance_offset_by_column<WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
-          q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
+          q_ptr += WARP_THREAD_COLS * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
         }
         q_smem_offset_w = q_smem->template advance_offset_by_row<WARP_THREAD_ROWS, UPCAST_STRIDE_Q>(
                               q_smem_offset_w) -
@@ -865,9 +861,7 @@ __device__ __forceinline__ void compute_qk(
             mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
                 s_frag[mma_q][mma_kv], a_frag[mma_q], b_frag);
           }
-        }
-
-        else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
+        } else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
 #if defined(PLATFORM_HIP_DEVICE)
           static_assert(false, "FP16 DTypeQKAccum not yet implemented for CDNA3");
 #else
@@ -1708,11 +1702,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       init_rope_freq<KTraits>(rope_freq, rope_rcp_scale, rope_rcp_theta, tid.x);
     }
     init_states<KTraits>(variant, o_frag, m, d);
-#if 1
-    // Statically allocate a shared memory array specifically for debugging s_frag.
-    // This avoids modifying the main SharedStorage union.
-    __shared__ DTypeQKAccum qk_scratch[CTA_TILE_Q * CTA_TILE_KV];
-#endif
+
     // cooperative fetch q fragment from gmem to reg
     const uint32_t qo_packed_idx_base =
         (bx * NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) * NUM_MMA_Q * 16;
@@ -1810,15 +1800,6 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       }
       // compute attention score
       compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag);
-#if 1
-      flashinfer::gpu_iface::debug_utils::hip::write_s_frag_to_lds<
-          DTypeQKAccum, NUM_MMA_Q, NUM_MMA_KV, HALF_ELEMS_PER_THREAD>(s_frag, qk_scratch,
-                                                                      CTA_TILE_KV, tid);
-      // Print the materialized LDS array to see the final result for this iteration.
-      flashinfer::gpu_iface::debug_utils::hip::print_lds_array(
-          qk_scratch, CTA_TILE_Q, CTA_TILE_KV, ("S frag after compute_qk for one iteration\n"));
-#endif
-
       // logits transformation
       logits_transform<KTraits>(
           params, variant, /*batch_idx=*/0, qo_packed_idx_base,
