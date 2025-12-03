@@ -267,8 +267,9 @@ __device__ __forceinline__ void q_frag_apply_llama_rope_with_pos(T* x_first_half
     // 0 1 | 4 5
     // ---------
     // 2 3 | 6 7
-    // NOTE: The following indexing logic is CUDA-specific and is temporarily used pending HIP port completion.
-    //       This matches the CUDA register layout; update as needed when porting to HIP.
+    // NOTE: The following indexing logic is CUDA-specific and is temporarily used pending HIP port
+    //       completion. This matches the CUDA register layout; update as needed when porting to
+    //       HIP.
     const uint32_t i = (reg_id % 4) / 2;
     const uint32_t j = reg_id / 4;
     __sincosf(pos[i] * rope_freq[2 * j + reg_id % 2], &sin, &cos);
