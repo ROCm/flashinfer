@@ -677,7 +677,7 @@ __device__ __forceinline__ void load_q_global_smem(
                                                                          q_idx < qo_upper_bound);
           q_smem_offset_w =
               q_smem->template advance_offset_by_column<WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
-          q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
+          q_ptr += WARP_THREAD_COLS * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
         }
         q_smem_offset_w = q_smem->template advance_offset_by_row<WARP_THREAD_ROWS, UPCAST_STRIDE_Q>(
                               q_smem_offset_w) -
@@ -918,9 +918,7 @@ __device__ __forceinline__ void compute_qk(
             mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
                 s_frag[mma_q][mma_kv], a_frag[mma_q], b_frag);
           }
-        }
-
-        else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
+        } else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
 #if defined(PLATFORM_HIP_DEVICE)
           static_assert(false, "FP16 DTypeQKAccum not yet implemented for CDNA3");
 #else
@@ -1387,12 +1385,13 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
     typename KTraits::DTypeQKAccum (*m)[KTraits::NUM_ACCUM_ROWS_PER_THREAD],
     float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const uint32_t warp_idx,
     const uint32_t lane_idx, const dim3 tid = threadIdx) {
-  constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
+  constexpr uint32_t THREADS_PER_LANE_GROUP = KTraits::THREADS_PER_BMATRIX_ROW_SET;
   constexpr uint32_t NARPT = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
 
-  static_assert(WARP_SIZE % TPR == 0, "THREADS_PER_BMATRIX_ROW_SET must divide WARP_SIZE");
-  constexpr uint32_t GROUPS_PER_WARP = WARP_SIZE / TPR;
-  const uint32_t lane_group_idx = lane_idx / TPR;
+  static_assert(WARP_SIZE % THREADS_PER_LANE_GROUP == 0,
+                "THREADS_PER_BMATRIX_ROW_SET must divide WARP_SIZE");
+  constexpr uint32_t GROUPS_PER_WARP = WARP_SIZE / THREADS_PER_LANE_GROUP;
+  const uint32_t ln_grp_idx = lane_idx / THREADS_PER_LANE_GROUP;
 
   // only necessary when blockDim.z > 1
   if constexpr (KTraits::NUM_WARPS_KV > 1) {
@@ -1408,12 +1407,22 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
       for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
-        vec_t<float, KTraits::HALF_ELEMS_PER_THREAD>::memcpy(
-            smem_o + (((warp_idx * KTraits::NUM_MMA_Q + mma_q) * KTraits::NUM_MMA_D_VO + mma_d) *
-                          WARP_SIZE +
-                      lane_idx) *
-                         KTraits::HALF_ELEMS_PER_THREAD,
-            o_frag[mma_q][mma_d]);
+        // Write o_frag to smem_o with transposed layout (column-major storage)
+        // to enable efficient contiguous writes despite column-major register layout.
+        // smem_o layout: [warp][mma_q][col][row] where col varies fastest
+        // Index breakdown:
+        //   - warp_idx * (NUM_MMA_Q * CTA_TILE_Q * HEAD_DIM_VO): warp partition offset
+        //   - mma_q * (CTA_TILE_Q * HEAD_DIM_VO): mma_q tile offset within warp
+        //   - mma_d * 256: mma_d tile offset (each tile is 16x16)
+        //   - (lane_idx / 16) * 4: row group offset (4 contiguous rows per thread group)
+        //   - (lane_idx % 16) * 16: column stride (16 threads per col, CTA_TILE_Q rows per col)
+        const uint32_t smem_o_idx =
+            warp_idx * (KTraits::NUM_MMA_Q * KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) +
+            mma_q * (KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) + mma_d * (16 * 16) +
+            (lane_idx / THREADS_PER_LANE_GROUP) * KTraits::HALF_ELEMS_PER_THREAD +
+            (lane_idx % THREADS_PER_LANE_GROUP) * THREADS_PER_LANE_GROUP;
+        vec_t<float, KTraits::HALF_ELEMS_PER_THREAD>::memcpy(smem_o + smem_o_idx,
+                                                             o_frag[mma_q][mma_d]);
       }
     }
 
@@ -1422,11 +1431,12 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
       for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
         for (uint32_t j = 0; j < NARPT; ++j) {
-          smem_md[((warp_idx * KTraits::NUM_MMA_Q + mma_q) * NARPT + j) * GROUPS_PER_WARP +
-                  lane_group_idx] = make_float2(float(m[mma_q][j]), d[mma_q][j]);
+          auto warp_offset = warp_idx * KTraits::NUM_MMA_Q;
+          auto row_offset = warp_offset + mma_q;
+          smem_md[row_offset * THREADS_PER_LANE_GROUP + ln_grp_idx * NARPT + j] =
+              make_float2(float(m[mma_q][j]), d[mma_q][j]);
         }
       }
-
       // synchronize m,d first
       __syncthreads();
 #pragma unroll
@@ -1437,13 +1447,7 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
           float m_new = -gpu_iface::math::inf, d_new = 1.f;
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
-            float2 md = smem_md[(((i * KTraits::NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
-                                      KTraits::NUM_MMA_Q +
-                                  mma_q) *
-                                     NARPT +
-                                 j) *
-                                    GROUPS_PER_WARP +
-                                lane_group_idx];
+            float2 md = smem_md[i * KTraits::NUM_MMA_Q * 16 + mma_q * 16 + ln_grp_idx * NARPT + j];
             float m_prev = m_new, d_prev = d_new;
             m_new = max(m_new, md.x);
             d_new = d_prev * gpu_iface::math::ptx_exp2(m_prev - m_new) +
@@ -1452,13 +1456,7 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
-            float2 md = smem_md[(((i * KTraits::NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
-                                      KTraits::NUM_MMA_Q +
-                                  mma_q) *
-                                     NARPT +
-                                 j) *
-                                    GROUPS_PER_WARP +
-                                lane_group_idx];
+            float2 md = smem_md[i * KTraits::NUM_MMA_Q * 16 + mma_q * 16 + ln_grp_idx * NARPT + j];
             float mi = md.x;
             o_scale[j][i] = gpu_iface::math::ptx_exp2(float(mi - m_new));
           }
@@ -1473,24 +1471,16 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
             vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> oi;
-            oi.load(smem_o + ((((i * KTraits::NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
-                                    KTraits::NUM_MMA_Q +
-                                mma_q) *
-                                   KTraits::NUM_MMA_D_VO +
-                               mma_d) *
-                                  WARP_SIZE +
-                              lane_idx) *
-                                 KTraits::HALF_ELEMS_PER_THREAD);
-
+            const uint32_t smem_o_read_idx =
+                i * (KTraits::NUM_MMA_Q * KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) +
+                mma_q * (KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) + mma_d * (16 * 16) +
+                (lane_idx / THREADS_PER_LANE_GROUP) * KTraits::HALF_ELEMS_PER_THREAD +
+                (lane_idx % THREADS_PER_LANE_GROUP) * THREADS_PER_LANE_GROUP;
+            oi.load(smem_o + smem_o_read_idx);
 #pragma unroll
             for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
-#if defined(PLATFORM_HIP_DEVICE)
               // CDNA3: Direct mapping - each reg_id corresponds to one accumulator row
               o_new[reg_id] += oi[reg_id] * o_scale[reg_id][i];
-#else
-              // CUDA: Grouped mapping - 2 elements per accumulator row
-              o_new[reg_id] += oi[reg_id] * o_scale[(reg_id % 4) / 2][i];
-#endif
             }
           }
           o_new.store(o_frag[mma_q][mma_d]);
@@ -1508,14 +1498,12 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
             vec_t<float, KTraits::HALF_ELEMS_PER_THREAD> oi;
-            oi.load(smem_o + ((((i * KTraits::NUM_WARPS_Q + get_warp_idx_q<KTraits>(tid.y)) *
-                                    KTraits::NUM_MMA_Q +
-                                mma_q) *
-                                   KTraits::NUM_MMA_D_VO +
-                               mma_d) *
-                                  WARP_SIZE +
-                              lane_idx) *
-                                 KTraits::HALF_ELEMS_PER_THREAD);
+            const uint32_t smem_o_read_idx =
+                i * (KTraits::NUM_MMA_Q * KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) +
+                mma_q * (KTraits::CTA_TILE_Q * KTraits::HEAD_DIM_VO) + mma_d * (16 * 16) +
+                (lane_idx / THREADS_PER_LANE_GROUP) * KTraits::HALF_ELEMS_PER_THREAD +
+                (lane_idx % THREADS_PER_LANE_GROUP) * THREADS_PER_LANE_GROUP;
+            oi.load(smem_o + smem_o_read_idx);
 #pragma unroll
             for (uint32_t reg_id = 0; reg_id < KTraits::HALF_ELEMS_PER_THREAD; ++reg_id) {
               o_new[reg_id] += oi[reg_id];

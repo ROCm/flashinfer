@@ -32,4 +32,4 @@ RUN curl -L micro.mamba.pm/install.sh | bash && \
     micromamba activate ${MAMBA_ENV_NAME} && \
     cd /root/flashinfer/ && \
     FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v && \
-    pip install dist/flashinfer-*.whl"
+    pip install dist/amd_flashinfer-*.whl"

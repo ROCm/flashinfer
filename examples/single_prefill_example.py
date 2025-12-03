@@ -167,3 +167,15 @@ if __name__ == "__main__":
     single_prefill_with_kv_cache_example(
         15, 127, 8, 4, 64, False, "NHD", "NONE", 8.0, True
     )
+
+    # Test case specifically for threadblock_sync_mdo_states validation
+    # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4, calling threadblock_sync_mdo_states
+    print("\n" + "=" * 60)
+    print("Testing threadblock_sync_mdo_states (CTA_TILE_Q=16, NUM_WARPS_KV=4)")
+    print("=" * 60)
+    single_prefill_with_kv_cache_example(
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+    )
+    single_prefill_with_kv_cache_example(
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
+    )
