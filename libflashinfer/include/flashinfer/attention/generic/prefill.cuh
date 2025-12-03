@@ -620,7 +620,7 @@ __device__ __forceinline__ void load_q_global_smem(
                                                                          q_idx < qo_upper_bound);
           q_smem_offset_w =
               q_smem->template advance_offset_by_column<WARP_THREAD_COLS>(q_smem_offset_w, mma_do);
-          q_ptr += HALF_ELEMS_PER_THREAD * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
+          q_ptr += WARP_THREAD_COLS * upcast_size<DTypeQ, VECTOR_BIT_WIDTH>();
         }
         q_smem_offset_w = q_smem->template advance_offset_by_row<WARP_THREAD_ROWS, UPCAST_STRIDE_Q>(
                               q_smem_offset_w) -
@@ -861,9 +861,7 @@ __device__ __forceinline__ void compute_qk(
             mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
                 s_frag[mma_q][mma_kv], a_frag[mma_q], b_frag);
           }
-        }
-
-        else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
+        } else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
 #if defined(PLATFORM_HIP_DEVICE)
           static_assert(false, "FP16 DTypeQKAccum not yet implemented for CDNA3");
 #else
