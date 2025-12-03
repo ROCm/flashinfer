@@ -472,7 +472,7 @@ __device__ __forceinline__ void page_produce_kv_cdna3_(
       smem.template load_vector_async<fill_mode>(*smem_offset, gptr, kv_idx < kv_len);
 
       *smem_offset = smem.template advance_offset_by_column<16>(*smem_offset, j);
-      *gptr += 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+      gptr += 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
     }
     kv_idx += NUM_WARPS * 4;
     *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4, UPCAST_STRIDE>(*smem_offset) -
@@ -2522,11 +2522,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> k_smem(smem_storage.k_smem);
     smem_t<SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> v_smem(smem_storage.v_smem);
 
-    // // TODO (rtmadduri): What is this 2? Is this NUM_ACCUM_ROWS_PER_THREAD?
     size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / 2 / NUM_WARPS_Q];
-
-    // size_t thr_local_kv_offset[NUM_MMA_KV * KV_THR_LAYOUT_COL / NUM_ACCUM_ROWS_PER_THREAD /
-    //                            NUM_WARPS_Q];
 
     uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
         get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
@@ -2545,8 +2541,9 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     uint32_t packed_page_iter_base =
         paged_kv.indptr[request_idx] * paged_kv.page_size + chunk_start;
 #pragma unroll
-    for (uint32_t i = 0;
-         i < NUM_MMA_KV * (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q; ++i) {
+    for (uint32_t i = 0; i < NUM_MMA_KV * KV_THR_LAYOUT_COL /
+                                 (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q;
+         ++i) {
       uint32_t page_iter, entry_idx;
       paged_kv.page_size.divmod(packed_page_iter_base + warp_idx * KV_THR_LAYOUT_ROW +
                                     lane_idx / KV_THR_LAYOUT_COL +
@@ -2588,8 +2585,9 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     for (uint32_t iter = 0; iter < num_iterations; ++iter) {
       packed_page_iter_base += CTA_TILE_KV;
 #pragma unroll
-      for (uint32_t i = 0;
-           i < NUM_MMA_KV * (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q; ++i) {
+      for (uint32_t i = 0; i < NUM_MMA_KV * KV_THR_LAYOUT_COL /
+                                   (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q;
+           ++i) {
         uint32_t page_iter, entry_idx;
         paged_kv.page_size.divmod(packed_page_iter_base + warp_idx * KV_THR_LAYOUT_ROW +
                                       lane_idx / KV_THR_LAYOUT_COL +
@@ -2746,14 +2744,14 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
   const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
 
   const uint32_t max_num_mma_kv_reg =
-        (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
-         !USE_FP16_QK_REDUCTION)
-            ? 2
-            : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
+      (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
+       !USE_FP16_QK_REDUCTION)
+          ? 2
+          : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
 
   const uint32_t max_num_mma_kv_smem =
-        (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
-        ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
+      (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
+      ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
 
   DISPATCH_NUM_MMA_KV(min(max_num_mma_kv_smem, max_num_mma_kv_reg), NUM_MMA_KV, {
     using KTraits =
@@ -2842,7 +2840,7 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
   int dev_id = 0;
   FI_GPU_CALL(gpuGetDevice(&dev_id));
   const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
-  
+
   const uint32_t max_num_mma_kv_reg =
       (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
        !USE_FP16_QK_REDUCTION)

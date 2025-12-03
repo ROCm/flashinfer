@@ -104,7 +104,7 @@ def batch_prefill_with_paged_kv_cache_example(
     wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
         workspace_buffer, kv_layout
     )
-    # Plan the batch prefill operation
+    # Create auxiliary data structures for batch prefill attention
     logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
     wrapper.plan(
         q_indptr_gpu,
@@ -379,39 +379,36 @@ if __name__ == "__main__":
     print("FlashInfer Batch Prefill Example")
     print("=" * 60)
 
-    # # Basic test with small batch
-    # batch_prefill_with_paged_kv_cache_example(
-    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True
-    # )
-    # # Test with logits soft cap
-    # batch_prefill_with_paged_kv_cache_example(
-    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
-    # )
-    # # Test with GQA (num_qo_heads > num_kv_heads)
-    # batch_prefill_with_paged_kv_cache_example(
-    #     4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False, True
-    # )
-    # # Test with different qo_len and kv_len
-    # batch_prefill_with_paged_kv_cache_example(
-    #     8, 256, 64, 16, 4, 16, 128, False, "NHD", "NONE", 0.0, False, True
-    # )
-    # # Test with smaller page size
-    # batch_prefill_with_paged_kv_cache_example(
-    #     4, 127, 127, 5, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
-    # )
-    # batch_prefill_with_paged_kv_cache_example(
-    #     12, 54, 37, 1, 8, 8, 64, True, "HND", "NONE", 0.0, False, True
-    # )
-    # # Test with return_lse=True
-    # batch_prefill_with_paged_kv_cache_example(
-    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True, True
-    # )
-    # batch_prefill_with_paged_kv_cache_example(
-    #     12, 54, 37, 16, 8, 8, 64, True, "HND", "NONE", 0.0, False, True
-    # )
-    # batch_prefill_with_paged_kv_cache_example(
-    #     12, 54, 37, 1, 8, 8, 64, True, "HND", "NONE", 0.0, False, True
-    # )
+    # ===============================
+    # Paged KV Cache Example
+    # ===============================
+
+    # Basic test with small batch
+    batch_prefill_with_paged_kv_cache_example(
+        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True
+    )
+    # Test with logits soft cap
+    batch_prefill_with_paged_kv_cache_example(
+        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
+    )
+    # Test with GQA (num_qo_heads > num_kv_heads)
+    batch_prefill_with_paged_kv_cache_example(
+        4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False, True
+    )
+    # Test with return_lse=True
+    batch_prefill_with_paged_kv_cache_example(
+        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True, True
+    )
+    batch_prefill_with_paged_kv_cache_example(
+        12, 54, 37, 1, 8, 8, 128, True, "NHD", "NONE", 0.0, False, True
+    )
+    batch_prefill_with_paged_kv_cache_example(
+        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    )
+
+    # ===============================
+    # Ragged KV Cache Example
+    # ===============================
 
     # Basic ragged KV cache test with causal masking
     batch_prefill_with_ragged_kv_cache_example(
