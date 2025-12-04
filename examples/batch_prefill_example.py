@@ -100,7 +100,10 @@ def batch_prefill_with_paged_kv_cache_example(
     kv_last_page_len_gpu = kv_last_page_len_cpu.to("cuda:0")
 
     # Create workspace buffer and wrapper
-    workspace_buffer = torch.empty(256 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    # NOTE: 512 MB workspace is needed for configurations with high GQA ratios
+    # (num_qo_heads >> num_kv_heads) and small page sizes, which increase the
+    # temporary buffer requirements for split-KV attention.
+    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
     wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
         workspace_buffer, kv_layout
     )
@@ -296,7 +299,8 @@ def batch_prefill_with_ragged_kv_cache_example(
         torch.arange(0, batch_size + 1, device="cuda:0", dtype=torch.int32) * kv_len
     )
 
-    workspace_buffer = torch.empty(256 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    # NOTE: 512 MB workspace is needed for configurations with high GQA ratios
+    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
     wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
         workspace_buffer, kv_layout
     )
@@ -404,6 +408,14 @@ if __name__ == "__main__":
     )
     batch_prefill_with_paged_kv_cache_example(
         12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    )
+    # Tests the partition_kv=True mode
+    batch_prefill_with_paged_kv_cache_example(
+        12, 512, 127, 1, 4, 4, 128, False, "NHD", "NONE", 0.0, True, True
+    )
+    # Tests the allocation of the workspace buffer
+    batch_prefill_with_paged_kv_cache_example(
+        12, 512, 37, 1, 4, 32, 128, False, "NHD", "NONE", 0.0, True, True
     )
 
     # ===============================
