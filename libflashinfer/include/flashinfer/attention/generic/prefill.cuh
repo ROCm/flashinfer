@@ -335,8 +335,6 @@ __device__ __forceinline__ void produce_kv(
     typename KTraits::DTypeKV** gptr, const uint32_t stride_n, const uint32_t kv_idx_base,
     const uint32_t kv_len, const dim3 tid = threadIdx) {
   static_assert(KTraits::SWIZZLE_MODE_KV == SwizzleMode::kLinear);
-
-  // NOTE: for fp8, this function doesn't work for head_dim = 64 at the moment
   const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z), lane_idx = tid.x;
   using DTypeKV = typename KTraits::DTypeKV;
   constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;  // 16
@@ -370,12 +368,11 @@ __device__ __forceinline__ void produce_kv(
 }
 
 template <bool produce_v, typename KTraits>
-__device__ __forceinline__ void page_produce_kv_impl(
+__device__ __forceinline__ void page_produce_kv(
     smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> smem, uint32_t* smem_offset,
     const paged_kv_t<typename KTraits::DTypeKV, typename KTraits::IdType>& paged_kv,
     const uint32_t kv_idx_base, const size_t* thr_local_kv_offset, const uint32_t kv_len,
     const dim3 tid = threadIdx) {
-  // NOTE: for fp8, this function doesn't work for head_dim = 64 at the moment
   using DTypeKV = typename KTraits::DTypeKV;
   constexpr SharedMemFillMode fill_mode =
       produce_v ? SharedMemFillMode::kFillZero : SharedMemFillMode::kNoFill;
@@ -410,16 +407,6 @@ __device__ __forceinline__ void page_produce_kv_impl(
                    (sizeof(DTypeKV) * NUM_MMA_D * 2);
   }
   *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
-}
-
-template <bool produce_v, typename KTraits>
-__device__ __forceinline__ void page_produce_kv(
-    smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> smem, uint32_t* smem_offset,
-    const paged_kv_t<typename KTraits::DTypeKV, typename KTraits::IdType>& paged_kv,
-    const uint32_t kv_idx_base, const size_t* thr_local_kv_offset, const uint32_t kv_len,
-    const dim3 tid = threadIdx) {
-  page_produce_kv_impl<produce_v, KTraits>(smem, smem_offset, paged_kv, kv_idx_base,
-                                           thr_local_kv_offset, kv_len, tid);
 }
 
 template <uint32_t HEAD_DIM>
