@@ -495,14 +495,102 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
 
 
+@pytest.mark.parametrize("batch_size", [12, 17, 128])
+@pytest.mark.parametrize("kv_len", [54, 97, 512, 2048])
+@pytest.mark.parametrize("qo_len", [37, 17, 127, 577])
+@pytest.mark.parametrize("num_kv_heads", [4])
+@pytest.mark.parametrize("num_qo_heads", [4, 32])
+@pytest.mark.parametrize("head_dim", [128, 256])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
+@pytest.mark.parametrize("logits_soft_cap", [0.0])
+@pytest.mark.parametrize("return_lse", [True])
+def test_batch_prefill_with_ragged_kv_cache(
+    batch_size,
+    kv_len,
+    qo_len,
+    num_kv_heads,
+    num_qo_heads,
+    head_dim,
+    causal,
+    pos_encoding_mode,
+    logits_soft_cap,
+    return_lse,
+):
+    if qo_len > kv_len and causal:
+        pytest.skip("qo_len > kv_len and causal is not supported")
+    kv_layout = "NHD"
+    q = torch.randn(
+        batch_size * qo_len,
+        num_qo_heads,
+        head_dim,
+        device="cuda:0",
+        dtype=torch.float16,
+    )
+    q_indptr = (
+        torch.arange(0, batch_size + 1, device="cuda:0", dtype=torch.int32) * qo_len
+    )
+
+    k = torch.randn(
+        batch_size * kv_len,
+        num_kv_heads,
+        head_dim,
+        device="cuda:0",
+        dtype=torch.float16,
+    )
+    v = torch.randn(
+        batch_size * kv_len,
+        num_kv_heads,
+        head_dim,
+        device="cuda:0",
+        dtype=torch.float16,
+    )
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, device="cuda:0", dtype=torch.int32) * kv_len
+    )
+
+    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace_buffer, kv_layout
+    )
+    wrapper.plan(
+        q_indptr,
+        kv_indptr,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        causal=causal,
+        pos_encoding_mode=pos_encoding_mode,
+        logits_soft_cap=logits_soft_cap,
+    )
+    if return_lse:
+        o, _ = wrapper.run(q, k, v, return_lse=True)
+    else:
+        o = wrapper.run(q, k, v)
+
+    for i in range(batch_size):
+        o_ref_i = flashinfer.prefill.single_prefill_with_kv_cache(
+            q[q_indptr[i] : q_indptr[i + 1]],
+            k[kv_indptr[i] : kv_indptr[i + 1]],
+            v[kv_indptr[i] : kv_indptr[i + 1]],
+            causal=causal,
+            pos_encoding_mode=pos_encoding_mode,
+            logits_soft_cap=logits_soft_cap,
+        )
+        o_i = o[q_indptr[i] : q_indptr[i + 1]]
+        torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
+
+
 if __name__ == "__main__":
     test_batch_prefill_with_paged_kv_cache(
         12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True
     )
-
+    test_batch_prefill_with_tuple_paged_kv_cache(
+        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True
+    )
     test_batch_prefill_with_paged_kv_cache(
         12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", False, 0.0, False, True
     )
-    test_batch_prefill_with_tuple_paged_kv_cache(
-        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True
+    test_batch_prefill_with_ragged_kv_cache(
+        12, 54, 37, 8, 8, 128, True, "NONE", 0.0, False
     )
