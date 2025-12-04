@@ -214,6 +214,7 @@ testpaths = [
     "tests/test_page.py",
     "tests/test_rope.py",
     "tests/test_single_prefill_kernels_hip.py",
+    "tests/test_batch_prefill_paged_kernels_hip.py",
     "tests/test_sliding_window_hip.py",
 ]
 python_classes = ["Test*"]
