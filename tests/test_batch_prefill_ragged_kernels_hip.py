@@ -90,7 +90,7 @@ def test_batch_prefill_with_ragged_kv_cache(
         torch.arange(0, batch_size + 1, device="cuda:0", dtype=torch.int32) * kv_len
     )
 
-    workspace_buffer = torch.empty(256 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
     wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
         workspace_buffer, kv_layout
     )
@@ -172,7 +172,7 @@ def test_batch_prefill_with_ragged_kv_cache_custom_mask(
         torch.arange(0, batch_size + 1, device="cuda:0", dtype=torch.int32) * kv_len
     )
 
-    workspace_buffer = torch.empty(256 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
     wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
         workspace_buffer, kv_layout
     )
