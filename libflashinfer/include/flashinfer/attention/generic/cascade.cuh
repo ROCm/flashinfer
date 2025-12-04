@@ -128,6 +128,9 @@ __device__ __forceinline__ void threadblock_sync_state(state_t<vec_size>& st, DT
     v.cast_load(v_smem + iter * head_dim + tx * vec_size);
     st.merge(v, s, 1);
   }
+  // Ensure all threads finish reading shared memory before any thread
+  // proceeds to potentially reuse the shared memory in the next iteration.
+  __syncthreads();
 }
 
 template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>
@@ -147,6 +150,8 @@ __device__ __forceinline__ void threadblock_sum(vec_t<float, vec_size>& v, DType
       v[i] += v_iter[i];
     }
   }
+  // Ensure all threads finish reading shared memory before proceeding.
+  __syncthreads();
 }
 
 template <uint32_t vec_size, typename DTypeIn, typename DTypeO>
