@@ -334,10 +334,39 @@ __device__ __forceinline__ void produce_kv(
     smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> smem, uint32_t* smem_offset,
     typename KTraits::DTypeKV** gptr, const uint32_t stride_n, const uint32_t kv_idx_base,
     const uint32_t kv_len, const dim3 tid = threadIdx) {
+  static_assert(KTraits::SWIZZLE_MODE_KV == SwizzleMode::kLinear);
+
   // NOTE: for fp8, this function doesn't work for head_dim = 64 at the moment
   const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z), lane_idx = tid.x;
-  produce_kv_impl<KTraits, produce_v, fill_mode>(warp_idx, lane_idx, smem, smem_offset, gptr,
-                                                 stride_n, kv_idx_base, kv_len);
+  using DTypeKV = typename KTraits::DTypeKV;
+  constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;  // 16
+  constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
+  constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
+  constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
+  constexpr uint32_t NUM_MMA_D = produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
+  constexpr uint32_t UPCAST_STRIDE =
+      produce_v ? KTraits::UPCAST_STRIDE_V : KTraits::UPCAST_STRIDE_K;
+  constexpr uint32_t VECTOR_BIT_WIDTH = KTraits::VECTOR_BIT_WIDTH;
+
+  // NOTE: NUM_MMA_KV*4/NUM_WARPS_Q = NUM_WARPS_KV*NUM_MMA_KV*4/num_warps
+  static_assert(NUM_MMA_KV * 4 % NUM_WARPS_Q == 0);
+  uint32_t kv_idx = kv_idx_base + warp_idx * 4 + lane_idx / KV_THR_LAYOUT_COL;
+
+#pragma unroll
+  for (uint32_t i = 0; i < NUM_MMA_KV * 4 / NUM_WARPS_Q; ++i) {
+#pragma unroll
+    for (uint32_t j = 0; j < NUM_MMA_D / (8 / sizeof(DTypeKV)); ++j) {
+      smem.template load_vector_async<fill_mode>(*smem_offset, *gptr, kv_idx < kv_len);
+      *smem_offset = smem.template advance_offset_by_column<16>(*smem_offset, j);
+      *gptr += 16 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+    }
+    kv_idx += NUM_WARPS * 4;
+    *smem_offset = smem.template advance_offset_by_row<NUM_WARPS * 4, UPCAST_STRIDE>(*smem_offset) -
+                   (sizeof(DTypeKV) * NUM_MMA_D * 2);
+    *gptr += NUM_WARPS * 4 * stride_n -
+             sizeof(DTypeKV) * NUM_MMA_D * 2 * upcast_size<DTypeKV, VECTOR_BIT_WIDTH>();
+  }
+  *smem_offset -= KTraits::CTA_TILE_KV * UPCAST_STRIDE;
 }
 
 template <bool produce_v, typename KTraits>
