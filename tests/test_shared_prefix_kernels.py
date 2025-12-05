@@ -69,7 +69,6 @@ def ceil_div(a, b):
 @pytest.mark.parametrize("causal", [False])
 @pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("page_size", [1, 16])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_attention_with_shared_prefix_paged_kv_cache(
     stage,
     batch_size,
@@ -237,7 +236,6 @@ def test_batch_attention_with_shared_prefix_paged_kv_cache(
 
 @pytest.mark.parametrize("seed", [0])
 @pytest.mark.parametrize("num_tries", [50])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_merge_state_in_place_with_mask(seed, num_tries):
     seq_len = 512
     num_heads = 32

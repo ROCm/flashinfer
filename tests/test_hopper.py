@@ -27,7 +27,6 @@ from flashinfer.utils import is_sm90a_supported
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("logits_soft_cap", [0.0, 30.0])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_prefill(
     seq_len, num_qo_heads, num_kv_heads, causal, head_dim, logits_soft_cap
 ):
@@ -64,7 +63,6 @@ def test_single_prefill(
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("head_dim", [128])  # [64, 128, 256])
 @pytest.mark.parametrize("logits_soft_cap", [0.0, 30.0])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_ragged_prefill(
     batch_size, seq_len, num_qo_heads, num_kv_heads, causal, head_dim, logits_soft_cap
 ):
@@ -130,7 +128,6 @@ def test_batch_ragged_prefill(
 @pytest.mark.parametrize("num_heads", [4, 32, 128])
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("dtype", [torch.half, torch.bfloat16])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_deepseek_prefill(
     batch_size,
     seq_len,
@@ -209,7 +206,6 @@ def test_deepseek_prefill(
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("logits_soft_cap", [0.0, 30.0])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_paged_prefill(
     batch_size,
     seq_len,

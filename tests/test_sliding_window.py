@@ -61,7 +61,6 @@ def warmup_jit():
 @pytest.mark.parametrize("num_kv_heads", [1, 4])
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_decode_sliding_window(
     seq_len, window_left, num_kv_heads, num_qo_heads, head_dim
 ):
@@ -89,7 +88,6 @@ def test_single_decode_sliding_window(
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("page_size", [1, 16])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_decode_sliding_window(
     batch_size, kv_len, window_left, num_kv_heads, num_qo_heads, head_dim, page_size
 ):
@@ -171,7 +169,6 @@ def test_batch_decode_sliding_window(
 @pytest.mark.parametrize("num_kv_heads", [1, 4])
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_decode_prefill_sliding_window_match(
     seq_len, window_left, num_kv_heads, num_qo_heads, head_dim
 ):
@@ -196,7 +193,6 @@ def test_single_decode_prefill_sliding_window_match(
 @pytest.mark.parametrize("num_kv_heads", [1, 4])
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_prefill_sliding_window(
     seq_len, window_left, num_kv_heads, num_qo_heads, head_dim
 ):
@@ -229,7 +225,6 @@ def test_single_prefill_sliding_window(
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("page_size", [1, 16])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_paged_prefill_sliding_window(
     batch_size,
     kv_len,
@@ -330,7 +325,6 @@ def test_batch_paged_prefill_sliding_window(
 @pytest.mark.parametrize("num_kv_heads", [1, 4])
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_ragged_prefill_sliding_window(
     batch_size, kv_len, qo_len, window_left, num_kv_heads, num_qo_heads, head_dim
 ):

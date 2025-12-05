@@ -46,7 +46,6 @@ def warmup_jit():
 @pytest.mark.parametrize("num_kv_heads", [1, 4, 8])
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_paged_decode_packed_input(
     batch_size,
     page_size,

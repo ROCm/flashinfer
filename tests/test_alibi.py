@@ -60,7 +60,6 @@ def warmup_jit():
 @pytest.mark.parametrize("seq_len", [1, 9, 81, 729])
 @pytest.mark.parametrize("num_heads", [4, 8, 32])
 @pytest.mark.parametrize("head_dim", [128, 256])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_decode_alibi(
     seq_len,
     num_heads,
@@ -81,7 +80,6 @@ def test_single_decode_alibi(
 @pytest.mark.parametrize("num_heads", [4, 8, 32])
 @pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("causal", [False, True])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_prefill_alibi(
     q_len,
     kv_len,

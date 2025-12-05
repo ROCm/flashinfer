@@ -86,7 +86,6 @@ def bsr_attention_ref(
 @pytest.mark.parametrize("num_kv_heads", [1, 4, 16])
 @pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("mask_inside_block", [True, False])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_block_sparse_attention(
     R, C, M, N, num_qo_heads, num_kv_heads, head_dim, mask_inside_block
 ):
