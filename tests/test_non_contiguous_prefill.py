@@ -43,7 +43,6 @@ def warmup_jit():
 @pytest.mark.parametrize("num_qo_heads", [4, 8, 32])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_prefill_packed_input(
     seq_len, num_kv_heads, num_qo_heads, head_dim, causal
 ):
@@ -79,7 +78,6 @@ def test_single_prefill_packed_input(
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_ragged_prefill_packed_input(
     batch_size, seq_len, num_kv_heads, num_qo_heads, head_dim, causal
 ):
@@ -124,7 +122,6 @@ def test_batch_ragged_prefill_packed_input(
 @pytest.mark.parametrize("num_qo_heads", [4, 8])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_paged_prefill_packed_input(
     batch_size,
     page_size,

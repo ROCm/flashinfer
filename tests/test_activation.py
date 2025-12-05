@@ -38,7 +38,6 @@ def warmup_jit():
 @pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize("seq_len", [1, 2, 4, 8, 16, 32, 64, 128, 512])
 @pytest.mark.parametrize("enable_pdl", [True, False])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_fused_silu_mul(dim, batch_size, seq_len, enable_pdl):
     x = torch.randn(batch_size, seq_len, 2 * dim).to(0).to(torch.float16)
     major, _ = get_compute_capability(x.device)
@@ -53,7 +52,6 @@ def test_fused_silu_mul(dim, batch_size, seq_len, enable_pdl):
 @pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize("seq_len", [1, 2, 4, 8, 16, 32, 64, 128, 512])
 @pytest.mark.parametrize("enable_pdl", [True, False])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_fused_gelu_tanh_mul(dim, batch_size, seq_len, enable_pdl):
     x = torch.randn(batch_size, seq_len, 2 * dim).to(0).to(torch.float16)
     major, _ = get_compute_capability(x.device)
@@ -68,7 +66,6 @@ def test_fused_gelu_tanh_mul(dim, batch_size, seq_len, enable_pdl):
 @pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize("seq_len", [1, 2, 4, 8, 16, 32, 64, 128, 512])
 @pytest.mark.parametrize("enable_pdl", [True, False])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_fused_gelu_mul(dim, batch_size, seq_len, enable_pdl):
     x = torch.randn(batch_size, seq_len, 2 * dim).to(0).to(torch.float16)
     major, _ = get_compute_capability(x.device)
