@@ -97,6 +97,95 @@ class AotDistribution(Distribution):
     def has_ext_modules(self) -> bool:
         return enable_aot
 
+    cutlass = root / "3rdparty" / "cutlass"
+    include_dirs = [
+        root.resolve() / "libflashinfer/include",
+        cutlass.resolve() / "include",  # for group gemm
+        cutlass.resolve() / "tools" / "util" / "include",
+    ]
+    cxx_flags = [
+        "-O3",
+        "-Wno-switch-bool",
+        "-DPy_LIMITED_API=0x03080000",
+    ]
+    nvcc_flags = [
+        "-O3",
+        "-std=c++17",
+        "--threads=1",
+        "-Xfatbin",
+        "-compress-all",
+        "-use_fast_math",
+        "-DNDEBUG",
+        "-DPy_LIMITED_API=0x03080000",
+    ]
+    libraries = [
+        "cublas",
+        "cublasLt",
+    ]
+    sm90a_flags = "-gencode arch=compute_90a,code=sm_90a".split()
+    kernel_sources = [
+        "csrc/bmm_fp8.cu",
+        "csrc/cascade.cu",
+        "csrc/group_gemm.cu",
+        "csrc/norm.cu",
+        "csrc/page.cu",
+        "csrc/quantization.cu",
+        "csrc/rope.cu",
+        "csrc/sampling.cu",
+        "csrc/renorm.cu",
+        "csrc/activation.cu",
+        "csrc/batch_decode.cu",
+        "csrc/batch_prefill.cu",
+        "csrc/single_decode.cu",
+        "csrc/single_prefill.cu",
+        # "csrc/pod.cu",  # Temporarily disabled
+        "csrc/flashinfer_ops.cu",
+        "csrc/custom_all_reduce.cu",
+    ]
+    kernel_sm90_sources = [
+        "csrc/group_gemm_sm90.cu",
+        "csrc/single_prefill_sm90.cu",
+        "csrc/batch_prefill_sm90.cu",
+        "csrc/flashinfer_ops_sm90.cu",
+        "csrc/group_gemm_f16_f16_sm90.cu",
+        "csrc/group_gemm_bf16_bf16_sm90.cu",
+        "csrc/group_gemm_e4m3_f16_sm90.cu",
+        "csrc/group_gemm_e5m2_f16_sm90.cu",
+        "csrc/group_gemm_e4m3_bf16_sm90.cu",
+        "csrc/group_gemm_e5m2_bf16_sm90.cu",
+    ]
+    decode_sources = list(gen_dir.glob("*decode_head*.cu"))
+    prefill_sources = [
+        f for f in gen_dir.glob("*prefill_head*.cu") if "_sm90" not in f.name
+    ]
+    prefill_sm90_sources = list(gen_dir.glob("*prefill_head*_sm90.cu"))
+    ext_modules = [
+        torch_cpp_ext.CUDAExtension(
+            name="flashinfer.flashinfer_kernels",
+            sources=kernel_sources + decode_sources + prefill_sources,
+            include_dirs=include_dirs,
+            libraries=libraries,
+            extra_compile_args={
+                "cxx": cxx_flags,
+                "nvcc": nvcc_flags,
+            },
+            py_limited_api=True,
+        )
+    ]
+    if enable_sm90:
+        ext_modules += [
+            torch_cpp_ext.CUDAExtension(
+                name="flashinfer.flashinfer_kernels_sm90",
+                sources=kernel_sm90_sources + prefill_sm90_sources,
+                include_dirs=include_dirs,
+                libraries=libraries,
+                extra_compile_args={
+                    "cxx": cxx_flags,
+                    "nvcc": nvcc_flags + sm90a_flags,
+                },
+                py_limited_api=True,
+            ),
+        ]
 
 setuptools.setup(
     version=get_version(),
