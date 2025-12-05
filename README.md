@@ -89,7 +89,7 @@ micromamba create -n <environment_name> python=3.12 -c conda-forge --override-ch
 # Activate the environment
 micromamba activate <environment_name>
 # Install added dependencies using pip
-pip install setuptools-scm scikit-build-core pytest numpy cmake ninja pybind11
+pip install setuptools-scm scikit-build-core pytest numpy scipy cmake ninja pybind11
 pip install torch --index-url https://download.pytorch.org/whl/rocm6.4
 ```
 

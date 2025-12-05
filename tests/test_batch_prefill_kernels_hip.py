@@ -46,7 +46,7 @@ def warmup_jit():
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("kv_layout", ["NHD"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
-@pytest.mark.parametrize("use_cuda_graph", [False])
+@pytest.mark.parametrize("use_cuda_graph", [False, True])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
 @pytest.mark.parametrize("contiguous_kv", [True])
@@ -106,7 +106,9 @@ def test_batch_prefill_with_paged_kv_cache(
         (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32
     )
 
-    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    workspace_buffer = torch.empty(
+        1024 * 1024 * 1024, dtype=torch.int8, device="cuda:0"
+    )
     if not use_cuda_graph:
         q_indptr_gpu = q_indptr_cpu.to(0)
         kv_indptr_gpu = kv_indptr_cpu.to(0)
@@ -153,7 +155,7 @@ def test_batch_prefill_with_paged_kv_cache(
         wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
             workspace_buffer,
             kv_layout,
-            use_cuda_graph=False,
+            use_cuda_graph=True,
             qo_indptr_buf=q_indptr_buffer,
             paged_kv_indptr_buf=kv_indptr_buffer,
             paged_kv_indices_buf=kv_indices_buffer,
@@ -278,7 +280,7 @@ def test_batch_prefill_with_paged_kv_cache(
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("kv_layout", ["NHD"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
-@pytest.mark.parametrize("use_cuda_graph", [False])
+@pytest.mark.parametrize("use_cuda_graph", [False, True])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
 @pytest.mark.parametrize("contiguous_kv", [True])
@@ -346,7 +348,9 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32
     )
 
-    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    workspace_buffer = torch.empty(
+        1024 * 1024 * 1024, dtype=torch.int8, device="cuda:0"
+    )
     if not use_cuda_graph:
         q_indptr_gpu = q_indptr_cpu.to(0)
         kv_indptr_gpu = kv_indptr_cpu.to(0)
@@ -388,7 +392,7 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
             workspace_buffer,
             kv_layout,
-            use_cuda_graph=False,
+            use_cuda_graph=True,
             qo_indptr_buf=q_indptr_buffer,
             paged_kv_indptr_buf=kv_indptr_buffer,
             paged_kv_indices_buf=kv_indices_buffer,
