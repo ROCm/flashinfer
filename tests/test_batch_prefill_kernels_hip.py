@@ -153,7 +153,7 @@ def test_batch_prefill_with_paged_kv_cache(
         wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
             workspace_buffer,
             kv_layout,
-            use_cuda_graph=False,
+            use_cuda_graph=True,
             qo_indptr_buf=q_indptr_buffer,
             paged_kv_indptr_buf=kv_indptr_buffer,
             paged_kv_indices_buf=kv_indices_buffer,
@@ -388,7 +388,7 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
             workspace_buffer,
             kv_layout,
-            use_cuda_graph=False,
+            use_cuda_graph=True,
             qo_indptr_buf=q_indptr_buffer,
             paged_kv_indptr_buf=kv_indptr_buffer,
             paged_kv_indices_buf=kv_indices_buffer,

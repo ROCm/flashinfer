@@ -48,7 +48,6 @@ dev = [
 [build-system]
 requires = [
     "scikit-build-core>=0.4.3",
-    "setuptools_scm>=8.0.0",
     "torch >= 2.7",
     "numpy",
     "setuptools-scm >=9.2"
@@ -208,13 +207,16 @@ testpaths = [
     "tests/test_batch_decode_kernels_hip_fp8.py",
     "tests/test_batch_decode_kernels_hip.py",
     "tests/test_batch_decode_vllm.py",
+    "tests/test_batch_prefill_kernels_hip.py",
+    "tests/test_block_sparse_indices_to_vector_sparse_offsets.py",
+    "tests/test_custom_allreduce.py",
+    "tests/test_decode_prefill_lse.py",
     "tests/test_logits_cap_hip.py",
-    "tests/test_non_contiguous_decode_hip.py",
+    "tests/test_non_contiguous_decode.py",
     "tests/test_norm_hip.py",
     "tests/test_page.py",
     "tests/test_rope.py",
     "tests/test_single_prefill_kernels_hip.py",
-    "tests/test_batch_prefill_kernels_hip.py",
     "tests/test_sliding_window_hip.py",
 ]
 python_classes = ["Test*"]
