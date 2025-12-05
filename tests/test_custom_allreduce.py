@@ -200,7 +200,6 @@ class CudaRTLibrary:
         return devPtr
 
 
-@pytest.mark.xfail(reason="Some configurations are not supported yet")
 def _run_correctness_worker(
     world_size, rank, distributed_init_port, test_sizes, num_ctas_list
 ):

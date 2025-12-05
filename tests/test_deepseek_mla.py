@@ -157,7 +157,6 @@ def attention_ref(
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("backend", ["fa2", "fa3"])
 @pytest.mark.parametrize("dtype", [torch.half])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_prefill_with_kv_cache(
     kv_len,
     qo_len,
@@ -191,7 +190,6 @@ def test_single_prefill_with_kv_cache(
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("backend", ["fa2", "fa3"])
 @pytest.mark.parametrize("dtype", [torch.half])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_prefill_with_ragged_kv_cache(
     batch_size,
     kv_len,
@@ -282,7 +280,6 @@ def generate_kv_from_cache(ckv, kpe, kv_len, batch_size, num_heads):
 @pytest.mark.parametrize("page_size", [1])
 @pytest.mark.parametrize("backend", ["fa2", "fa3"])
 @pytest.mark.parametrize("dtype", [torch.half])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_mla_varlen_page_attention(
     batch_size,
     kv_len_0,
@@ -416,7 +413,6 @@ def test_batch_mla_varlen_page_attention(
 @pytest.mark.parametrize("page_size", [16, 32])
 @pytest.mark.parametrize("backend", ["fa2", "fa3"])
 @pytest.mark.parametrize("dtype", [torch.half])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_mla_oob_kv_nan(
     batch_size, kv_len, qo_len, num_heads, causal, page_size, backend, dtype
 ):
@@ -498,7 +494,6 @@ def test_batch_mla_oob_kv_nan(
 @pytest.mark.parametrize("backend", ["fa2", "fa3"])
 @pytest.mark.parametrize("use_cuda_graph", [False])
 @pytest.mark.parametrize("dtype", [torch.half])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_batch_mla_page_attention(
     batch_size,
     kv_len,

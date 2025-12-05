@@ -71,7 +71,6 @@ def attention_logits_soft_cap_torch(q, k, v, soft_cap):
 @pytest.mark.parametrize("num_heads", [4, 8, 32])
 @pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("soft_cap", [1.0, 30.0, 50.0])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_decode_logits_soft_cap(
     seq_len,
     num_heads,
@@ -92,7 +91,6 @@ def test_single_decode_logits_soft_cap(
 @pytest.mark.parametrize("num_heads", [4, 8, 32])
 @pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("soft_cap", [1.0, 30.0, 50.0])
-@pytest.mark.xfail(reason="Not supported for the HIP backend for CDNA3")
 def test_single_prefill_logits_soft_cap(
     q_len,
     kv_len,
