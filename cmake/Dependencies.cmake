@@ -19,24 +19,6 @@ if(NOT Python3_FOUND)
       "Python3 not found it is required to generate the kernel sources.")
 endif()
 
-# === Test Dependencies ===
-if(FLASHINFER_UNITTESTS)
-  find_package(GTest REQUIRED)
-  include(GoogleTest)
-endif()
-
-# === Benchmark Dependencies ===
-if(FLASHINFER_CXX_BENCHMARKS)
-  include(FetchContent)
-
-  # NVBench for GPU benchmarking
-  FetchContent_Declare(
-    nvbench
-    GIT_REPOSITORY https://github.com/NVIDIA/nvbench.git
-    GIT_TAG c03033b50e46748207b27685b1cdfcbe4a2fec59)
-  FetchContent_MakeAvailable(nvbench)
-endif()
-
 # === Boost Dependency for FP16 QK Reductions ===
 if(FLASHINFER_GEN_USE_FP16_QK_REDUCTIONS)
   include(FetchContent)
@@ -53,7 +35,7 @@ else()
 endif()
 
 # === Distributed component dependencies ===
-if(FLASHINFER_DISTRIBUTED OR FLASHINFER_DIST_UNITTESTS)
+if(FLASHINFER_DISTRIBUTED)
   include(FetchContent)
   FetchContent_Declare(
     mscclpp
@@ -83,39 +65,6 @@ if(FLASHINFER_DISTRIBUTED OR FLASHINFER_DIST_UNITTESTS)
   find_package(MPI REQUIRED)
 endif()
 
-# === FP8 Dependencies ===
-if(FLASHINFER_FP8_TESTS OR FLASHINFER_FP8_BENCHMARKS)
-  # Verify CUDA architecture is SM90 or higher
-  if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "90"
-     AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "90a")
-    message(
-      FATAL_ERROR "FP8 tests/benchmarks require SM90 or higher architecture")
-  endif()
-
-  # Find PyTorch which is required for FP8 features
-  find_package(Torch REQUIRED)
-  if(NOT Torch_FOUND)
-    message(
-      FATAL_ERROR "PyTorch is required for FP8 tests/benchmarks but not found")
-  endif()
-  message(STATUS "Found PyTorch: ${TORCH_INCLUDE_DIRS}")
-
-  # Fetch Flash Attention repository with specific commit
-  include(FetchContent)
-  FetchContent_Declare(
-    flash_attention
-    GIT_REPOSITORY https://github.com/Dao-AILab/flash-attention.git
-    GIT_TAG 29ef580560761838c0e9e82bc0e98d04ba75f949)
-  FetchContent_Populate(flash_attention)
-
-  # Set Flash Attention 3 include directory
-  set(FA3_INCLUDE_DIR "${flash_attention_SOURCE_DIR}/csrc/flash_attn/hopper")
-  message(STATUS "Flash Attention 3 source directory: ${FA3_INCLUDE_DIR}")
-
-  # Compile Flash Attention 3 kernel library
-  file(GLOB FA3_IMPL_FILES "${FA3_INCLUDE_DIR}/flash_fwd_*.cu")
-endif()
-
 # === TVM Binding dependencies ===
 if(FLASHINFER_TVM_BINDING)
   # Resolve TVM source directory
@@ -137,20 +86,16 @@ endif()
 
 # FlashInfer internal paths
 set(FLASHINFER_INCLUDE_DIR
-    "${CMAKE_SOURCE_DIR}/libflashinfer/include"
+    "${CMAKE_SOURCE_DIR}/include"
     CACHE INTERNAL "FlashInfer include directory")
-
-set(FLASHINFER_UTILS_INCLUDE_DIR
-    "${CMAKE_SOURCE_DIR}/libflashinfer/utils"
-    CACHE INTERNAL "FlashInfer utilities include directory")
 
 # Generated code paths
 set(FLASHINFER_GENERATED_SOURCE_DIR
-    "${CMAKE_BINARY_DIR}/libflashinfer/src/generated"
+    "${CMAKE_BINARY_DIR}/src/generated"
     CACHE INTERNAL "FlashInfer generated source directory")
 
 set(FLASHINFER_GENERATED_SOURCE_DIR_ROOT
-    "${CMAKE_BINARY_DIR}/libflashinfer/src"
+    "${CMAKE_BINARY_DIR}/src"
     CACHE INTERNAL "FlashInfer generated source root directory")
 
 # === CUTLASS Configuration ===

@@ -6,10 +6,10 @@ function(flashinfer_configure_kernel_generation)
 
   # Setup generated directories
   set(GENERATED_SOURCE_DIR
-      "${CMAKE_BINARY_DIR}/libflashinfer/src/generated"
+      "${CMAKE_BINARY_DIR}/src/generated"
       CACHE INTERNAL "")
   set(GENERATED_SOURCE_DIR_ROOT
-      "${CMAKE_BINARY_DIR}/libflashinfer/src"
+      "${CMAKE_BINARY_DIR}/src"
       CACHE INTERNAL "")
   file(MAKE_DIRECTORY ${GENERATED_SOURCE_DIR})
 

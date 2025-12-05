@@ -233,13 +233,6 @@ if(FLASHINFER_ENABLE_HIP)
 
 endif()
 
-if(FLASHINFER_UNITTESTS)
-  enable_testing()
-endif()
-
-# Add library subdirectories
-add_subdirectory(libflashinfer)
-
 if(FLASHINFER_TVM_BINDING)
   add_subdirectory(tvm_binding)
 endif()
@@ -247,25 +240,20 @@ endif()
 if(FLASHINFER_BUILD_WHEELS)
   message(STATUS "Building Flashinfer PyTorch extension")
   add_subdirectory(flashinfer)
+  set(_FLASHINFER_INCLUDE_INSTALL_DIR "flashinfer/include")
+
+  # Include AOT kernel generation and compilation
+  if(FLASHINFER_BUILD_KERNELS)
+    include(AOTKernels)
+  endif()
+else()
+  set(_FLASHINFER_INCLUDE_INSTALL_DIR "${CMAKE_INSTALL_INCLUDEDIR}")
 endif()
 
-# Generate the flashinferConfig.cmake file
-include(CMakePackageConfigHelpers)
-write_basic_package_version_file(
-  "${CMAKE_CURRENT_BINARY_DIR}/flashinferConfigVersion.cmake"
-  VERSION ${PROJECT_VERSION}
-  COMPATIBILITY SameMajorVersion)
-
-configure_package_config_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/flashinferConfig.cmake.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/flashinferConfig.cmake"
-  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/flashinfer)
-
-if(NOT FLASHINFER_BUILD_WHEELS)
-  # Install CMake configuration
-  install(
-    FILES "${CMAKE_CURRENT_BINARY_DIR}/flashinferConfig.cmake"
-          "${CMAKE_CURRENT_BINARY_DIR}/flashinferConfigVersion.cmake"
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/flashinfer
-    COMPONENT Headers)
-endif()
+install(
+  DIRECTORY ${CMAKE_SOURCE_DIR}/include/
+  DESTINATION ${_FLASHINFER_INCLUDE_INSTALL_DIR}
+  COMPONENT Headers
+  FILES_MATCHING
+  REGEX "\\.(cuh|h|hpp)$"
+  PATTERN "distributed" EXCLUDE)

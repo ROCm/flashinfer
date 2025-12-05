@@ -61,5 +61,5 @@ repos:
         name: reuse (selective files)
         entry: ./scripts/reuse-check-selective.sh
         language: system
-        files: ^(libflashinfer/include/flashinfer/attention/generic/|libflashinfer/include/gpu_iface/).*\.(cuh|hpp|h)$
+        files: ^(include/flashinfer/attention/generic/|include/gpu_iface/).*\.(cuh|hpp|h)$
         pass_filenames: true
