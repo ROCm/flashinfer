@@ -156,7 +156,7 @@ def _check_torch_rocm_compatibility():
 try:
     from .__aot_prebuilt_uris__ import prebuilt_ops_uri
 except ImportError:
-    logger.info("AOT prebuilt URIs not found. JIT backend will be used instead.")
+    logger.info("Prebuilt AOT kernels not found, using JIT backend.")
     prebuilt_ops_uri = None
 
 try:
