@@ -19,8 +19,8 @@ FlashInfer: Fast Attention Algorithms for LLM Inference
 """
 import ctypes
 import os
-import sys
-from pathlib import Path
+
+from .jit.core import logger
 
 # ==============================================
 # PyTorch ROCm Compatibility Check
@@ -91,8 +91,6 @@ def _check_torch_rocm_compatibility():
 
     Provides helpful error messages to guide users to correct installation.
     """
-    import re
-    import subprocess
 
     # Check for torch package
     try:
@@ -157,8 +155,8 @@ def _check_torch_rocm_compatibility():
 
 try:
     from .__aot_prebuilt_uris__ import prebuilt_ops_uri
-except ImportError as e:
-    print(f"Failed to import __aot_prebuilt_uris__: {e}")
+except ImportError:
+    logger.info("Prebuilt AOT kernels not found, using JIT backend.")
     prebuilt_ops_uri = None
 
 try:
@@ -171,7 +169,7 @@ try:
         if os.path.exists(f"{cuda_lib_path}/libcudart.so.12"):
             ctypes.CDLL(f"{cuda_lib_path}/libcudart.so.12", mode=ctypes.RTLD_GLOBAL)
 except ImportError as e:
-    print(f"Failed to import __config__: {e}")
+    logger.error(f"Failed to import __config__: {e}")
     raise e
 
 # Run the Rocm check

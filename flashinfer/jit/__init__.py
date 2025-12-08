@@ -129,6 +129,3 @@ try:
 
 except ImportError:
     pass
-
-if not has_prebuilt_ops:
-    logger.info("Prebuilt kernels not found, using JIT backend")
