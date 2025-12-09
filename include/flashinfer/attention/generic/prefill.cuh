@@ -1644,6 +1644,15 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
         constexpr uint32_t num_threads = (NUM_WARPS_Q * NUM_WARPS_KV) * WARP_SIZE;
         auto kernel = SinglePrefillWithKVCacheKernel<KTraits, Params>;
         size_t smem_size = sizeof(typename KTraits::SharedStorage);
+        // Check if shared memory requirement exceeds hardware limit (important for AMD GPUs with
+        // 64KB limit)
+        if (smem_size > static_cast<size_t>(max_smem_per_threadblock)) {
+          std::ostringstream err_msg;
+          err_msg << "FlashInfer: Shared memory requirement (" << smem_size
+                  << " bytes) exceeds hardware limit (" << max_smem_per_threadblock
+                  << " bytes). Consider using smaller head_dim or CTA_TILE_Q.";
+          FLASHINFER_ERROR(err_msg.str());
+        }
         FI_GPU_CALL(
             gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
         int num_blocks_per_sm = 0;

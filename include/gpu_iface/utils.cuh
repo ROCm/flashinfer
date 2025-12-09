@@ -79,8 +79,12 @@ inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_di
     }
   }
 #elif defined(PLATFORM_HIP_DEVICE)
-  // Simplified version for HIP
-  if (avg_packed_qo_len > 64 && head_dim < 256) {
+  // HIP version: AMD GPUs have 64KB shared memory limit with warp size 64
+  // For head_dim >= 256, CTA_TILE_Q=16 requires >64KB shared memory
+  // Always use CTA_TILE_Q=64 for large head dimensions
+  if (head_dim >= 256) {
+    return 64;
+  } else if (avg_packed_qo_len > 64 && head_dim < 256) {
     return 128;
   } else {
     return avg_packed_qo_len <= 16 ? 16 : 64;

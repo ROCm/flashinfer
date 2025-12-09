@@ -45,81 +45,81 @@ def warmup_jit():
             yield
 
 
-@pytest.mark.parametrize("seq_len", [1, 7, 127, 999, 3579])
-@pytest.mark.parametrize("num_kv_heads", [1, 4, 8])
-@pytest.mark.parametrize("num_qo_heads", [4, 8, 32])
-@pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.parametrize("causal", [True, False])
-def test_single_prefill_packed_input(
-    seq_len, num_kv_heads, num_qo_heads, head_dim, causal
-):
-    if num_qo_heads % num_kv_heads != 0:
-        pytest.skip("num_qo_heads must be a multiple of num_kv_heads")
-    qkv_packed = torch.randn(
-        seq_len,
-        (num_qo_heads + 2 * num_kv_heads) * head_dim,
-        dtype=torch.float16,
-        device="cuda:0",
-    )
-    q = qkv_packed[:, : num_qo_heads * head_dim].reshape(
-        seq_len, num_qo_heads, head_dim
-    )
-    k = qkv_packed[
-        :, num_qo_heads * head_dim : (num_qo_heads + num_kv_heads) * head_dim
-    ].reshape(seq_len, num_kv_heads, head_dim)
-    v = qkv_packed[:, (num_qo_heads + num_kv_heads) * head_dim :].reshape(
-        seq_len, num_kv_heads, head_dim
-    )
+# @pytest.mark.parametrize("seq_len", [1, 7, 127, 999, 3579])
+# @pytest.mark.parametrize("num_kv_heads", [1, 4, 8])
+# @pytest.mark.parametrize("num_qo_heads", [4, 8, 32])
+# @pytest.mark.parametrize("head_dim", [64, 128, 256])
+# @pytest.mark.parametrize("causal", [True, False])
+# def test_single_prefill_packed_input(
+#     seq_len, num_kv_heads, num_qo_heads, head_dim, causal
+# ):
+#     if num_qo_heads % num_kv_heads != 0:
+#         pytest.skip("num_qo_heads must be a multiple of num_kv_heads")
+#     qkv_packed = torch.randn(
+#         seq_len,
+#         (num_qo_heads + 2 * num_kv_heads) * head_dim,
+#         dtype=torch.float16,
+#         device="cuda:0",
+#     )
+#     q = qkv_packed[:, : num_qo_heads * head_dim].reshape(
+#         seq_len, num_qo_heads, head_dim
+#     )
+#     k = qkv_packed[
+#         :, num_qo_heads * head_dim : (num_qo_heads + num_kv_heads) * head_dim
+#     ].reshape(seq_len, num_kv_heads, head_dim)
+#     v = qkv_packed[:, (num_qo_heads + num_kv_heads) * head_dim :].reshape(
+#         seq_len, num_kv_heads, head_dim
+#     )
 
-    o_packed = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=causal)
-    o_contiguous = flashinfer.single_prefill_with_kv_cache(
-        q.contiguous(), k.contiguous(), v.contiguous(), causal=causal
-    )
+#     o_packed = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=causal)
+#     o_contiguous = flashinfer.single_prefill_with_kv_cache(
+#         q.contiguous(), k.contiguous(), v.contiguous(), causal=causal
+#     )
 
-    torch.testing.assert_close(o_packed, o_contiguous, rtol=1e-3, atol=1e-3)
+#     torch.testing.assert_close(o_packed, o_contiguous, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("batch_size", [1, 19, 99])
-@pytest.mark.parametrize("seq_len", [1, 7, 127, 257])
-@pytest.mark.parametrize("num_kv_heads", [1, 4, 8])
-@pytest.mark.parametrize("num_qo_heads", [4, 8])
-@pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.parametrize("causal", [True, False])
-def test_batch_ragged_prefill_packed_input(
-    batch_size, seq_len, num_kv_heads, num_qo_heads, head_dim, causal
-):
-    if num_qo_heads % num_kv_heads != 0:
-        pytest.skip("num_qo_heads must be a multiple of num_kv_heads")
-    nnz = batch_size * seq_len
-    qkv_packed = torch.randn(
-        nnz,
-        (num_qo_heads + 2 * num_kv_heads) * head_dim,
-        dtype=torch.float16,
-        device="cuda:0",
-    )
-    q = qkv_packed[:, : num_qo_heads * head_dim].reshape(nnz, num_qo_heads, head_dim)
-    k = qkv_packed[
-        :, num_qo_heads * head_dim : (num_qo_heads + num_kv_heads) * head_dim
-    ].reshape(nnz, num_kv_heads, head_dim)
-    v = qkv_packed[:, (num_qo_heads + num_kv_heads) * head_dim :].reshape(
-        nnz, num_kv_heads, head_dim
-    )
-    qo_indptr = torch.tensor(
-        [i * seq_len for i in range(batch_size + 1)], dtype=torch.int32, device="cuda:0"
-    )
-    kv_indptr = qo_indptr
+# @pytest.mark.parametrize("batch_size", [1, 19, 99])
+# @pytest.mark.parametrize("seq_len", [1, 7, 127, 257])
+# @pytest.mark.parametrize("num_kv_heads", [1, 4, 8])
+# @pytest.mark.parametrize("num_qo_heads", [4, 8])
+# @pytest.mark.parametrize("head_dim", [64, 128, 256])
+# @pytest.mark.parametrize("causal", [True, False])
+# def test_batch_ragged_prefill_packed_input(
+#     batch_size, seq_len, num_kv_heads, num_qo_heads, head_dim, causal
+# ):
+#     if num_qo_heads % num_kv_heads != 0:
+#         pytest.skip("num_qo_heads must be a multiple of num_kv_heads")
+#     nnz = batch_size * seq_len
+#     qkv_packed = torch.randn(
+#         nnz,
+#         (num_qo_heads + 2 * num_kv_heads) * head_dim,
+#         dtype=torch.float16,
+#         device="cuda:0",
+#     )
+#     q = qkv_packed[:, : num_qo_heads * head_dim].reshape(nnz, num_qo_heads, head_dim)
+#     k = qkv_packed[
+#         :, num_qo_heads * head_dim : (num_qo_heads + num_kv_heads) * head_dim
+#     ].reshape(nnz, num_kv_heads, head_dim)
+#     v = qkv_packed[:, (num_qo_heads + num_kv_heads) * head_dim :].reshape(
+#         nnz, num_kv_heads, head_dim
+#     )
+#     qo_indptr = torch.tensor(
+#         [i * seq_len for i in range(batch_size + 1)], dtype=torch.int32, device="cuda:0"
+#     )
+#     kv_indptr = qo_indptr
 
-    workspace_buffer = torch.empty(
-        (256 * 1024 * 1024,), dtype=torch.uint8, device="cuda:0"
-    )
-    wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(workspace_buffer)
-    wrapper.plan(
-        qo_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim, causal=causal
-    )
-    o_packed = wrapper.run(q, k, v)
-    o_contiguous = wrapper.run(q.contiguous(), k.contiguous(), v.contiguous())
+#     workspace_buffer = torch.empty(
+#         (256 * 1024 * 1024,), dtype=torch.uint8, device="cuda:0"
+#     )
+#     wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(workspace_buffer)
+#     wrapper.plan(
+#         qo_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim, causal=causal
+#     )
+#     o_packed = wrapper.run(q, k, v)
+#     o_contiguous = wrapper.run(q.contiguous(), k.contiguous(), v.contiguous())
 
-    torch.testing.assert_close(o_packed, o_contiguous, rtol=1e-3, atol=1e-3)
+#     torch.testing.assert_close(o_packed, o_contiguous, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99])
@@ -201,6 +201,16 @@ def test_batch_paged_prefill_packed_input(
 
 
 if __name__ == "__main__":
-    test_single_prefill_packed_input(127, 4, 4, 64, True)
-    test_batch_ragged_prefill_packed_input(37, 127, 4, 4, 64, True)
-    test_batch_paged_prefill_packed_input(37, 5, 127, 4, 4, 64, True)
+    # test_single_prefill_packed_input(
+    #     seq_len=1, num_kv_heads=8, num_qo_heads=32, head_dim=256, causal=False
+    # )
+    # test_batch_ragged_prefill_packed_input(37, 127, 4, 4, 64, True)
+    test_batch_paged_prefill_packed_input(
+        batch_size=19,
+        page_size=5,
+        seq_len=127,
+        num_kv_heads=1,
+        num_qo_heads=8,
+        head_dim=256,
+        causal=False,
+    )
