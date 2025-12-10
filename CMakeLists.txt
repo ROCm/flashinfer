@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26.1)
 
 set(CMAKE_VERBOSE_MAKEFILE ON)
-set(CMAKE_INSTALL_MESSAGE NEVER)
+set(CMAKE_INSTALL_MESSAGE LAZY)
 
 # Load CMake modules and utilities
 set(CMAKE_MODULE_PATH
