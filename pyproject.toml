@@ -204,6 +204,7 @@ filterwarnings = [
 addopts = "-v"
 # HIP-specific test files - running 'pytest' with no args runs only these
 testpaths = [
+    "tests/test_activation.py",
     "tests/test_batch_decode_kernels_hip_fp8.py",
     "tests/test_batch_decode_kernels_hip.py",
     "tests/test_batch_decode_vllm.py",

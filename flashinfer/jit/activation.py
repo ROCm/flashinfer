@@ -7,14 +7,17 @@ import os
 
 import jinja2
 
-from . import env as jit_env
-from .core import JitSpec, check_hip_availability, gen_jit_spec
-from .env import FLASHINFER_GEN_SRC_DIR
+from .core import check_hip_availability, gen_jit_spec
+from .env import (
+    FLASHINFER_CSRC_DIR,
+    FLASHINFER_GEN_SRC_DIR,
+    FLASHINFER_INCLUDE_DIR,
+)
 from .utils import write_if_different
 
 if check_hip_availability():
     activation_templ = r"""
-  #include <gpu_iface/platform.h>
+  #include <gpu_iface/platform.hpp>
   #include <flashinfer/attention/generic/activation.cuh>
   #include "pytorch_extension_utils.h"
   #include <hip/hip_runtime.h>
@@ -34,15 +37,15 @@ if check_hip_availability():
     auto stream = at::hip::getCurrentHIPStream();
     DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
       uint32_t vec_size = 16 / sizeof(c_type);
-      uint64_t gridDim = num_tokens;
-      uint64_t blockDim = std::min(d / vec_size, 1024U);
-      uint64_t dynamicSmemBytes = 0;
-      hipStream_t stream = stream;
+      uint32_t block_size = std::min(d / vec_size, 1024U);
+      dim3 gridDim(num_tokens);
+      dim3 blockDim(block_size);
 
       auto kernel = flashinfer::activation::act_and_mul_kernel<c_type, {{ act_func_name }}>;
 
-      flashinfer::activation::act_and_mul_kernel<c_type, {{ act_func_name }}><<<<gridDim, blockDim, dynamicSmemBytes, stream>>>(static_cast<c_type*>(out.data_ptr()),
-                        static_cast<c_type*>(input.data_ptr()), d);
+      hipLaunchKernelGGL(kernel, gridDim, blockDim, 0, stream,
+                         static_cast<c_type*>(out.data_ptr()),
+                         static_cast<c_type*>(input.data_ptr()), d);
 
       hipError_t err = hipGetLastError();
       TORCH_CHECK(err == hipSuccess, "Failed to launch kernel: ", hipGetErrorString(err));
@@ -111,15 +114,17 @@ def get_act_and_mul_cu_str(act_func_name: str, act_func_def: str) -> str:
     return template.render(act_func_name=act_func_name, act_func_def=act_func_def)
 
 
-def gen_act_and_mul_module(act_func_name: str, act_func_def: str) -> JitSpec:
-    gen_directory = jit_env.FLASHINFER_GEN_SRC_DIR
+def gen_act_and_mul_module(act_func_name: str, act_func_def: str):
+    gen_directory = FLASHINFER_GEN_SRC_DIR
     os.makedirs(gen_directory, exist_ok=True)
     sources = [gen_directory / f"{act_func_name}_and_mul.cu"]
     write_if_different(
         sources[0],
         get_act_and_mul_cu_str(act_func_name, act_func_def),
     )
-    return gen_jit_spec(
+    spec = gen_jit_spec(
         f"{act_func_name}_and_mul",
         sources,
+        extra_include_paths=[FLASHINFER_INCLUDE_DIR, FLASHINFER_CSRC_DIR],
     )
+    return spec.build_and_load()
