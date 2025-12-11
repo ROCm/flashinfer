@@ -73,9 +73,12 @@ def test_block_sparse_indices_to_vector_sparse_offsets(
         ].cpu()
 
         output_ref_i = (
-            indices_i[torch.arange(0, kv_len, dtype=torch.int32) // block_size]
+            indices_i[
+                torch.arange(0, kv_len, dtype=torch.int32, device="cpu") // block_size
+            ]
             * stride_block
-            + (torch.arange(0, kv_len, dtype=torch.int32) % block_size) * stride_n
+            + (torch.arange(0, kv_len, dtype=torch.int32, device="cpu") % block_size)
+            * stride_n
         )
         torch.testing.assert_close(output_i, output_ref_i)
 
