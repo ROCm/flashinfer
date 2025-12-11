@@ -25,7 +25,7 @@ import warnings
 
 from torch.utils.cpp_extension import _get_cuda_arch_flags
 
-from ..get_include_paths import get_csrc_dir, get_include, get_tvm_binding_dir
+from ..get_include_paths import get_csrc_dir, get_include
 
 
 def _get_workspace_dir_name() -> pathlib.Path:
@@ -49,4 +49,3 @@ FLASHINFER_JIT_DIR = FLASHINFER_WORKSPACE_DIR / "cached_ops"
 FLASHINFER_GEN_SRC_DIR = FLASHINFER_WORKSPACE_DIR / "generated"
 FLASHINFER_INCLUDE_DIR = pathlib.Path(get_include())
 FLASHINFER_CSRC_DIR = pathlib.Path(get_csrc_dir())
-FLASHINFER_TVM_BINDING_DIR = pathlib.Path(get_tvm_binding_dir())

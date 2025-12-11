@@ -65,22 +65,6 @@ if(FLASHINFER_DISTRIBUTED)
   find_package(MPI REQUIRED)
 endif()
 
-# === TVM Binding dependencies ===
-if(FLASHINFER_TVM_BINDING)
-  # Resolve TVM source directory
-  if(NOT FLASHINFER_TVM_SOURCE_DIR STREQUAL "")
-    set(TVM_SOURCE_DIR_SET ${FLASHINFER_TVM_SOURCE_DIR})
-  elseif(DEFINED ENV{TVM_SOURCE_DIR})
-    set(TVM_SOURCE_DIR_SET $ENV{TVM_SOURCE_DIR})
-  elseif(DEFINED ENV{TVM_HOME})
-    set(TVM_SOURCE_DIR_SET $ENV{TVM_HOME})
-  else()
-    message(
-      FATAL_ERROR
-        "TVM source directory not found. Set FLASHINFER_TVM_SOURCE_DIR.")
-  endif()
-endif()
-
 # === Path definitions ===
 # Define all include paths centrally - don't use global include_directories
 
