@@ -214,6 +214,7 @@ testpaths = [
     "tests/test_decode_prefill_lse.py",
     "tests/test_logits_cap_hip.py",
     "tests/test_non_contiguous_decode.py",
+    "tests/test_non_contiguous_prefill.py",
     "tests/test_norm_hip.py",
     "tests/test_page.py",
     "tests/test_rope.py",
