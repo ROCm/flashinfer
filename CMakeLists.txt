@@ -234,10 +234,6 @@ if(FLASHINFER_ENABLE_HIP)
 
 endif()
 
-if(FLASHINFER_TVM_BINDING)
-  add_subdirectory(tvm_binding)
-endif()
-
 if(FLASHINFER_BUILD_WHEELS)
   message(STATUS "Building Flashinfer PyTorch extension")
   add_subdirectory(flashinfer)

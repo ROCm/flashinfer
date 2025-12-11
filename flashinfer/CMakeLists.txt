@@ -43,20 +43,6 @@ if(FLASHINFER_ENABLE_CUDA)
     PATTERN "*.hpp"
     PATTERN "*.cuh"
     PATTERN "*.inl")
-
-  message(STATUS "TVM bindings to be installed along with package at "
-                 "flashinfer/tvm_binding")
-
-  # Install TVM binding files
-  install(
-    DIRECTORY "${CMAKE_SOURCE_DIR}/tvm_binding/"
-    DESTINATION "flashinfer/tvm_binding"
-    FILES_MATCHING
-    PATTERN "*.py"
-    PATTERN "*.cc"
-    PATTERN "*.cu"
-    PATTERN "*.h"
-    PATTERN "*.cuh")
 endif()
 
 message(STATUS "flashinfer Python package configured")
