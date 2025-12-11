@@ -19,7 +19,6 @@
 flashinfer_option(FLASHINFER_BUILD_KERNELS
   "Build and install kernel libraries (required for AOT PyTorch extensions)" OFF)
 
-flashinfer_option(FLASHINFER_TVM_BINDING "Build TVM binding support" OFF)
 flashinfer_option(FLASHINFER_DISTRIBUTED "Build distributed support" OFF)
 flashinfer_option(FLASHINFER_BUILD_WHEELS "Build distributed support" ON)
 
@@ -53,7 +52,6 @@ flashinfer_option(FLASHINFER_MIN_CUDA_ARCH "Minimum CUDA architecture required (
 
 # === PATH OPTIONS ===
 flashinfer_option(FLASHINFER_CUTLASS_DIR "Path to CUTLASS installation" "")
-flashinfer_option(FLASHINFER_TVM_SOURCE_DIR "Path to TVM source directory" "")
 
 # === COMPILER OPTIONS ===
 # Control the C++ ABI for PyTorch compatibility
@@ -190,11 +188,6 @@ if(FLASHINFER_ENABLE_CUDA)
       message(STATUS "Enabling SM90-specific optimizations based on CUDA architecture selection")
     endif()
   endif()
-endif()
-
-# Handle automatic enabling of dependent features
-if(FLASHINFER_TVM_BINDING AND NOT FLASHINFER_BUILD_KERNELS)
-  message(FATAL_ERROR "TVM binding requires FLASHINFER_BUILD_KERNELS to be ON")
 endif()
 
 if(FLASHINFER_ENABLE_FP8)

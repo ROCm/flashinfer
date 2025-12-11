@@ -35,18 +35,6 @@ def get_include():
     return str(include_dir)
 
 
-def get_tvm_binding_dir():
-    """Return the directory containing the TVM binding files.
-
-    Returns
-    -------
-    tvm_binding_dir : str
-        Path to TVM binding files.
-    """
-    tvm_binding_dir = os.path.join(_get_package_root_dir(), "tvm_binding")
-    return str(tvm_binding_dir)
-
-
 def get_csrc_dir():
     """Return the directory containing the C++/CUDA source files used by jit.
 
