@@ -696,6 +696,16 @@ inline gpuError_t PrefillPlan(void* float_buffer, size_t float_workspace_size_in
   int max_grid_size = num_blocks_per_sm * num_sm;
   uint32_t max_batch_size_if_split = max_grid_size / num_kv_heads;
 
+  // Cap max_batch_size_if_split based on available workspace to avoid allocation failures
+  // Conservative estimate: assume cta_tile_q=64, head_dim=256 (worst case for large head dims)
+  // Required workspace: num_qo_heads * max_batch_size * 64 * head_dim_vo * sizeof(float)
+  uint32_t conservative_cta_tile_q = (head_dim_vo >= 256) ? 64 : 128;
+  size_t workspace_per_batch = num_qo_heads * conservative_cta_tile_q * head_dim_vo * sizeof(float);
+  if (workspace_per_batch > 0) {
+    uint32_t max_batch_by_workspace = float_workspace_size_in_bytes / workspace_per_batch;
+    max_batch_size_if_split = std::min(max_batch_size_if_split, max_batch_by_workspace);
+  }
+
   // step 2: determine kv_chunk_size
   auto [split_kv, new_batch_size, padded_batch_size, cta_tile_q, kv_chunk_size, request_indices_vec,
         qo_tile_indices_vec, kv_tile_indices_vec, merge_indptr_vec, o_indptr_vec] =
