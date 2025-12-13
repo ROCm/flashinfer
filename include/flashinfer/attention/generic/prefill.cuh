@@ -2405,6 +2405,17 @@ template <uint32_t CTA_TILE_Q, uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO,
           typename AttentionVariant, typename Params>
 gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
                                                   float* tmp_s, gpuStream_t stream) {
+
+
+  std::cout<<"#### Benchmark Logger ####";
+  hipEvent_t start, stop;
+  
+  FI_GPU_CALL(hipEventCreate(&start));
+  FI_GPU_CALL(hipEventCreate(&stop));
+
+  float totalMilliseconds = 0.0f;
+  const int num_iters = 100;
+
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -2473,7 +2484,23 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
         // do not partition kv
         params.partition_kv = false;
         void* args[] = {(void*)&params};
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        for(int run = 0; run < num_iters; ++run){
+
+          FI_GPU_CALL(hipEventRecord(start));
+          FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+          FI_GPU_CALL(hipEventRecord(stop));
+          FI_GPU_CALL(hipEventSynchronize(stop));
+
+          float milliseconds = 0.0f;
+          FI_GPU_CALL(hipEventElapsedTime(&milliseconds, start, stop));
+          totalMilliseconds += milliseconds;
+        }
+
+        float avgMilliseconds = totalMilliseconds / num_iters;
+        float avgSeconds = avgMilliseconds / 1000.0f;
+
+        std::cout << "Average kernel execution time (" << num_iters 
+          << " runs): " << avgMilliseconds << " ms\n";
       } else {
         params.partition_kv = true;
         auto o = params.o;
@@ -2481,16 +2508,38 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
         params.o = tmp_v;
         params.lse = tmp_s;
         void* args[] = {(void*)&params};
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-        if constexpr (AttentionVariant::use_softmax) {
-          FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.merge_indptr, o, lse,
-                                                params.max_total_num_rows, params.total_num_rows,
-                                                num_qo_heads, HEAD_DIM_VO, stream));
-        } else {
-          FI_GPU_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
-                                                 params.max_total_num_rows, params.total_num_rows,
-                                                 num_qo_heads, HEAD_DIM_VO, stream));
+
+        for(int run = 0; run < num_iters; ++run){
+
+          FI_GPU_CALL(hipEventRecord(start));
+          FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+
+          if constexpr (AttentionVariant::use_softmax) {
+            FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.merge_indptr, o, lse,
+                                                  params.max_total_num_rows, params.total_num_rows,
+                                                  num_qo_heads, HEAD_DIM_VO, stream));
+          }
+
+          else {
+            FI_GPU_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
+                                                  params.max_total_num_rows, params.total_num_rows,
+                                                  num_qo_heads, HEAD_DIM_VO, stream));
+          }
+
+          FI_GPU_CALL(hipEventRecord(stop));
+          FI_GPU_CALL(hipEventSynchronize(stop));
+
+          float milliseconds = 0.0f;
+          FI_GPU_CALL(hipEventElapsedTime(&milliseconds, start, stop));
+          totalMilliseconds += milliseconds;
         }
+
+        float avgMilliseconds = totalMilliseconds / num_iters;
+        float avgSeconds = avgMilliseconds / 1000.0f;
+
+        std::cout << "Average kernel execution time (" << num_iters 
+          << " runs): " << avgMilliseconds << " ms\n";
+
       }
     }
   });
