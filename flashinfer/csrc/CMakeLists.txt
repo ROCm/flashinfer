@@ -41,7 +41,10 @@ file(
   "${CMAKE_CURRENT_SOURCE_DIR}/rope_hip.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/single_decode_hip.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/batch_prefill_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill_hip.cu")
+  "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sampling_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/renorm_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_sampling_ops.cu")
 
 # SM90-specific sources
 file(
