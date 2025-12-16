@@ -115,8 +115,11 @@ struct KernelTraits {
   static constexpr uint32_t HALF_ELEMS_PER_THREAD = 4;
   static constexpr uint32_t INT32_ELEMS_PER_THREAD = 2;
   static constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
-  // Using k128B swizzle mode for better LDS bank conflict avoidance on CDNA3.
-  // The XOR pattern (j ^ (i % 8)) distributes memory accesses across LDS banks effectively.
+
+  // Using k128B swizzle mode for all HIP configurations.
+  // HIP uses VECTOR_BIT_WIDTH=64 which gives stride=16 for head_dim=64 (vs CUDA's stride=8).
+  // k128B works well for stride >= 8, providing good LDS bank conflict reduction
+  // while maintaining correctness across all head dimensions (64, 128, 256).
   static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B;
   static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::k128B;
 
