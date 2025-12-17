@@ -1510,7 +1510,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     }
     // compute m,d states in online softmax
     update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
-    block.sync();
+    // Sync removed: update_mdo_states only touches registers, produce_kv is async
     produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
         k_smem, &k_smem_offset_w, &k_ptr, k_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -1519,7 +1519,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 
     // compute sfm*v
     compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
-    block.sync();
+    block.sync();  // Required for batch prefill: ensures V read completes before next write
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
         v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -1937,7 +1937,7 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
     // compute m,d states in online softmax
     update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
 
-    block.sync();
+    // Sync removed: update_mdo_states only touches registers, produce_kv is async
     produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
         k_smem, &k_smem_offset_w, &k_ptr, k_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -1946,8 +1946,7 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
 
     // compute sfm*v
     compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
-
-    block.sync();
+    block.sync();  // Required for batch prefill: ensures V read completes before next write
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
         v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -2232,7 +2231,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     // compute m,d states in online softmax
     update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
 
-    block.sync();
+    // Sync removed: update_mdo_states only touches registers, page_produce_kv is async
     page_produce_kv<false, KTraits>(k_smem, &k_smem_offset_w, paged_kv, (iter + 1) * CTA_TILE_KV,
                                     thr_local_kv_offset, chunk_size, tid);
     memory::commit_group();
@@ -2241,8 +2240,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
 
     // compute sfm*v
     compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
-
-    block.sync();
+    block.sync();  // Required for batch prefill: ensures V read completes before next write
     page_produce_kv<true, KTraits>(v_smem, &v_smem_offset_w, paged_kv, (iter + 1) * CTA_TILE_KV,
                                    thr_local_kv_offset, chunk_size, tid);
     memory::commit_group();
