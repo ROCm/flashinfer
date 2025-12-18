@@ -10,6 +10,7 @@ namespace {
 using f16 = _Float16;
 using f16x4 = f16 __attribute__((ext_vector_type(4)));
 using f32x4 = float __attribute__((ext_vector_type(4)));
+using f32x16 = float __attribute__((ext_vector_type(16)));  // For 32x32 MFMA
 
 }  // namespace
 
@@ -47,7 +48,7 @@ __device__ __forceinline__ void transpose_intra_quad_fragments(uint32_t* R) {
   // === ROUND 1: Exchange with neighbor (XOR with 1) ===
   // T0 <-> T1, T2 <-> T3 partial exchange
   uint32_t regid = (lane_in_group >> 1) & 0x1;
-  uint32_t exchanged_val = __shfl_xor(R[regid], 0x1);
+  uint32_t exchanged_val = __shfl_xor(R[regid], 0x1, 64);  // Wave64: explicit warp_size
   uint32_t shift = (lane_in_group & 1) * 16;
   uint32_t keep_mask = 0x0000FFFF << shift;
   int left_shift_amount = 16 * (1 - (lane_in_group & 1));
@@ -58,8 +59,8 @@ __device__ __forceinline__ void transpose_intra_quad_fragments(uint32_t* R) {
   // T0 <-> T2, T1 <-> T3 exchange R[0] and R[1]
   // Swap entire registers based on thread position
   uint32_t is_top = 1 - regid;
-  uint32_t temp0 = __shfl_xor(R[0], 0x2);
-  uint32_t temp1 = __shfl_xor(R[1], 0x2);
+  uint32_t temp0 = __shfl_xor(R[0], 0x2, 64);  // Wave64: explicit warp_size
+  uint32_t temp1 = __shfl_xor(R[1], 0x2, 64);  // Wave64: explicit warp_size
 
   // Compute both possibilities and select
   R[0] = R[0] * is_top + temp1 * regid;
@@ -69,7 +70,7 @@ __device__ __forceinline__ void transpose_intra_quad_fragments(uint32_t* R) {
   // T0 <-> T1, T2 <-> T3 exchange remaining parts
 
   regid = 1 - regid;
-  exchanged_val = __shfl_xor(R[regid], 0x1);
+  exchanged_val = __shfl_xor(R[regid], 0x1, 64);  // Wave64: explicit warp_size
   R[regid] = (R[regid] & keep_mask) | ((exchanged_val >> right_shift_amount) << left_shift_amount);
 }
 
@@ -128,6 +129,20 @@ __device__ __forceinline__ void transpose_mma_tile(uint32_t* R) {
   transpose_inter_quad_fragments(R);
 }
 
+/// @brief Performs a full 32x32 in-register matrix transpose for MFMA f32_32x32x8f16.
+/// @details Each thread owns 16 fp16 elements (8 uint32_t) in a 32x32 output matrix.
+///          This function transposes all 16 elements by applying the transpose to each
+///          pair of uint32_t (4 fp16 elements at a time).
+/// @param R Pointer to 8 uint32_t registers containing the fragment data (16 fp16 elements)
+__device__ __forceinline__ void transpose_mma_tile_32x32(uint32_t* R) {
+  // Transpose each 2x2 sub-block (4 fp16 elements = 2 uint32_t)
+  // For 32x32 MFMA, each thread has 4 such sub-blocks
+  for (int i = 0; i < 8; i += 2) {
+    transpose_intra_quad_fragments(&R[i]);
+    transpose_inter_quad_fragments(&R[i]);
+  }
+}
+
 // Single unified load function for all fragment types
 /// @param R [in] pointer to the register file to load the fragment into
 /// @param smem_ptr [in] pointer to the shared memory to load the fragment from
@@ -165,6 +180,41 @@ __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, u
   }
 
   reinterpret_cast<f32x4*>(C)[0] = C_fp32;
+#elif defined(__HIP_DEVICE_COMPILE__)
+#error "Unsupported GFX platform for MFMA ops."
+#endif
+}
+
+// MMA operation for FP16 inputs with FP32 accumulator - 32x32 tile
+// This provides 1.83x better efficiency by amortizing transpose overhead
+template <typename T, mma::MMAMode mma_mode = mma::MMAMode::kInplaceUpdate>
+__device__ __forceinline__ void mma_sync_m32n32k8_row_col_f16f16f32(float* C, uint32_t* A,
+                                                                    uint32_t* B) {
+#if defined(__HIP_DEVICE_COMPILE__) && (__gfx90a__ || __gfx908__ || __gfx942__)
+  static_assert(std::is_same_v<T, __half> || std::is_same_v<T, __hip_bfloat16>,
+                "T must be __half or __hip_bfloat16");
+
+  // Initialize C if requested (16 elements for 32x32 output)
+  if constexpr (mma_mode == mma::MMAMode::kInit) {
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+      C[i] = 0.0f;
+    }
+  }
+
+  f16x4 B_fp16 = reinterpret_cast<f16x4*>(B)[0];
+  f16x4 A_fp16 = reinterpret_cast<f16x4*>(A)[0];
+  f32x16 C_fp32 = reinterpret_cast<f32x16*>(C)[0];
+
+  if constexpr (std::is_same_v<T, __half>) {
+    // 32x32x8: Output 32x32=1024 elements, K-dim=8, 16 accumulators per thread
+    C_fp32 = __builtin_amdgcn_mfma_f32_32x32x8f16(A_fp16, B_fp16, C_fp32, 0, 0, 0);
+  } else if constexpr (std::is_same_v<T, __hip_bfloat16>) {
+    // BF16 32x32 variant - check if it exists
+    static_assert(false, "BF16 32x32 not yet verified for gfx942");
+  }
+
+  reinterpret_cast<f32x16*>(C)[0] = C_fp32;
 #elif defined(__HIP_DEVICE_COMPILE__)
 #error "Unsupported GFX platform for MFMA ops."
 #endif
