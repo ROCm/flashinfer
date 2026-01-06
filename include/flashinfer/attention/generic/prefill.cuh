@@ -116,10 +116,8 @@ struct KernelTraits {
   static constexpr uint32_t INT32_ELEMS_PER_THREAD = 2;
   static constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
 
-  // Using k128B swizzle mode for all HIP configurations.
   // HIP uses VECTOR_BIT_WIDTH=64 which gives stride=16 for head_dim=64 (vs CUDA's stride=8).
-  // k128B works well for stride >= 8, providing good LDS bank conflict reduction
-  // while maintaining correctness across all head dimensions (64, 128, 256).
+  // Experiments showed that k128B swizzle mode reduced LDS bank conflicts better than others.
   static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B;
   static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::k128B;
 
@@ -1259,10 +1257,10 @@ __device__ __forceinline__ void write_o_reg_gmem(
           // Calculate column index in DTypeO units
           const uint32_t col_dtype = col_vec * HALF_ELEMS_PER_THREAD + col_idx;
           // Convert to BasePtrTy (uint2) units: 1 uint2 = 4 DTypeO elements (for fp16)
-          constexpr uint32_t elems_per_baseptrty =
+          constexpr uint32_t elems_per_base_ptr_type =
               sizeof(typename KTraits::SmemBasePtrTy) / sizeof(DTypeO);
-          const uint32_t col_base = col_dtype / elems_per_baseptrty;
-          const uint32_t col_offset = col_dtype % elems_per_baseptrty;
+          const uint32_t col_base = col_dtype / elems_per_base_ptr_type;
+          const uint32_t col_offset = col_dtype % elems_per_base_ptr_type;
           // Write each of the 4 rows handled by this thread using swizzled offsets
           for (uint32_t row_offset = 0; row_offset < HALF_ELEMS_PER_THREAD; ++row_offset) {
             const uint32_t row = base_row + row_offset;
