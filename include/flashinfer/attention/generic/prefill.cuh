@@ -115,10 +115,13 @@ struct KernelTraits {
   static constexpr uint32_t HALF_ELEMS_PER_THREAD = 4;
   static constexpr uint32_t INT32_ELEMS_PER_THREAD = 2;
   static constexpr uint32_t VECTOR_BIT_WIDTH = HALF_ELEMS_PER_THREAD * 16;
-  // FIXME: Update with a proper swizzle pattern. Linear is used primarily
-  // for intial testing.
-  static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::kLinear;
-  static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::kLinear;
+
+  // Using k128B swizzle mode for all HIP configurations.
+  // HIP uses VECTOR_BIT_WIDTH=64 which gives stride=16 for head_dim=64 (vs CUDA's stride=8).
+  // k128B works well for stride >= 8, providing good LDS bank conflict reduction
+  // while maintaining correctness across all head dimensions (64, 128, 256).
+  static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B;
+  static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::k128B;
 
   // Presently we use 16x4 thread layout for all cases.
   static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
@@ -285,7 +288,6 @@ __device__ __forceinline__ void produce_kv_impl(
     smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> smem, uint32_t* smem_offset,
     typename KTraits::DTypeKV** gptr, const uint32_t stride_n, const uint32_t kv_idx_base,
     const uint32_t kv_len) {
-  static_assert(KTraits::SWIZZLE_MODE_KV == SwizzleMode::kLinear);
   using DTypeKV = typename KTraits::DTypeKV;
   constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;  // 16
   constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
@@ -334,7 +336,6 @@ __device__ __forceinline__ void produce_kv(
     smem_t<KTraits::SWIZZLE_MODE_KV, typename KTraits::SmemBasePtrTy> smem, uint32_t* smem_offset,
     typename KTraits::DTypeKV** gptr, const uint32_t stride_n, const uint32_t kv_idx_base,
     const uint32_t kv_len, const dim3 tid = threadIdx) {
-  static_assert(KTraits::SWIZZLE_MODE_KV == SwizzleMode::kLinear);
   const uint32_t warp_idx = get_warp_idx<KTraits>(tid.y, tid.z), lane_idx = tid.x;
   using DTypeKV = typename KTraits::DTypeKV;
   constexpr uint32_t KV_THR_LAYOUT_COL = KTraits::KV_THR_LAYOUT_COL;  // 16
@@ -1253,19 +1254,23 @@ __device__ __forceinline__ void write_o_reg_gmem(
           const uint32_t col_vec = (frag_col_offset + thread_col_in_frag) / HALF_ELEMS_PER_THREAD;
           // Index within the 4-element vector (0-3)
           const uint32_t col_idx = (frag_col_offset + thread_col_in_frag) % HALF_ELEMS_PER_THREAD;
-          // Cast to DTypeO* and write all 4 elements with row strides
+          // Cast to DTypeO* and write all 4 elements with swizzled addressing
           DTypeO* o_frag_f16_half = reinterpret_cast<DTypeO*>(o_frag_f16);
-          // NOTE: Currently, swizzled access of shared memory is not used for
-          // CDNA3. As such, the offset is computed using a straightforward
-          // linear indexing. The below logic needs to be revisited and the
-          // offset computation done using `get_permuted_offset`.
-          DTypeO* o_smem_typed = reinterpret_cast<DTypeO*>(o_smem->base) +
-                                 base_row * KTraits::HEAD_DIM_VO + col_vec * HALF_ELEMS_PER_THREAD +
-                                 col_idx;
-          *(o_smem_typed) = o_frag_f16_half[0];
-          *(o_smem_typed + KTraits::HEAD_DIM_VO) = o_frag_f16_half[1];
-          *(o_smem_typed + 2 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[2];
-          *(o_smem_typed + 3 * KTraits::HEAD_DIM_VO) = o_frag_f16_half[3];
+          // Calculate column index in DTypeO units
+          const uint32_t col_dtype = col_vec * HALF_ELEMS_PER_THREAD + col_idx;
+          // Convert to BasePtrTy (uint2) units: 1 uint2 = 4 DTypeO elements (for fp16)
+          constexpr uint32_t elems_per_baseptrty =
+              sizeof(typename KTraits::SmemBasePtrTy) / sizeof(DTypeO);
+          const uint32_t col_base = col_dtype / elems_per_baseptrty;
+          const uint32_t col_offset = col_dtype % elems_per_baseptrty;
+          // Write each of the 4 rows handled by this thread using swizzled offsets
+          for (uint32_t row_offset = 0; row_offset < HALF_ELEMS_PER_THREAD; ++row_offset) {
+            const uint32_t row = base_row + row_offset;
+            uint32_t swizzled_offset =
+                o_smem->template get_permuted_offset<UPCAST_STRIDE_O>(row, col_base);
+            DTypeO* o_smem_typed = reinterpret_cast<DTypeO*>(o_smem->base + swizzled_offset);
+            o_smem_typed[col_offset] = o_frag_f16_half[row_offset];
+          }
         }
       }
 
@@ -1505,7 +1510,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     }
     // compute m,d states in online softmax
     update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
-    block.sync();
+    // Sync removed: update_mdo_states only touches registers, produce_kv is async
     produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
         k_smem, &k_smem_offset_w, &k_ptr, k_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -1514,7 +1519,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
 
     // compute sfm*v
     compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
-    block.sync();
+    block.sync();  // Required for batch prefill: ensures V read completes before next write
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
         v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -1932,7 +1937,7 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
     // compute m,d states in online softmax
     update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
 
-    block.sync();
+    // Sync removed: update_mdo_states only touches registers, produce_kv is async
     produce_kv<false, SharedMemFillMode::kNoFill, KTraits>(
         k_smem, &k_smem_offset_w, &k_ptr, k_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -1941,8 +1946,7 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
 
     // compute sfm*v
     compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
-
-    block.sync();
+    block.sync();  // Required for batch prefill: ensures V read completes before next write
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
         v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
     memory::commit_group();
@@ -2227,7 +2231,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     // compute m,d states in online softmax
     update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
 
-    block.sync();
+    // Sync removed: update_mdo_states only touches registers, page_produce_kv is async
     page_produce_kv<false, KTraits>(k_smem, &k_smem_offset_w, paged_kv, (iter + 1) * CTA_TILE_KV,
                                     thr_local_kv_offset, chunk_size, tid);
     memory::commit_group();
@@ -2236,8 +2240,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
 
     // compute sfm*v
     compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
-
-    block.sync();
+    block.sync();  // Required for batch prefill: ensures V read completes before next write
     page_produce_kv<true, KTraits>(v_smem, &v_smem_offset_w, paged_kv, (iter + 1) * CTA_TILE_KV,
                                    thr_local_kv_offset, chunk_size, tid);
     memory::commit_group();
