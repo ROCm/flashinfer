@@ -6,8 +6,6 @@ import triton
 
 TOTAL_TIME = 0.0
 
-
-            
 def test_batch_prefill_with_paged_kv_cache(
     batch_size,
     kv_len,
@@ -23,7 +21,7 @@ def test_batch_prefill_with_paged_kv_cache(
     logits_soft_cap,
     return_lse,
     contiguous_kv,
-    bench=False
+    mode
 ):
     if qo_len > kv_len and causal:
         print("qo_len > kv_len and causal is not supported. Returning.")
@@ -91,23 +89,9 @@ def test_batch_prefill_with_paged_kv_cache(
         logits_soft_cap=logits_soft_cap,
     )
 
-    print("Running batch prefill with paged kv cache...")
-    if return_lse:
-        o, _ = wrapper.run(q, kv_data, return_lse=return_lse)
-    else:
-        o = wrapper.run(q, kv_data, return_lse=return_lse)
-
-    if bench:
-        
-    # global TOTAL_TIME
-    # start_time = time.time()
-    # if return_lse:
+    
+    if mode == "throughput":
         ms = triton.testing.do_bench(lambda: wrapper.run(q, kv_data), warmup=100, rep=1000)
-    # else:
-    #     o = wrapper.run(q, kv_data)
-    # end_time = time.time()
-    # TOTAL_TIME += end_time - start_time
-
         def flops(ms):
             if causal:
                 return (
@@ -122,35 +106,28 @@ def test_batch_prefill_with_paged_kv_cache(
             f"bench_batch_paged_prefill: fa2-template: {flops(ms):.3f} TFLOPs/s "
         )
 
+    elif mode == "latency":
+        num_iters = 1000
+        global TOTAL_TIME
+        for _ in range(num_iters):
+            start_time = time.time()
+            if return_lse:
+                o, _ = wrapper.run(q, kv_data, return_lse=return_lse)
+            else:
+                o = wrapper.run(q, kv_data, return_lse=return_lse)
+            end_time = time.time()
+            TOTAL_TIME += end_time - start_time
 
-if __name__ == "__main__":
+        print(f"Average time per iteration: {TOTAL_TIME / num_iters * 1000:.2f} ms")
+    return
 
-    # print("Running this script: ROCm")
+def run_benchmark(mode, partition_kv):
 
-    num_iters = 1
-    # print("\n Running benchmark...")
+    if mode not in ["latency", "throughput"]:
+        print("mode should be either latency or throughput. Returning.")
+        return
 
-    # Partition kv = false
-    # for _ in range(num_iters):
-    #     test_batch_prefill_with_paged_kv_cache(
-    #         batch_size = 128,
-    #         kv_len = 2048,
-    #         qo_len = 577,
-    #         page_size = 16,
-    #         num_kv_heads = 4,
-    #         num_qo_heads = 32,
-    #         head_dim = 256,
-    #         causal = True,
-    #         kv_layout = "NHD",
-    #         pos_encoding_mode = "NONE",
-    #         use_cuda_graph = False,
-    #         logits_soft_cap = 8.0,
-    #         return_lse = True,
-    #         contiguous_kv = True,
-    #     )
-
-    # Partition kv = true
-    for _ in range(num_iters):
+    if partition_kv:
         test_batch_prefill_with_paged_kv_cache(
             batch_size = 12,
             kv_len = 512,
@@ -166,8 +143,34 @@ if __name__ == "__main__":
             logits_soft_cap = 0.0,
             return_lse = True,
             contiguous_kv = True,
-            bench=False
+            mode=mode,
         )
 
-    # print(f"Average time per iteration: {TOTAL_TIME / num_iters * 1000:.2f} ms")
+    else:
+        test_batch_prefill_with_paged_kv_cache(
+            batch_size = 128,
+            kv_len = 2048,
+            qo_len = 577,
+            page_size = 16,
+            num_kv_heads = 4,
+            num_qo_heads = 32,
+            head_dim = 256,
+            causal = True,
+            kv_layout = "NHD",
+            pos_encoding_mode = "NONE",
+            use_cuda_graph = False,
+            logits_soft_cap = 8.0,
+            return_lse = True,
+            contiguous_kv = True,
+            mode=mode,
+        )
 
+if __name__ == "__main__":
+
+    #if you want to run latency benchmark, set mode to "latency"
+    run_benchmark(mode="latency", partition_kv=False)
+    run_benchmark(mode="latency", partition_kv=True)
+
+    #if you want to run throughput benchmark, set mode to "throughput"
+    run_benchmark(mode="throughput", partition_kv=False)
+    run_benchmark(mode="throughput", partition_kv=True)
