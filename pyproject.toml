@@ -122,7 +122,7 @@ FLASHINFER_ENABLE_HIP = {env="FLASHINFER_ENABLE_HIP", default="ON"}
 write_to = "flashinfer/_version.py"
 version_scheme = "post-release"
 local_scheme = "no-local-version"
-fallback_version = "0.0.0"
+fallback_version = "0.2.5"
 
 [tool.codespell]
 ignore-words-list = "3nd"
