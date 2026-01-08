@@ -936,10 +936,10 @@ def gen_customize_single_prefill_module(
             dtype_map_hip[dtype_q] if check_hip_availability() else dtype_map[dtype_q]
         ),
         "dtype_kv": (
-            dtype_map[dtype_kv] if check_hip_availability() else dtype_map[dtype_kv]
+            dtype_map_hip[dtype_kv] if check_hip_availability() else dtype_map[dtype_kv]
         ),
         "dtype_o": (
-            dtype_map[dtype_o] if check_hip_availability() else dtype_map[dtype_o]
+            dtype_map_hip[dtype_o] if check_hip_availability() else dtype_map[dtype_o]
         ),
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
@@ -1224,9 +1224,11 @@ def gen_customize_batch_prefill_module(
             dtype_map_hip[dtype_kv] if check_hip_availability() else dtype_map[dtype_kv]
         ),
         "dtype_o": (
-            dtype_map[dtype_o] if check_hip_availability() else dtype_map[dtype_o]
+            dtype_map_hip[dtype_o] if check_hip_availability() else dtype_map[dtype_o]
         ),
-        "idtype": dtype_map[idtype],
+        "idtype": (
+            dtype_map_hip[idtype] if check_hip_availability() else dtype_map[idtype]
+        ),
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
