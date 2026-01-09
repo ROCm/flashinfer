@@ -104,10 +104,7 @@ include = [
 
 # Base CMake definitions - applied to all builds
 [tool.scikit-build.cmake.define]
-FLASHINFER_CUTLASS_DIR = {env="FLASHINFER_CUTLASS_DIR", default="3rdparty/cutlass"}
-FLASHINFER_CUDA_ARCHITECTURES = {env="FLASHINFER_CUDA_ARCHITECTURES", default="80"}
 FLASHINFER_HIP_ARCHITECTURES = {env="FLASHINFER_HIP_ARCHITECTURES", default="gfx942"}
-TORCH_CUDA_ARCH_LIST = "8.0"
 FLASHINFER_BUILD_WHEELS="ON"
 FLASHINFER_AOT_TORCH_EXTS = {env="FLASHINFER_AOT_TORCH_EXTS", default="OFF"}
 FLASHINFER_ENABLE_F16="ON"
@@ -115,13 +112,14 @@ FLASHINFER_ENABLE_BF16="ON"
 FLASHINFER_ENABLE_FP8="ON"
 FLASHINFER_ENABLE_FP8_E4M3="ON"
 FLASHINFER_ENABLE_FP8_E5M2="ON"
-FLASHINFER_ENABLE_CUDA = {env="FLASHINFER_ENABLE_CUDA", default="OFF"}
 FLASHINFER_ENABLE_HIP = {env="FLASHINFER_ENABLE_HIP", default="ON"}
 
 [tool.setuptools_scm]
 write_to = "flashinfer/_version.py"
-version_scheme = "post-release"
-local_scheme = "no-local-version"
+tag_regex = "^v?(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)(?:[+](?P<local>[a-zA-Z0-9.]+))?$"
+version_scheme = "no-guess-dev"
+local_scheme = "dirty-tag"
+scm.git.describe_command = ["python", "scripts/git_describe_rocm.py"]
 fallback_version = "0.0.0"
 
 [tool.codespell]
