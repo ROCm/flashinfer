@@ -1,260 +1,219 @@
 # FlashInfer+ROCm: An AMD ROCm port of FlashInfer
 
-FlashInfer+ROCm is a port of the [FlashInfer](https://github.com/flashinfer-ai/flashinfer)
-library to add support for AMD GPUs. The project is in its early
-active stage of development and does not yet support all functionalities
-implemented upstream. The feature support matrix lists currently supported
-features.
+FlashInfer+ROCm is a port of the [FlashInfer](https://github.com/flashinfer-ai/flashinfer) library
+that adds support for AMD Instinct GPUs. The project is in active development with current focus on
+porting attention kernels to ROCm.
 
-To determine which upstream version a specific FlashInfer+ROCm release is
-based on, please refer to the release tag. The versioning convention,
-`<upstream_version>+rocm`, directly links each of the FlashInfer+ROCm releases
-to a corresponding upstream tag. For example, the `0.2.5+rocm` release is
-synchronized with the upstream `v0.2.5` tag.
+**Versioning:** The release tag format `<upstream_version>+rocm` ties each FlashInfer+ROCm release
+to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0.2.5`).
+
+## Table of Contents
+
+* [Feature Support Matrix](#feature-support-matrix)
+* [GPU and ROCm Support](#gpu-and-rocm-support)
+* [Getting Started](#getting-started)
+  * [Option 1: Get a Pre-built Docker Image](#option-1-get-a-pre-built-docker-image)
+  * [Option 2: Install from a Wheel Package](#option-2-install-from-a-wheel-package)
+  * [Trying the Examples](#trying-the-examples)
+* [For Developers](#for-developers)
+  * [Setting up a Development Environment](#setting-up-a-development-environment)
+  * [Building and Installing a Wheel Package](#building-and-installing-a-wheel-package)
+  * [Running Tests](#running-tests)
+
 
 ## Feature Support Matrix
 
 | Kernel Type | FP16 / BF16 | FP8 (E4M3, E5M2) | Notes |
 | :--- | :---: | :---: | :--- |
-| **Decode Attention** | ✅ | WIP | Supports MHA, GQA, and MQA variants. |
-| **Prefill Attention** | WIP | WIP | MHA/GQA/MQA support is a work in progress. |
-| **Cascade** | WIP | WIP | not yet ported. |
-| **MLA** | TBD | TBD | not yet ported. |
-| **POD** | TBD | TBD | not yet ported. |
-| **Positional Encoding** | TBD | TBD | LLaMA RoPE is supported. |
-| **Sampling** | TBD | TBD | Top-K/Top-P sampling is not yet ported. |
-| **Normalization** | TBD | TBD | RMS-Norm/Layer-Norm is not yet ported. |
+| **Decode Attention** | ✅ | ✅ | Supports MHA, GQA, and MQA |
+| **Prefill Attention** | ✅ | WIP | Supports MHA, GQA, and MQA |
+| **Cascade** | WIP | WIP | Not Yet Ported |
+| **MLA** | TBD | TBD | Not Yet Ported |
+| **POD** | TBD | TBD | Not Yet Ported |
+| **Positional Encoding** | TBD | TBD | Not Yet Ported |
+| **Sampling** | TBD | TBD | Top-K/Top-P Sampling Not Yet Ported |
+| **Normalization** | TBD | TBD | RMS-Norm/Layer-Norm Not Yet Ported |
 
-## GPU Support
+## GPU and ROCm Support
 
-| Model | Architecture |
-|---|---|
-| MI300x | CDNA3 |
+**Supported GPU:** gfx942 (CDNA3 architecture)
 
-## ROCm Support
+**Supported ROCm versions:** 6.3.2, 6.4.1, 7.0.2, 7.1.1
 
-6.3.2, 6.4.1
+## Getting Started
 
-### Docker image compatibility
+### Option 1: Get a Pre-built Docker Image
 
-| Docker Image | ROCm | Flashinfer | PyTorch |
+Pre-built Docker images are available at https://hub.docker.com/r/rocm/flashinfer.
+
+| Docker Image | ROCm | FlashInfer | PyTorch |
 |---|---|---|---|
-| TBD | 6.4.1 | 0.2.5 | 2.7.1 |
+| rocm/flashinfer:flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7 | 6.4.1 | 0.2.5 | 2.7.1 |
 
-## Table of Contents
-
-* [Development Setup Inside a Pre-built Docker Container](#development-setup-inside-a-pre-built-docker-container)
-  * [Step 0: Build a docker container](#step-0-build-a-docker-container)
-  * [Step 1: Set up a micromamba env](#step-1-set-up-a-micromamba-env)
-  * [Step 2: Install Flashinfer into the docker container](#step-2-install-flashinfer-into-the-docker-container)
-  * [Step 3: Verify installation](#step-3-verify-installation)
-  * [Build and run C++ tests](#build-and-run-c-tests)
-  * [Run pytests](#run-pytests)
-* [Using ROCm Dockerfile](#using-rocm-dockerfile)
-  * [Step 1: Clone the repository](#step-1-clone-the-repository)
-  * [Step 2: Docker build](#step-2-docker-build)
-  * [Step 3: Using the container](#step-3-using-the-container)
-
-## Development Setup Inside a Pre-built Docker Container
-
-The recommended docker image to setup a development environment for
-FlashInfer+ROCm is `rocm/pytorch:rocm6.4.1_ubuntu24.04_py3.12_pytorch_release_2.7.1`
-
-### Step 0: Build a docker container
+**Start a container:**
 
 ```bash
-docker pull rocm/pytorch:rocm6.4.1_ubuntu24.04_py3.12_pytorch_release_2.7.1
-
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
---group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
---ipc=host --shm-size 128G --name=<container name> rocm/pytorch:rocm6.4.1_ubuntu24.04_py3.12_pytorch_release_2.7.1
+  --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+  --ipc=host --shm-size 128G --name=<container-name> <docker-image-tag>
 ```
 
-### Step 1: Set up a micromamba env
-
-Run the following command to install micromamba and set it up inside `bash`
+**Activate the environment and verify:**
 
 ```bash
-"${SHELL}" <(curl -L micro.mamba.pm/install.sh)
-source ~/.bashrc
+# Activate micromamba environment (name varies by image)
+micromamba activate flashinfer-py3.12-torch2.7.1-rocm6.4.1
+
+# Verify installation
+python -c "import flashinfer; print(flashinfer.__version__)"
 ```
 
-After installing micromamba a custom environment for FlashInfer+ROCm
-development should be setup. The micromamba environment is used to only manage
-the Python version, rest of the dependencies are installed using `pip`.
+Expected output: `0.2.5+rocm.1` (with a possible JIT backend message)
+
+### Option 2: Install from a Wheel Package
+
+Install from AMD's package repository:
 
 ```bash
-# Create a micromamba env for Python 3.12
-micromamba create -n <environment_name> python=3.12 -c conda-forge --override-channels
-# Activate the environment
-micromamba activate <environment_name>
-# Install added dependencies using pip
-pip install setuptools-scm scikit-build-core pytest numpy scipy cmake ninja pybind11
-pip install torch --index-url https://download.pytorch.org/whl/rocm6.4
+pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
 ```
 
-### Step 2: Install Flashinfer into the docker container
-
-Clone the latest trunk from <https://github.com/ROCm/flashinfer>.
+Install a ROCm-enabled troch package from https://repo.radeon.com:
 
 ```bash
-git clone https://github.com/ROCm/flashinfer
-cd flashinfer/
+pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.1 --no-index
 ```
+**NOTE**: The `--no-index` flag is essential to not accidentally installing a wrong version of torch from pypi.
 
-The Flashinfer+ROCm library can be built in two ways: with ahead-of-time (AOT)
-compiled kernels and without any AOT kernels.
+### Trying the Examples
 
-Building the library with AOT kernels will take more time and local disk space
-as several common configurations of the core Flashinfer kernels are built
-during installation.
-
-When building without AOT compilation, every kernel will be just-in-time (JIT)
-compiled at the time of first use.
-
-* Instructions to build with AOT are as follows:
+Download and run example scripts from the repository:
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 FLASHINFER_AOT_TORCH_EXTS=ON python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist
-pip install flashinfer-*.whl
+# Download a single example
+wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/single_prefill_example.py
+python single_prefill_example.py
+
+# Download all examples
+for example in single_prefill_example.py batch_prefill_example.py batch_decode_example.py; do
+  wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/$example
+done
 ```
 
-* Instructions to build using JIT requires setting the FLASHINFER_AOT_TORCH_EXTS build flag to OFF.
+**Available examples:**
+- `single_prefill_example.py` - Single-sequence prefill attention
+- `batch_prefill_example.py` - Batched prefill attention
+- `batch_decode_example.py` - Batched decode attention
+
+
+## For Developers
+
+### Setting up a Development Environment
+
+Build the development Docker image with the repository's Dockerfile:
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist
-pip install flashinfer-*.whl
+docker build \
+  --build-arg ROCM_VERSION=6.4.1 \
+  --build-arg PY_VERSION=3.12 \
+  --build-arg TORCH_VERSION=2.7.1 \
+  --build-arg USERNAME=$USER \
+  --build-arg USER_UID=$(id -u) \
+  --build-arg USER_GID=$(id -g) \
+  -t flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7 \
+  -f .devcontainer/rocm/Dockerfile .
 ```
 
-**Note:** The `--no-deps` flags assumes that all require dependencies are already available in the build environment. Otherwise, refer the earlier steps to install required packages. If building without first installing all Python and build dependencies, the `--no-deps` flag should be omitted. In that case, the build step will download all needed dependencies.
+<details>
+<summary>Build argument descriptions</summary>
 
-Development mode or editable installs (PEP 660) is supported and can be used
-with both AOT and JIT builds of the package. To setup an editable install, follow these steps:
+- `ROCM_VERSION`: ROCm version (default: 7.0.2)
+- `PY_VERSION`: Python version (default: 3.12)
+- `TORCH_VERSION`: PyTorch version (default: 2.7.1)
+- `USERNAME`: Username inside container (default: devuser)
+- `USER_UID`: User ID for matching host permissions
+- `USER_GID`: Group ID for matching host permissions
+</details>
+
+**Run the development container:**
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip install --no-build-isolation -ve.
+docker run -it \
+  --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+  --ipc=host --privileged --shm-size=128G --network=host \
+  --device=/dev/kfd --device=/dev/dri \
+  --group-add video --group-add render \
+  -v $PWD:/workspace \
+  --name flashinfer-dev-container \
+  flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7
 ```
 
-### Step 3: Verify installation
+<details>
+<summary>Docker run argument descriptions</summary>
 
-A convenience script is provided inside the example directory that runs two HIPified kernels from Flashinfer: `SingleDecodeWithKVCache` and `BatchDecodeWithKVCache` and verifies the correctness of the generated results.
+- `--cap-add=SYS_PTRACE`: Enables debugging
+- `--security-opt seccomp=unconfined`: Relaxes security for development
+- `--ipc=host`: Shares host IPC for better performance
+- `--privileged`: Required for GPU access
+- `--shm-size=128G`: Shared memory size (adjust as needed)
+- `--network=host`: Uses host networking
+- `--device=/dev/kfd --device=/dev/dri`: Exposes AMD GPU devices
+- `--group-add video --group-add render`: GPU access groups
+- `-v <host-path>:<container-path>`: Mounts source code
+</details>
 
-Following are the instructions to run the script:
-
-```bash
-cd examples/
-python test_batch_decode_example.py
-```
-
-If Flashinfer+ROCm was installed without AOT kernels, the output should look as follows:
-
-```bash
-Failed to import __aot_prebuilt_uris__: No module named 'flashinfer.__aot_prebuilt_uris__'
-2025-07-23 21:45:24,657 - INFO - flashinfer.jit: Prebuilt kernels not found, using JIT backend
-PASS
-```
-
-### Build and run C++ tests
-
-Flashinfer+ROCm provides a C++ test suite to test all HIP kernels and C++ code. Installing Flashinfer does not automatically install the tests, instead these have to be configured separately.
-
-#### 1. Build tests
-
-```bash
-mkdir build && cd build/
-cmake -DFLASHINFER_ENABLE_HIP=ON -DFLASHINFER_UNITTESTS=ON  -GNinja ..
-ninja build_tests
-```
-
-#### 2. Run individual tests
-
-```bash
-./test_<target_test_name>
-```
-
-#### 3. Run all tests
-
-```bash
-ctest --progress --output-on-failure -j12
-```
-
-The output should look something like this
-
-```bash
-Test project /root/flashinfer/libflashinfer/tests/hip/build
-    Start 1: MathTest
-1/6 Test #1: MathTest .........................   Passed    3.40 sec
-    Start 2: PosEncTest
-2/6 Test #2: PosEncTest .......................   Passed    3.40 sec
-    Start 3: CascadeTest
-3/6 Test #3: CascadeTest ......................   Passed  985.27 sec
-    Start 4: PageTest
-4/6 Test #4: PageTest .........................   Passed  112.40 sec
-    Start 5: SingleDecodeTest
-5/6 Test #5: SingleDecodeTest .................   Passed   35.46 sec
-    Start 6: BatchDecodeTest
-6/6 Test #6: BatchDecodeTest ..................   Passed  556.81 sec
-
-100% tests passed, 0 tests failed out of 6
-```
-
-### Run pytests
-
-To run pytests, run the following helper script from the project root directory:
-
-```bash
-cd scripts/
-./run_hip_tests.sh
-```
-
-## Using ROCm Dockerfile
-
-### Step 1: Clone the repository
-
-```bash
-git clone https://github.com/ROCm/flashinfer
-```
-
-### Step 2: Docker build
-
-```bash
-docker build -f docker/Dockerfile.rocm_ci --target flashinfer_base -t <docker-image-tag> .
-
-docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
---group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
---ipc=host --shm-size 128G --name=<container name> <docker-image-tag>
-```
-
-### Step 3: Using the container
-
-The docker container will come with micromamba pre-installed. It also builds
-and pre-installs Flashinfer AOT version. To use Flashiner, first activate the
-environment and then use the `flashinfer` package from Python.
+**Activate the micromamba environment:**
 
 ```bash
 micromamba activate flashinfer-py3.12-torch2.7.1-rocm6.4.1
 ```
 
-```python
-import torch
-import flashinfer
+**Note:** Environment name varies based on Python, PyTorch, and ROCm versions.
 
-kv_len = 2048
-num_kv_heads = 32
-head_dim = 128
+### Building and Installing a Wheel Package
 
-k = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
-v = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
+**Build with AOT (Ahead-of-Time) compiled kernels:**
 
-# decode attention
-
-num_qo_heads = 32
-q = torch.randn(num_qo_heads, head_dim).half().to(0)
-
-o = flashinfer.single_decode_with_kv_cache(q, k, v) # decode attention without RoPE on-the-fly
-o_rope_on_the_fly = flashinfer.single_decode_with_kv_cache(q, k, v, pos_encoding_mode="ROPE_LLAMA") # decode with LLaMA style RoPE on-the-fly
+```bash
+FLASHINFER_HIP_ARCHITECTURES=gfx942 FLASHINFER_AOT_TORCH_EXTS=ON \
+  python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
+cd dist && pip install flashinfer-*.whl
 ```
 
-Developers should be able to run the example, C++ tests, and the pytests from the above as well inside this container.
+**Build with JIT (Just-in-Time) compilation only:**
+
+```bash
+FLASHINFER_HIP_ARCHITECTURES=gfx942 \
+  python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
+cd dist && pip install flashinfer-*.whl
+```
+
+**Editable install for development:**
+
+```bash
+FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip install --no-build-isolation -ve.
+```
+
+**Note:** The `--no-deps` flag assumes dependencies are pre-installed. Omit it
+to download dependencies during build. AOT builds take longer and use more disk
+space but avoid JIT compilation at runtime.
+
+### Running Tests
+
+The Python tests suite can be run with pytest:
+
+```bash
+# Run default tests (configured in pyproject.toml)
+pytest
+
+# Run specific test file
+pytest tests/test_decode_kernels_hip.py
+
+# Run with pattern matching
+pytest -k "test_decode_kernels_hip"
+
+# Verbose output
+pytest -v
+```
+
+The default test configuration is specified in [pyproject.toml](pyproject.toml) under the `testpaths` setting.
