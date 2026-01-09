@@ -12,10 +12,13 @@ to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0
 * [Feature Support Matrix](#feature-support-matrix)
 * [GPU and ROCm Support](#gpu-and-rocm-support)
 * [Getting Started](#getting-started)
-  * [Option 1: Get a pre-built Docker image](#option-1-get-a-pre-built-docker-image)
-  * [Option 2: Install from a wheel package](#option-2-install-from-a-wheel-package)
-  * [Option 3: Build from source](#option-3-build-from-source)
-* [Running Examples and Tests](#running-examples-and-tests)
+  * [Option 1: Get a Pre-built Docker Image](#option-1-get-a-pre-built-docker-image)
+  * [Option 2: Install from a Wheel Package](#option-2-install-from-a-wheel-package)
+  * [Trying the Examples](#running-examples)
+* [For Developers](#for-developers)
+  * [Setting up a Development Environment](#setting-up-a-development-environment)
+  * [Building and Installing a Wheel Package](#building-and-installing-a-wheel-package)
+  * [Running Tests](#running-tests)
 
 
 ## Feature Support Matrix
@@ -39,7 +42,7 @@ to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0
 
 ## Getting Started
 
-### Option 1: Get a pre-built Docker image
+### Option 1: Get a Pre-built Docker Image
 
 Pre-built Docker images are available at https://hub.docker.com/r/rocm/flashinfer.
 
@@ -67,24 +70,45 @@ python -c "import flashinfer; print(flashinfer.__version__)"
 
 Expected output: `0.2.5+rocm.1` (with a possible JIT backend message)
 
-### Option 2: Install from a wheel package
+### Option 2: Install from a Wheel Package
 
-Install from AMD's PyPI repository:
+Install from AMD's package repository:
 
 ```bash
 pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
 ```
 
-If PyTorch is not already installed, add it from https://repo.radeon.com:
+Install a ROCm-enabled troch package from https://repo.radeon.com:
 
 ```bash
 pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.1 --no-index
 ```
-**NOTE**: The `--no-index` flag is essential to no accidentally installing torch from pypi.
+**NOTE**: The `--no-index` flag is essential to not accidentally installing a wrong version of torch from pypi.
 
-### Option 3: Build from source
+### Trying the Examples
 
-#### Step 1. Setup a development environment
+Download and run example scripts from the repository:
+
+```bash
+# Download a single example
+wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/single_prefill_example.py
+python single_prefill_example.py
+
+# Download all examples
+for example in single_prefill_example.py batch_prefill_example.py batch_decode_example.py; do
+  wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/$example
+done
+```
+
+**Available examples:**
+- `single_prefill_example.py` - Single-sequence prefill attention
+- `batch_prefill_example.py` - Batched prefill attention
+- `batch_decode_example.py` - Batched decode attention
+
+
+## For Developers
+
+### Seting up a Development Environment
 
 Build the development Docker image with the repository's Dockerfile:
 
@@ -146,7 +170,7 @@ micromamba activate flashinfer-py3.12-torch2.7.1-rocm6.4.1
 
 **Note:** Environment name varies based on Python, PyTorch, and ROCm versions.
 
-#### Step 2. Build the package
+### Building and Installing a Wheel Package
 
 **Build with AOT (Ahead-of-Time) compiled kernels:**
 
@@ -174,31 +198,9 @@ FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip install --no-build-isolation -
 to download dependencies during build. AOT builds take longer and use more disk
 space but avoid JIT compilation at runtime.
 
-## Running Examples and Tests
+### Running Tests
 
-### Run examples
-
-Download and run example scripts from the repository:
-
-```bash
-# Download a single example
-wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/single_prefill_example.py
-python single_prefill_example.py
-
-# Download all examples
-for example in single_prefill_example.py batch_prefill_example.py batch_decode_example.py; do
-  wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/$example
-done
-```
-
-**Available examples:**
-- `single_prefill_example.py` - Single-sequence prefill attention
-- `batch_prefill_example.py` - Batched prefill attention
-- `batch_decode_example.py` - Batched decode attention
-
-### Run tests
-
-For development environments, run the test suite with pytest:
+The Python tests suite can be run with pytest:
 
 ```bash
 # Run default tests (configured in pyproject.toml)
