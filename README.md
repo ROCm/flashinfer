@@ -14,7 +14,7 @@ to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0
 * [Getting Started](#getting-started)
   * [Option 1: Get a Pre-built Docker Image](#option-1-get-a-pre-built-docker-image)
   * [Option 2: Install from a Wheel Package](#option-2-install-from-a-wheel-package)
-  * [Trying the Examples](#running-examples)
+  * [Trying the Examples](#trying-the-examples)
 * [For Developers](#for-developers)
   * [Setting up a Development Environment](#setting-up-a-development-environment)
   * [Building and Installing a Wheel Package](#building-and-installing-a-wheel-package)
@@ -108,7 +108,7 @@ done
 
 ## For Developers
 
-### Seting up a Development Environment
+### Setting up a Development Environment
 
 Build the development Docker image with the repository's Dockerfile:
 
