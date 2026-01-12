@@ -40,6 +40,13 @@ to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0
 
 **Supported ROCm versions:** 6.3.2, 6.4.1, 7.0.2, 7.1.1
 
+## Torch Verion Support
+
+**Torch+ROCm:** 2.7.1, 2.8.0
+
+**Note**: Other versions may work but have not been tested. Refer https://repo.radeon.com/rocm/manylinux/rocm-rel-<rocm-version>
+for available versions.
+
 ## Getting Started
 
 ### Option 1: Get a Pre-built Docker Image
@@ -81,9 +88,10 @@ pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
 Install a ROCm-enabled troch package from https://repo.radeon.com:
 
 ```bash
-pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.1 --no-index
+pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.1
 ```
-**NOTE**: The `--no-index` flag is essential to not accidentally installing a wrong version of torch from pypi.
+**NOTE**: The torch version should be exactly as available on repo.radeon.com otherwise a non-ROCm
+torch version will get installed from pypi.
 
 ### Trying the Examples
 
