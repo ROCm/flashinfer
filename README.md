@@ -40,7 +40,7 @@ to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0
 
 **Supported ROCm versions:** 6.3.2, 6.4.1, 7.0.2, 7.1.1
 
-## Torch Verion Support
+## Torch Version Support
 
 **Torch+ROCm:** 2.7.1, 2.8.0
 
