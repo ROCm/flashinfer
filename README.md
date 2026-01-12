@@ -44,7 +44,7 @@ to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0
 
 **Torch+ROCm:** 2.7.1, 2.8.0
 
-**Note**: Other versions may work but have not been tested. Refer https://repo.radeon.com/rocm/manylinux/rocm-rel-<rocm-version>
+**Note**: Other versions may work but have not been tested. Refer to https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm-version}/ (replacing `{rocm-version}` with the desired ROCm version, e.g., `6.4.1`)
 for available versions.
 
 ## Getting Started
