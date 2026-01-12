@@ -6,7 +6,7 @@
 name = "amd-flashinfer"
 dynamic = ["version"]
 description = "Fast Attention Algorithms for LLM Inference on ROCm"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [
@@ -19,7 +19,7 @@ authors = [
 #   pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/
 # See README.md for complete installation instructions.
 dependencies = [
-    "numpy>=1.20",
+    "ninja",
 ]
 
 classifiers = [
@@ -62,9 +62,9 @@ logging.level = "INFO"
 build-dir = "_skbuild"
 experimental = true
 metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
-wheel.py-api = "cp312"
 wheel.license-files = ["LICENSE"]
 wheel.packages = ["flashinfer"]
+wheel.py-api = "py3"
 
 [tool.scikit-build.sdist]
 cmake = false
@@ -97,8 +97,6 @@ exclude = [
     "CHANGELOG.md",
 ]
 include = [
-    "3rdparty/cutlass/include/**/*",
-    "3rdparty/cutlass/tools/**/*",
     "flashinfer/_version.py"
 ]
 
