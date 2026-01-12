@@ -4,8 +4,8 @@ FlashInfer+ROCm is a port of the [FlashInfer](https://github.com/flashinfer-ai/f
 that adds support for AMD Instinct GPUs. The project is in active development with current focus on
 porting attention kernels to ROCm.
 
-**Versioning:** The release tag format `<upstream_version>+rocm` ties each FlashInfer+ROCm release
-to its corresponding upstream tag (e.g., `0.2.5+rocm.1` is based on upstream `v0.2.5`).
+**Versioning:** The release tag format `<upstream_version>+amd` ties each FlashInfer+ROCm release
+to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.2.5`).
 
 ## Table of Contents
 
