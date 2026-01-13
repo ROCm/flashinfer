@@ -1,23 +1,23 @@
 # ---------------------------------------------
 # Stage 1: Build Flashinfer and generate artifacts
 # ---------------------------------------------
-ARG ROCM_VERSION=6.4.1
+ARG ROCM_VERSION=7.1.1
 ARG UBUNTU_VERSION=24.04
-ARG PY_VERSION=3.12
-ARG TORCH_VERSION=2.7.1
 
 FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}-complete AS flashinfer_base
 
 # Consume the build arguments in the build stage
-ARG ROCM_VERSION
-ARG PY_VERSION
-ARG TORCH_VERSION
+ARG ROCM_VERSION=7.1.1
+ARG PY_VERSION=3.12
+ARG TORCH_VERSION=2.8.0
 ARG GFX_ARCH=gfx942
-ARG MAMBA_ENV_NAME=flashinfer-rocm-env
+ARG MAMBA_ENV_NAME=base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     git \
     libstdc++-14-dev \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /root/
@@ -26,11 +26,15 @@ COPY . /root/flashinfer/
 RUN git config --global --add safe.directory /root/flashinfer
 
 RUN curl -L micro.mamba.pm/install.sh | bash && \
-    ~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
-    ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install ninja scikit-build-core setuptools-scm numpy pytest && \
+    ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} ~/.local/bin/micromamba install python=${PY_VERSION} -c conda-forge --override-channels -y && \
+    ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install cmake pybind11 build ninja scikit-build-core setuptools-scm numpy pytest && \
     ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
     /bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
     micromamba activate ${MAMBA_ENV_NAME} && \
     cd /root/flashinfer/ && \
-    FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v && \
-    pip install dist/amd_flashinfer-*.whl"
+    FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m build --no-isolation -v && \
+    pip install dist/amd_flashinfer-*.whl && \
+    mkdir -p /tmp/flashinfer_tests && \
+    cp -R /root/flashinfer/tests/* /tmp/flashinfer_tests/ && \
+    cp /root/flashinfer/dist/*.whl /tmp/ && \
+    rm -rf /root/flashinfer/"
