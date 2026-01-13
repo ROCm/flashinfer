@@ -1,37 +1,28 @@
 # ---------------------------------------------
 # Stage 1: Build Flashinfer and generate artifacts
 # ---------------------------------------------
-ARG ROCM_VERSION=7.1
+ARG ROCM_VERSION=7.1.1
 ARG UBUNTU_VERSION=24.04
 
 FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}-complete AS flashinfer_base
 
 # Consume the build arguments in the build stage
-ARG ROCM_VERSION=7.1
+ARG ROCM_VERSION=7.1.1
 ARG PY_VERSION=3.12
 ARG TORCH_VERSION=2.8.0
 ARG GFX_ARCH=gfx942
 ARG MAMBA_ENV_NAME=base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    clang-format \
-    clangd-19 \
     curl \
-    emacs \
     git \
     libstdc++-14-dev \
-    sudo \
-    tmux \
-    vim \
     wget \
-    zsh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /root/
 
 COPY . /root/flashinfer/
-RUN git config --global --add safe.directory /root/flashinfer
-
 RUN git config --global --add safe.directory /root/flashinfer
 
 RUN curl -L micro.mamba.pm/install.sh | bash && \
