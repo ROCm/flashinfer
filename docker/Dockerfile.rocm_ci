@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /root/
 
 COPY . /root/flashinfer/
+RUN git config --global --add safe.directory /root/flashinfer
 
 RUN curl -L micro.mamba.pm/install.sh | bash && \
     ~/.local/bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} cmake ninja pybind11 -c conda-forge --override-channels -y && \
