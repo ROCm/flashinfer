@@ -1,4 +1,4 @@
-ARG ROCM_VERSION=7.0.2
+ARG ROCM_VERSION=7.1.1
 
 FROM mambaorg/micromamba:2.1.1 as micromamba
 
@@ -6,7 +6,7 @@ FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete
 
 ARG ROCM_VERSION
 ARG PY_VERSION=3.12
-ARG TORCH_VERSION=2.7.1
+ARG TORCH_VERSION=2.8.0
 
 # Update package lists and install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
