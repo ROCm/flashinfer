@@ -53,7 +53,6 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 AMD validates and publishes [FlashInfer images](https://hub.docker.com/r/rocm/flashinfer/tags)
 with ROCm backends on Docker Hub. The following Docker image tag and associated
 inventories represent the latest available FlashInfer version from the official Docker Hub.
-Click <i class="fab fa-docker"></i> to view the image on Docker Hub.
 
 | Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
 |--------------|------|------------|---------|--------|--------|-----|
