@@ -1,6 +1,5 @@
-
 [build-system]
-requires = ["setuptools>=77", "packaging>=24", "wheel", "torch", "ninja", "requests", "numpy"]
+requires = ["setuptools>=77", "setuptools_scm>=8", "packaging>=24", "wheel", "ninja"]
 build-backend = "build_backend"
 backend-path = ["."]
 
@@ -32,14 +31,11 @@ Homepage = "https://github.com/ROCm/flashinfer"
 Repository = "https://github.com/ROCm/flashinfer"
 
 [tool.setuptools]
-packages = ["amd_flashinfer_hip_cache"]
+packages = ["amd_flashinfer_jit_cache"]
 include-package-data = true
 
-[tool.setuptools.dynamic]
-version = {attr = "amd_flashinfer_jit_cache.__version__"}
-
 [tool.setuptools.package-data]
-flashinfer_jit_cache = ["jit_cache/**/*.so"]
+amd_flashinfer_jit_cache = ["hip_cache/**/*.so"]
 
 [tool.setuptools_scm]
 root = ".."
