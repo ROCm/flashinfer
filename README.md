@@ -72,8 +72,8 @@ docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
 **Activate the environment and verify:**
 
 ```bash
-# Activate micromamba environment (name varies by image)
-micromamba activate flashinfer-py3.12-torch2.7.1-rocm6.4.1
+# Activate micromamba environment (Note: env name may vary based on the image)
+micromamba activate base
 
 # Verify installation
 python -c "import flashinfer; print(flashinfer.__version__)"
