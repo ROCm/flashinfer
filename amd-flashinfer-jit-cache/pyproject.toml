@@ -39,7 +39,7 @@ amd_flashinfer_jit_cache = ["hip_cache/**/*.so"]
 
 [tool.setuptools_scm]
 root = ".."
-write_to = "amd_flashinfer_jit_cache/_version.py"
+write_to = "amd-flashinfer-jit-cache/amd_flashinfer_jit_cache/_version.py"
 tag_regex = "^v?(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)(?:[+](?P<local>[a-zA-Z0-9.]+))?$"
 version_scheme = "no-guess-dev"
 local_scheme = "dirty-tag"
