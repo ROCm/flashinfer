@@ -49,11 +49,67 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 ## Getting Started
 ### Option 1: Get a Pre-built Docker Image
 
-Pre-built Docker images are available at https://hub.docker.com/r/rocm/flashinfer.
 
-| Docker Image | ROCm | FlashInfer | PyTorch |
-|---|---|---|---|
-| rocm/flashinfer:flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7 | 6.4.1 | 0.2.5 | 2.7.1 |
+.. |docker-icon| raw:: html
+
+   <i class="fab fa-docker"></i>
+
+AMD validates and publishes `FlashInfer images <https://hub.docker.com/r/rocm/flashinfer/tags>`__
+with ROCm backends on Docker Hub. The following Docker image tag and associated
+inventories represent the latest available FlashInfer version from the official Docker Hub.
+Click |docker-icon| to view the image on Docker Hub.
+
+.. list-table::
+    :header-rows: 1
+    :class: docker-image-compatibility
+
+    * - Docker image
+      - ROCm
+      - FlashInfer
+      - PyTorch
+      - Ubuntu
+      - Python
+      - GPU
+
+    * - .. raw:: html
+
+           <a href="link_pending"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
+      - `7.1.1 <https://repo.radeon.com/rocm/apt/7.1.1/>`__
+      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
+      - `2.8.0 <https://github.com/ROCm/pytorch/releases/tag/v2.8.0>`__
+      - 24.04
+      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
+      - MI325X, MI300X
+
+    * - .. raw:: html
+
+           <a href="link_pending"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
+      - `7.0.2 <https://repo.radeon.com/rocm/apt/7.0.2/>`__
+      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
+      - `2.8.0 <https://github.com/ROCm/pytorch/releases/tag/v2.8.0>`__
+      - 24.04
+      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
+      - MI325X, MI300X
+
+    * - .. raw:: html
+
+           <a href="link_pending"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
+      - `6.4.4 <https://repo.radeon.com/rocm/apt/6.4.4/>`__
+      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
+      - `2.7.1 <https://github.com/ROCm/pytorch/releases/tag/v2.7.1>`__
+      - 24.04
+      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
+      - MI325X, MI300X
+
+    * - .. raw:: html
+
+           <a href="https://hub.docker.com/layers/rocm/flashinfer/flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7/images/sha256-558914838821c88c557fb6d42cfbc1bdb67d79d19759f37c764a9ee801f93313"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
+      - `6.4.1 <https://repo.radeon.com/rocm/apt/6.4.1/>`__
+      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
+      - `2.7.1 <https://github.com/ROCm/pytorch/releases/tag/v2.7.1>`__
+      - 24.04
+      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
+      - MI300X
 
 **Start a container:**
 
@@ -183,7 +239,7 @@ micromamba activate flashinfer-py3.12-torch2.7.1-rocm6.4.1
 ```bash
 FLASHINFER_HIP_ARCHITECTURES=gfx942 FLASHINFER_AOT_TORCH_EXTS=ON \
   python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist && pip install flashinfer-*.whl
+cd dist && pip install amd_flashinfer-*.whl
 ```
 
 **Build with JIT (Just-in-Time) compilation only:**
@@ -191,7 +247,7 @@ cd dist && pip install flashinfer-*.whl
 ```bash
 FLASHINFER_HIP_ARCHITECTURES=gfx942 \
   python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist && pip install flashinfer-*.whl
+cd dist && pip install amd_flashinfer-*.whl
 ```
 
 **Editable install for development:**
