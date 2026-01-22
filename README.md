@@ -50,66 +50,17 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 ### Option 1: Get a Pre-built Docker Image
 
 
-.. |docker-icon| raw:: html
-
-   <i class="fab fa-docker"></i>
-
-AMD validates and publishes `FlashInfer images <https://hub.docker.com/r/rocm/flashinfer/tags>`__
+AMD validates and publishes [FlashInfer images](https://hub.docker.com/r/rocm/flashinfer/tags)
 with ROCm backends on Docker Hub. The following Docker image tag and associated
 inventories represent the latest available FlashInfer version from the official Docker Hub.
-Click |docker-icon| to view the image on Docker Hub.
+Click <i class="fab fa-docker"></i> to view the image on Docker Hub.
 
-.. list-table::
-    :header-rows: 1
-    :class: docker-image-compatibility
-
-    * - Docker image
-      - ROCm
-      - FlashInfer
-      - PyTorch
-      - Ubuntu
-      - Python
-      - GPU
-
-    * - .. raw:: html
-
-           <a href="link_pending"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
-      - `7.1.1 <https://repo.radeon.com/rocm/apt/7.1.1/>`__
-      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
-      - `2.8.0 <https://github.com/ROCm/pytorch/releases/tag/v2.8.0>`__
-      - 24.04
-      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
-      - MI325X, MI300X
-
-    * - .. raw:: html
-
-           <a href="link_pending"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
-      - `7.0.2 <https://repo.radeon.com/rocm/apt/7.0.2/>`__
-      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
-      - `2.8.0 <https://github.com/ROCm/pytorch/releases/tag/v2.8.0>`__
-      - 24.04
-      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
-      - MI325X, MI300X
-
-    * - .. raw:: html
-
-           <a href="link_pending"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
-      - `6.4.4 <https://repo.radeon.com/rocm/apt/6.4.4/>`__
-      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
-      - `2.7.1 <https://github.com/ROCm/pytorch/releases/tag/v2.7.1>`__
-      - 24.04
-      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
-      - MI325X, MI300X
-
-    * - .. raw:: html
-
-           <a href="https://hub.docker.com/layers/rocm/flashinfer/flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7/images/sha256-558914838821c88c557fb6d42cfbc1bdb67d79d19759f37c764a9ee801f93313"><i class="fab fa-docker fa-lg"></i> rocm/flashinfer</a>
-      - `6.4.1 <https://repo.radeon.com/rocm/apt/6.4.1/>`__
-      - `v0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__
-      - `2.7.1 <https://github.com/ROCm/pytorch/releases/tag/v2.7.1>`__
-      - 24.04
-      - `3.12 <https://www.python.org/downloads/release/python-3129/>`__
-      - MI300X
+| Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
+|--------------|------|------------|---------|--------|--------|-----|
+| rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8  | [7.1.1](https://repo.radeon.com/rocm/apt/7.1.1/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.8.0](https://github.com/ROCm/pytorch/releases/tag/v2.8.0) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI325X, MI300X |
+| rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.8 | [7.0.2](https://repo.radeon.com/rocm/apt/7.0.2/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.8.0](https://github.com/ROCm/pytorch/releases/tag/v2.8.0) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI325X, MI300X |
+| rocm/flashinfer:flashinfer-0.2.5.amd2_rocm6.4.4_ubuntu24.04_py3.12_pytorch2.7.1 | [6.4.4](https://repo.radeon.com/rocm/apt/6.4.4/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.7.1](https://github.com/ROCm/pytorch/releases/tag/v2.7.1) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI325X, MI300X |
+| rocm/flashinfer:flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7 | [6.4.1](https://repo.radeon.com/rocm/apt/6.4.1/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.7.1](https://github.com/ROCm/pytorch/releases/tag/v2.7.1) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI300X |
 
 **Start a container:**
 
