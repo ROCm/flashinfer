@@ -74,6 +74,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     import os
 
     # ROCm compatibility matrix: version -> supported gfx architectures
+    # Refer: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html
     ROCM_COMPAT_MATRIX = {
         "7.2": [
             "gfx950",

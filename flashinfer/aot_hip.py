@@ -90,11 +90,9 @@ def gen_fa2(
 
 def gen_attention(
     f16_dtype_: List[torch.dtype],
-    f8_dtype_: List[torch.dtype],
     fa2_head_dim_: List[Tuple[int, int]],
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
-    add_gemma: bool,
 ) -> Iterator[JitSpec]:
 
     # FA2 MHA / MQA / GQA
@@ -107,7 +105,7 @@ def gen_attention(
     ) in product(
         fa2_head_dim_,
         f16_dtype_,
-        f16_dtype_ + f8_dtype_,
+        f16_dtype_,
         use_sliding_window_,
         use_logits_soft_cap_,
     ):
@@ -120,34 +118,12 @@ def gen_attention(
             use_logits_soft_cap=use_logits_soft_cap,
         )
 
-    # Gemma
-    if add_gemma:
-        for (
-            dtype_qo,
-            dtype_kv,
-            (use_sliding_window, use_logits_soft_cap),
-        ) in product(
-            f16_dtype_,
-            f16_dtype_ + f8_dtype_,
-            [(True, True)],
-        ):
-            yield from gen_fa2(
-                dtype_qo=dtype_qo,
-                dtype_kv=dtype_kv,
-                head_dim_qk=256,
-                head_dim_vo=256,
-                use_sliding_window=use_sliding_window,
-                use_logits_soft_cap=use_logits_soft_cap,
-            )
-
 
 def gen_all_modules(
     f16_dtype_: List[torch.dtype],
-    f8_dtype_: List[torch.dtype],
     fa2_head_dim_: List[Tuple[int, int]],
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
-    add_gemma: bool,
     add_act: bool,
 ) -> List[JitSpec]:
     jit_specs: List[JitSpec] = []
@@ -155,11 +131,9 @@ def gen_all_modules(
     jit_specs += list(
         gen_attention(
             f16_dtype_,
-            f8_dtype_,
             fa2_head_dim_,
             use_sliding_window_,
             use_logits_soft_cap_,
-            add_gemma,
         )
     )
 
@@ -181,11 +155,17 @@ def copy_built_kernels(
     jit_specs: List[JitSpec],
     out_dir: Path,
 ) -> None:
+    # FIXME(rebase): This function uses the default JIT cache location instead of build_dir
+    # because modifying jit_env.FLASHINFER_JIT_DIR after import doesn't affect already-imported
+    # modules. Need to set FLASHINFER_WORKSPACE_BASE env var before any imports or refactor.
+    from .jit import env as jit_env_default
+
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=False)
     for jit_spec in jit_specs:
-        src = jit_env.FLASHINFER_JIT_DIR / jit_spec.name / f"{jit_spec.name}.so"
+        # Use the default JIT directory where files are actually built
+        src = jit_env_default.FLASHINFER_JIT_DIR / jit_spec.name / f"{jit_spec.name}.so"
         dst = out_dir / jit_spec.name / f"{jit_spec.name}.so"
         dst.parent.mkdir(exist_ok=False, parents=False)
         shutil.copy2(src, dst)
@@ -217,9 +197,13 @@ def compile_and_package_modules(
     config = final_config
     # ROCm Arch: validate and set
     rocm_arch_list = hip_utils.validate_rocm_arch(verbose=verbose)
-    os.environ["FLASHINFER_ROCM_ARCH_LIST"] = rocm_arch_list
 
     # Update data dir
+    # FIXME: Setting jit_env directories here does not work because jit/core.py imports
+    #        FLASHINFER_JIT_DIR at module load time. Need to set FLASHINFER_WORKSPACE_BASE
+    #        env var before any imports, or refactor to use env.py functions instead of
+    #        module-level constants. For now, files are built in default location and
+    #        copy_built_kernels reads from there. Fix during rebase.
     jit_env.FLASHINFER_CSRC_DIR = project_root / "flashinfer" / "csrc"
     jit_env.FLASHINFER_INCLUDE_DIR = project_root / "include"
 
@@ -238,19 +222,13 @@ def compile_and_package_modules(
         print("  build_dir:", build_dir)
         print("  fa2_head_dim:", config["fa2_head_dim"])
         print("  f16_dtype:", config["f16_dtype"])
-        print("  f8_dtype:", config["f8_dtype"])
         print("  use_sliding_window:", config["use_sliding_window"])
         print("  use_logits_soft_cap:", config["use_logits_soft_cap"])
-        print("  FLASHINFER_ROCM_ARCH_LIST:", os.environ["FLASHINFER_ROCM_ARCH_LIST"])
-        for key in [
-            "add_comm",
-            "add_gemma",
-            "add_oai_oss",
-            "add_moe",
-            "add_act",
-            "add_misc",
-            "add_xqa",
-        ]:
+        print("  FLASHINFER_ROCM_ARCH_LIST:", rocm_arch_list)
+        # Print additional config keys if they exist
+        for key in ["add_act"]:
+            if key in config:
+                print(f"  {key}:", config[key])
             print(f"  {key}:", config[key])
 
     # Generate JIT specs
@@ -258,11 +236,9 @@ def compile_and_package_modules(
         print("Generating JIT specs...")
     jit_specs = gen_all_modules(
         config["f16_dtype"],
-        config["f8_dtype"],
         config["fa2_head_dim"],
         config["use_sliding_window"],
         config["use_logits_soft_cap"],
-        config["add_gemma"],
         config["add_act"],
     )
     if verbose:
@@ -298,11 +274,9 @@ def get_default_config():
         "fa2_head_dim": [(64, 64), (128, 128), (256, 256)],
         "fa3_head_dim": [(192, 128), (128, 128), (64, 64), (256, 256)],
         "f16_dtype": [torch.float16, torch.bfloat16],
-        "f8_dtype": [torch.float8_e4m3fn],
         "use_sliding_window": [False, True],
         "use_logits_soft_cap": [False, True],
-        "add_gemma": True,
-        "add_act": True,
+        "add_act": False,
     }
 
 
@@ -312,11 +286,9 @@ def register_default_modules() -> int:
 
     jit_specs = gen_all_modules(
         config["f16_dtype"],
-        config["f8_dtype"],
         config["fa2_head_dim"],
         config["use_sliding_window"],
         config["use_logits_soft_cap"],
-        config["add_gemma"],
         config["add_act"],
     )
     return len(jit_specs)
@@ -367,8 +339,6 @@ def main():
         config["fa2_head_dim"] = [parse_head_dim(dim) for dim in args.fa2_head_dim]
     if args.f16_dtype:
         config["f16_dtype"] = [getattr(torch, dtype) for dtype in args.f16_dtype]
-    if args.f8_dtype:
-        config["f8_dtype"] = [getattr(torch, dtype) for dtype in args.f8_dtype]
     if args.use_sliding_window:
         config["use_sliding_window"] = [parse_bool(s) for s in args.use_sliding_window]
     if args.use_logits_soft_cap:
@@ -376,9 +346,10 @@ def main():
             parse_bool(s) for s in args.use_logits_soft_cap
         ]
 
-    for key in [
-        "add_act",
-    ]:
+        # Print additional config keys if they exist
+        for key in ["add_act"]:
+            if key in config:
+                print(f"  {key}:", config[key])
         arg_value = getattr(args, key, None)
         if arg_value is not None:
             config[key] = arg_value
