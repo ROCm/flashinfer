@@ -89,10 +89,10 @@ Install from AMD's package repository:
 pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
 ```
 
-Install a ROCm-enabled torch package from https://repo.radeon.com:
+Install the needed ROCm-enabled torch package from https://repo.radeon.com:
 
 ```bash
-pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.1
+pip install torch==2.8.0 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1.1
 ```
 **NOTE**: The torch version should be exactly as available on repo.radeon.com otherwise a non-ROCm
 torch version will get installed from pypi.
