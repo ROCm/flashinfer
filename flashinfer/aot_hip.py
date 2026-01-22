@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 import torch
-from packaging.version import Version
 
+from . import hip_utils
 from .jit import JitSpec, build_jit_specs
 from .jit import env as jit_env
 from .jit.activation import gen_act_and_mul_module
@@ -215,9 +215,9 @@ def compile_and_package_modules(
     if config is not None:
         final_config.update(config)
     config = final_config
-    # ROCm Arch
-    if "FLASHINFER_ROCM_ARCH_LIST" not in os.environ:
-        raise RuntimeError("Please explicitly set env var FLASHINFER_ROCM_ARCH_LIST.")
+    # ROCm Arch: validate and set
+    rocm_arch_list = hip_utils.validate_rocm_arch(verbose=verbose)
+    os.environ["FLASHINFER_ROCM_ARCH_LIST"] = rocm_arch_list
 
     # Update data dir
     jit_env.FLASHINFER_CSRC_DIR = project_root / "flashinfer" / "csrc"
