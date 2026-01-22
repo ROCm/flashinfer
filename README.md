@@ -126,22 +126,22 @@ Build the development Docker image with the repository's Dockerfile:
 
 ```bash
 docker build \
-  --build-arg ROCM_VERSION=6.4.1 \
+  --build-arg ROCM_VERSION=7.1.1 \
   --build-arg PY_VERSION=3.12 \
-  --build-arg TORCH_VERSION=2.7.1 \
+  --build-arg TORCH_VERSION=2.8.0 \
   --build-arg USERNAME=$USER \
   --build-arg USER_UID=$(id -u) \
   --build-arg USER_GID=$(id -g) \
-  -t flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7 \
+  -t flashinfer-0.2.5_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8.0 \
   -f .devcontainer/rocm/Dockerfile .
 ```
 
 <details>
 <summary>Build argument descriptions</summary>
 
-- `ROCM_VERSION`: ROCm version (default: 7.0.2)
+- `ROCM_VERSION`: ROCm version (default: 7.1.1)
 - `PY_VERSION`: Python version (default: 3.12)
-- `TORCH_VERSION`: PyTorch version (default: 2.7.1)
+- `TORCH_VERSION`: PyTorch version (default: 2.8.0)
 - `USERNAME`: Username inside container (default: devuser)
 - `USER_UID`: User ID for matching host permissions
 - `USER_GID`: Group ID for matching host permissions
@@ -157,7 +157,7 @@ docker run -it \
   --group-add video --group-add render \
   -v $PWD:/workspace \
   --name flashinfer-dev-container \
-  flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7
+  flashinfer-0.2.5_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8.0
 ```
 
 <details>
@@ -177,7 +177,7 @@ docker run -it \
 **Activate the micromamba environment:**
 
 ```bash
-micromamba activate flashinfer-py3.12-torch2.7.1-rocm6.4.1
+micromamba activate flashinfer-py3.12-torch2.8.0-rocm7.1.1
 ```
 
 **Note:** Environment name varies based on Python, PyTorch, and ROCm versions.
