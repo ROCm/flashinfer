@@ -25,7 +25,10 @@ def main():
             print("v0.0.0-0-g0000000")
             sys.exit(1)
 
-        # Try each tag to see if it's an ancestor
+        # Find the closest ancestor tag
+        closest_tag = None
+        min_distance = float("inf")
+
         for tag in result.stdout.strip().split("\n"):
             try:
                 # Check if this tag is an ancestor of HEAD
@@ -44,35 +47,41 @@ def main():
                 )
                 distance = int(distance_result.stdout.strip())
 
-                # Get current commit hash
-                hash_result = subprocess.run(
-                    ["git", "rev-parse", "--short", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                commit_hash = hash_result.stdout.strip()
-
-                # If there are commits after the tag, embed .devN in the local part
-                if distance > 0 and "+" in tag:
-                    # Split tag into base and local: v0.2.6+rocm.1 -> v0.2.6, rocm.1
-                    base, local = tag.split("+", 1)
-                    modified_tag = f"{base}+{local}.dev{distance}"
-                    # Output with distance set to 0 to prevent version_scheme from modifying it
-                    print(f"{modified_tag}-0-g{commit_hash}")
-                else:
-                    # No local part or on exact tag - standard format
-                    print(f"{tag}-{distance}-g{commit_hash}")
-
-                return 0
+                # Track the closest tag
+                if distance <= min_distance:
+                    min_distance = distance
+                    closest_tag = tag
 
             except subprocess.CalledProcessError:
                 # Not an ancestor, try next tag
                 continue
 
-        # No suitable tag found
-        print("v0.0.0-0-g0000000")
-        return 1
+        if closest_tag is None:
+            # No suitable tag found
+            print("v0.0.0-0-g0000000")
+            return 1
+
+        # Get current commit hash
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_hash = hash_result.stdout.strip()
+
+        # If there are commits after the tag, embed .devN in the local part
+        if min_distance > 0 and "+" in closest_tag:
+            # Split tag into base and local: v0.2.6+rocm.1 -> v0.2.6, rocm.1
+            base, local = closest_tag.split("+", 1)
+            modified_tag = f"{base}+{local}.dev{min_distance}"
+            # Output with distance set to 0 to prevent version_scheme from modifying it
+            print(f"{modified_tag}-0-g{commit_hash}")
+        else:
+            # No local part or on exact tag - standard format
+            print(f"{closest_tag}-{min_distance}-g{commit_hash}")
+
+        return 0
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
