@@ -220,8 +220,30 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 [tool.coverage.run]
-source = ["flashinfer"]
+# Note: 'source' is commented out because 'include' would be ignored if source is set
+# source = ["flashinfer"]
 branch = true
+# AMD/HIP modified files - auto-updated by GitHub Action
+include = [
+    "flashinfer/__init__.py",
+    "flashinfer/activation.py",
+    "flashinfer/cascade.py",
+    "flashinfer/decode.py",
+    "flashinfer/get_include_paths.py",
+    "flashinfer/jit/__init__.py",
+    "flashinfer/jit/activation.py",
+    "flashinfer/jit/attention/__init__.py",
+    "flashinfer/jit/attention/pytorch.py",
+    "flashinfer/jit/core.py",
+    "flashinfer/jit/cpp_ext.py",
+    "flashinfer/jit/env.py",
+    "flashinfer/jit/utils.py",
+    "flashinfer/norm.py",
+    "flashinfer/page.py",
+    "flashinfer/prefill.py",
+    "flashinfer/rope.py",
+    "flashinfer/utils.py",
+]
 
 [tool.coverage.report]
 show_missing = true
