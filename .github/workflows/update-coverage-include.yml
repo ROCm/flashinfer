@@ -66,8 +66,4 @@ jobs:
 
             ---
             *Automated by GitHub Actions*
-          labels: |
-            automated
-            coverage
-            chore
           assignees: ${{ github.actor }}
