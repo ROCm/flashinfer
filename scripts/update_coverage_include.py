@@ -41,7 +41,7 @@ def get_modified_files(upstream_ref="upstream/main"):
 
     try:
         result = subprocess.run(
-            ["git", "diff", "--name-only", merge_base, "HEAD"],
+            ["git", "diff", "--name-only", "--diff-filter=AM", merge_base, "HEAD"],
             capture_output=True,
             text=True,
             check=True,

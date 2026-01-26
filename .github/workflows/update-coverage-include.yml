@@ -34,7 +34,7 @@ jobs:
       - name: Run update script
         id: update
         run: |
-          python3 scripts/update_coverage_include.py > update_log.txt 2>&1
+          python3 scripts/update_coverage_include.py > update_log.txt 2>&1 || (cat update_log.txt && exit 1)
           if git diff --quiet pyproject.toml; then
             echo "changed=false" >> $GITHUB_OUTPUT
             cat update_log.txt
