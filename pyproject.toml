@@ -227,7 +227,6 @@ branch = true
 include = [
     "flashinfer/__init__.py",
     "flashinfer/activation.py",
-    "flashinfer/cascade.py",
     "flashinfer/decode.py",
     "flashinfer/get_include_paths.py",
     "flashinfer/jit/__init__.py",
