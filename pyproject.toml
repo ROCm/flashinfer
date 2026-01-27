@@ -232,7 +232,7 @@ include = [
     "flashinfer/jit/__init__.py",
     "flashinfer/jit/activation.py",
     "flashinfer/jit/attention/__init__.py",
-    "flashinfer/jit/attention/pytorch_hip.py",
+    "flashinfer/jit/attention/pytorch.py",
     "flashinfer/jit/core.py",
     "flashinfer/jit/cpp_ext.py",
     "flashinfer/jit/env.py",
