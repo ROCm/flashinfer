@@ -15,7 +15,6 @@ import torch
 from . import hip_utils
 from .jit import JitSpec, build_jit_specs
 from .jit import env as jit_env
-from .jit.activation import gen_act_and_mul_module
 from .jit.attention import (
     gen_batch_decode_module,
     gen_batch_prefill_module,
@@ -124,7 +123,6 @@ def gen_all_modules(
     fa2_head_dim_: List[Tuple[int, int]],
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
-    add_act: bool,
 ) -> List[JitSpec]:
     jit_specs: List[JitSpec] = []
 
@@ -136,10 +134,6 @@ def gen_all_modules(
             use_logits_soft_cap_,
         )
     )
-
-    if add_act:
-        for act_name in act_func_def_str:
-            jit_specs.append(gen_act_and_mul_module(act_name))
 
     # dedup
     names = set()
@@ -225,11 +219,6 @@ def compile_and_package_modules(
         print("  use_sliding_window:", config["use_sliding_window"])
         print("  use_logits_soft_cap:", config["use_logits_soft_cap"])
         print("  FLASHINFER_ROCM_ARCH_LIST:", rocm_arch_list)
-        # Print additional config keys if they exist
-        for key in ["add_act"]:
-            if key in config:
-                print(f"  {key}:", config[key])
-            print(f"  {key}:", config[key])
 
     # Generate JIT specs
     if verbose:
@@ -239,7 +228,6 @@ def compile_and_package_modules(
         config["fa2_head_dim"],
         config["use_sliding_window"],
         config["use_logits_soft_cap"],
-        config["add_act"],
     )
     if verbose:
         print("Total ops:", len(jit_specs))
@@ -276,7 +264,6 @@ def get_default_config():
         "f16_dtype": [torch.float16, torch.bfloat16],
         "use_sliding_window": [False, True],
         "use_logits_soft_cap": [False, True],
-        "add_act": False,
     }
 
 
@@ -289,7 +276,6 @@ def register_default_modules() -> int:
         config["fa2_head_dim"],
         config["use_sliding_window"],
         config["use_logits_soft_cap"],
-        config["add_act"],
     )
     return len(jit_specs)
 
@@ -345,14 +331,6 @@ def main():
         config["use_logits_soft_cap"] = [
             parse_bool(s) for s in args.use_logits_soft_cap
         ]
-
-        # Print additional config keys if they exist
-        for key in ["add_act"]:
-            if key in config:
-                print(f"  {key}:", config[key])
-        arg_value = getattr(args, key, None)
-        if arg_value is not None:
-            config[key] = arg_value
 
     # Use the reusable compile_and_package_modules function
     compile_and_package_modules(
