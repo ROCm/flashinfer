@@ -204,8 +204,22 @@ def compile_and_package_modules(
         final_config.update(config)
     config = final_config
 
-    # ROCm Arch: validate and set
-    rocm_arch_list = hip_utils.validate_rocm_arch(verbose=verbose)
+    # ROCm Arch: Ensure env var is set or create/validate using CompilationContext
+    from .compilation_context_hip import CompilationContext
+
+    if "FLASHINFER_ROCM_ARCH_LIST" not in os.environ:
+        # Auto-detect or use default by creating a local context
+        compilation_context = CompilationContext()
+        detected_archs = ",".join(sorted(compilation_context.TARGET_ROCM_ARCHS))
+        os.environ["FLASHINFER_ROCM_ARCH_LIST"] = detected_archs
+        if verbose:
+            print(f"Auto-detected ROCm architectures: {detected_archs}")
+    else:
+        # Validate provided arch list by creating a local context
+        arch_list = os.environ["FLASHINFER_ROCM_ARCH_LIST"]
+        compilation_context = CompilationContext()  # Validates via env var
+        if verbose:
+            print(f"Using ROCm architectures: {arch_list}")
 
     # Verify paths are correct
     expected_jit_dir = (

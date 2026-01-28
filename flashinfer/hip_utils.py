@@ -2,6 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# AMDGPU archs supported by amd-flashinfer
+FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942"]
+
 
 def get_system_rocm_version():
     """
@@ -151,3 +154,71 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
         print(f"Validated ROCm {system_rocm_version} with architecture(s): {arch_list}")
 
     return arch_list
+
+
+# New consolidated validation function to add to hip_utils.py
+
+
+def validate_flashinfer_rocm_arch(
+    arch_list: str = None, torch_cpp_ext_module=None, verbose: bool = False
+) -> tuple:
+    """
+    Comprehensive ROCm architecture validation for FlashInfer compilation.
+
+    Validates in order:
+    1. System ROCm version supports the architectures (ROCM_COMPAT_MATRIX)
+    2. FlashInfer has AMD ports for the architectures (FLASHINFER_SUPPORTED_ROCM_ARCHS)
+    3. PyTorch was compiled with the architectures (torch.utils.cpp_extension)
+
+    Args:
+        arch_list: Comma-separated list (e.g., "gfx942,gfx90a") or None for default
+        torch_cpp_ext_module: torch.utils.cpp_extension module for PyTorch validation
+        verbose: Print validation messages
+
+    Returns:
+        tuple: (arch_flags, arch_set)
+            - arch_flags: List like ["--offload-arch=gfx942"]
+            - arch_set: Set like {"gfx942"}
+
+    Raises:
+        RuntimeError: If any validation step fails with clear error message
+    """
+    import os
+
+    # Get architecture list from parameter, env var, or default
+    if arch_list is None:
+        arch_list = os.environ.get("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
+
+    # Step 1: Validate against system ROCm version (reuse existing logic)
+    validated_arch_list = validate_rocm_arch(arch_list=arch_list, verbose=verbose)
+    requested_archs = [arch.strip() for arch in validated_arch_list.split(",")]
+
+    # Step 2: Validate against AMD-ported FlashInfer architectures
+    unsupported_by_flashinfer = [
+        arch for arch in requested_archs if arch not in FLASHINFER_SUPPORTED_ROCM_ARCHS
+    ]
+    if unsupported_by_flashinfer:
+        raise RuntimeError(
+            f"FlashInfer does not support the following ROCm architectures: {', '.join(unsupported_by_flashinfer)}.\n"
+            f"Currently supported by FlashInfer: {', '.join(FLASHINFER_SUPPORTED_ROCM_ARCHS)}"
+        )
+
+    # Step 3: Validate against PyTorch's available architectures (if module provided)
+    arch_flags = [f"--offload-arch={arch}" for arch in requested_archs]
+    if torch_cpp_ext_module is not None:
+        pytorch_arch_flags = torch_cpp_ext_module._get_rocm_arch_flags()
+        missing_in_pytorch = [
+            flag for flag in arch_flags if flag not in pytorch_arch_flags
+        ]
+        if missing_in_pytorch:
+            raise RuntimeError(
+                f"PyTorch does not support the following architectures: {', '.join(missing_in_pytorch)}.\n"
+                f"PyTorch was compiled with: {', '.join(pytorch_arch_flags)}"
+            )
+
+    if verbose:
+        print(f"FlashInfer validated architectures: {', '.join(requested_archs)}")
+
+    # Return both the flags list and the set
+    arch_set = set(requested_archs)
+    return arch_flags, arch_set

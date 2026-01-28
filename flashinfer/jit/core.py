@@ -10,6 +10,7 @@ import torch
 import torch.utils.cpp_extension as torch_cpp_ext
 from filelock import FileLock
 
+from ..compilation_context_hip import CompilationContext
 from .cpp_ext import (
     check_hip_availability,
     generate_ninja_build_for_op,
@@ -50,6 +51,10 @@ class FlashInferJITLogger(logging.Logger):
 
 
 logger = FlashInferJITLogger("flashinfer.jit")
+
+
+# Global compilation context singleton - created once at module import
+current_compilation_context = CompilationContext()
 
 
 def check_cuda_arch():
