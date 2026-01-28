@@ -13,14 +13,10 @@ from typing import Iterator, List, Optional, Tuple
 import torch
 
 from . import hip_utils
-from .jit import JitSpec, build_jit_specs
-from .jit import env as jit_env
-from .jit.attention import (
-    gen_batch_decode_module,
-    gen_batch_prefill_module,
-    gen_single_decode_module,
-    gen_single_prefill_module,
-)
+
+# NOTE: Do NOT import jit modules at top level!
+# They must be imported inside compile_and_package_modules() after setting
+# FLASHINFER_WORKSPACE_BASE env var, because jit/env.py reads this at import time.
 
 
 def gen_fa2(
@@ -30,7 +26,15 @@ def gen_fa2(
     head_dim_vo: int,
     use_sliding_window: bool,
     use_logits_soft_cap: bool,
-) -> Iterator[JitSpec]:
+) -> Iterator:
+    # Import here to access gen_* functions
+    from .jit.attention import (
+        gen_batch_decode_module,
+        gen_batch_prefill_module,
+        gen_single_decode_module,
+        gen_single_prefill_module,
+    )
+
     if dtype_qo.itemsize == dtype_kv.itemsize and dtype_qo != dtype_kv:
         return
     if dtype_qo.itemsize == 1:
@@ -92,7 +96,7 @@ def gen_attention(
     fa2_head_dim_: List[Tuple[int, int]],
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
-) -> Iterator[JitSpec]:
+) -> Iterator:
 
     # FA2 MHA / MQA / GQA
     for (
@@ -123,7 +127,9 @@ def gen_all_modules(
     fa2_head_dim_: List[Tuple[int, int]],
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
-) -> List[JitSpec]:
+) -> List:
+    from .jit import JitSpec
+
     jit_specs: List[JitSpec] = []
 
     jit_specs += list(
@@ -146,21 +152,21 @@ def gen_all_modules(
 
 
 def copy_built_kernels(
-    jit_specs: List[JitSpec],
+    jit_specs: List,
     out_dir: Path,
+    build_dir: Path,
 ) -> None:
-    # FIXME(rebase): This function uses the default JIT cache location instead of build_dir
-    # because modifying jit_env.FLASHINFER_JIT_DIR after import doesn't affect already-imported
-    # modules. Need to set FLASHINFER_WORKSPACE_BASE env var before any imports or refactor.
-    from .jit import env as jit_env_default
-
+    """Copy built kernel .so files from build_dir to out_dir"""
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=False)
+
+    jit_cache_dir = build_dir / "cached_ops"
     for jit_spec in jit_specs:
-        # Use the default JIT directory where files are actually built
-        src = jit_env_default.FLASHINFER_JIT_DIR / jit_spec.name / f"{jit_spec.name}.so"
+        src = jit_cache_dir / jit_spec.name / f"{jit_spec.name}.so"
         dst = out_dir / jit_spec.name / f"{jit_spec.name}.so"
+        if not src.exists():
+            raise FileNotFoundError(f"Built kernel not found: {src}")
         dst.parent.mkdir(exist_ok=False, parents=False)
         shutil.copy2(src, dst)
 
@@ -184,29 +190,30 @@ def compile_and_package_modules(
         verbose: Whether to print verbose build output
         skip_prebuilt: Whether to skip pre-built modules
     """
+    # CRITICAL: Set FLASHINFER_WORKSPACE_BASE before importing jit modules
+    # jit/env.py reads this at import time to set directory constants
+    os.environ["FLASHINFER_WORKSPACE_BASE"] = str(build_dir)
+
+    # NOW safe to import jit modules - they will use build_dir
+    from .jit import JitSpec, build_jit_specs
+    from .jit import env as jit_env
+
     # Start with default config and override with user config
     final_config = get_default_config()
     if config is not None:
         final_config.update(config)
     config = final_config
+
     # ROCm Arch: validate and set
     rocm_arch_list = hip_utils.validate_rocm_arch(verbose=verbose)
 
-    # Update data dir
-    # FIXME: Setting jit_env directories here does not work because jit/core.py imports
-    #        FLASHINFER_JIT_DIR at module load time. Need to set FLASHINFER_WORKSPACE_BASE
-    #        env var before any imports, or refactor to use env.py functions instead of
-    #        module-level constants. For now, files are built in default location and
-    #        copy_built_kernels reads from there. Fix during rebase.
-    jit_env.FLASHINFER_CSRC_DIR = project_root / "flashinfer" / "csrc"
-    jit_env.FLASHINFER_INCLUDE_DIR = project_root / "include"
-
-    # Update workdir
-    jit_env.FLASHINFER_WORKSPACE_DIR = build_dir
-    jit_env.FLASHINFER_JIT_DIR = build_dir / "cached_ops"
-    jit_env.FLASHINFER_GEN_SRC_DIR = build_dir / "generated"
-    jit_env.FLASHINFER_JIT_DIR.mkdir(parents=True, exist_ok=True)
-    jit_env.FLASHINFER_GEN_SRC_DIR.mkdir(parents=True, exist_ok=True)
+    # Verify paths are correct
+    expected_jit_dir = (
+        build_dir / ".cache" / "flashinfer" / rocm_arch_list / "cached_ops"
+    )
+    if verbose:
+        print(f"JIT cache will be at: {expected_jit_dir}")
+        print(f"Actual FLASHINFER_JIT_DIR: {jit_env.FLASHINFER_JIT_DIR}")
 
     # Print summary
     if verbose:
@@ -214,6 +221,7 @@ def compile_and_package_modules(
         if out_dir is not None:
             print("  out_dir:", out_dir)
         print("  build_dir:", build_dir)
+        print("  project_root:", project_root)
         print("  fa2_head_dim:", config["fa2_head_dim"])
         print("  f16_dtype:", config["f16_dtype"])
         print("  use_sliding_window:", config["use_sliding_window"])
@@ -237,9 +245,9 @@ def compile_and_package_modules(
 
     # Copy built kernels
     if out_dir is not None:
-        copy_built_kernels(jit_specs, out_dir)
-    if verbose:
-        print("AOT kernels saved to:", out_dir)
+        copy_built_kernels(jit_specs, out_dir, build_dir)
+        if verbose:
+            print("AOT kernels saved to:", out_dir)
 
 
 def parse_bool(s: str) -> bool:
@@ -268,7 +276,7 @@ def get_default_config():
 
 
 def register_default_modules() -> int:
-    """Register the default set of modules"""
+    """Register the default set of modules (used by packaging system)"""
     config = get_default_config()
 
     jit_specs = gen_all_modules(
@@ -285,7 +293,9 @@ def main():
         description="Ahead-of-Time (AOT) build all modules"
     )
     parser.add_argument("--out-dir", type=Path, help="Output directory")
-    parser.add_argument("--build-dir", type=Path, help="Build directory")
+    parser.add_argument(
+        "--build-dir", type=Path, help="Build directory (default: current dir)"
+    )
     parser.add_argument(
         "--fa2-head-dim",
         nargs="*",
@@ -307,20 +317,17 @@ def main():
         "--use-sliding-window", nargs="*", help="Use sliding window attention"
     )
     parser.add_argument("--use-logits-soft-cap", nargs="*", help="Use logits soft cap")
-    parser.add_argument("--add-act", type=parse_bool, help="Add activation kernels")
     args = parser.parse_args()
 
-    # Start with default configuration
+    # Setup paths
     project_root = Path(__file__).resolve().parents[1]
+    build_dir = Path(args.build_dir) if args.build_dir else Path.cwd()
+    out_dir: Optional[Path] = Path(args.out_dir) if args.out_dir else None
+
+    # Start with default configuration
     config = get_default_config()
-    build_dir = jit_env.FLASHINFER_WORKSPACE_DIR
-    out_dir: Optional[Path] = None
 
     # Override with command line arguments
-    if args.out_dir:
-        out_dir = Path(args.out_dir)
-    if args.build_dir:
-        build_dir = Path(args.build_dir)
     if args.fa2_head_dim:
         config["fa2_head_dim"] = [parse_head_dim(dim) for dim in args.fa2_head_dim]
     if args.f16_dtype:
