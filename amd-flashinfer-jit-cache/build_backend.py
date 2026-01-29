@@ -30,44 +30,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 os.environ["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
 
 
-def _create_build_metadata():
-    """Create build metadata file with version information using setuptools_scm."""
-    # Import setuptools_scm to get version
-    try:
-        from setuptools_scm import get_version
-
-        version = get_version(root="..", relative_to=__file__)
-    except Exception as e:
-        print(f"Warning: Could not get version from setuptools_scm: {e}")
-        version = "0.0.0+unknown"
-
-    build_meta_file = (
-        Path(__file__).parent / "amd_flashinfer_jit_cache" / "_build_meta.py"
-    )
-    build_meta_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Check if we're in a git repository
-    git_dir = Path(__file__).parent.parent / ".git"
-    in_git_repo = git_dir.exists()
-
-    # If file exists and not in git repo (installing from sdist), keep existing file
-    if build_meta_file.exists() and not in_git_repo:
-        print("Build metadata file already exists (not in git repo), keeping it")
-        return version
-
-    # In git repo (editable) or file doesn't exist, create/update it
-    with open(build_meta_file, "w") as f:
-        f.write('"""Build metadata for amd-flashinfer-jit-cache package."""\n')
-        f.write(f'__version__ = "{version}"\n')
-
-    print(f"Created build metadata file with version {version}")
-    return version
-
-
-# Create build metadata as soon as this module is imported
-_create_build_metadata()
-
-
 def _compile_jit_cache(output_dir: Path, verbose: bool = True):
     """Compile AOT modules using flashinfer.aot_hip functions directly."""
     from flashinfer import aot_hip
