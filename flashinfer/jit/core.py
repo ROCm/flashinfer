@@ -146,14 +146,8 @@ def gen_jit_spec(
 
     cflags = ["-O3", "-std=c++20", "-Wno-switch-bool"]
     if check_hip_availability():
-        cflags += [
-            "--offload-arch=gfx942",
-            "-DFLASHINFER_ENABLE_HIP",
-            "-DFLASHINFER_ENABLE_FP8",
-            "-DFLASHINFER_ENABLE_FP8_E4M3",
-            "-DFLASHINFER_ENABLE_FP8_E5M2",
-            "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
-        ]
+        # Use dynamically-generated flags from CompilationContext (includes arch flags)
+        cflags += current_compilation_context.get_hipcc_flags_list()
     cuda_cflags = [
         "-O3",
         "-std=c++20",
