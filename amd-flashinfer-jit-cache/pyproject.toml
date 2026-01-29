@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77", "setuptools_scm>=8", "packaging>=24", "wheel", "ninja"]
+requires = ["setuptools>=80", "setuptools_scm>=8", "packaging>=24", "wheel", "ninja"]
 build-backend = "build_backend"
 backend-path = ["."]
 
@@ -9,7 +9,7 @@ dynamic = ["version"]
 description = "Pre-compiled HIP kernels for FlashInfer on AMD ROCm"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 authors = [
     {name = "AMD ROCm Team"}
 ]
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -32,16 +31,16 @@ Repository = "https://github.com/ROCm/flashinfer"
 
 [tool.setuptools]
 packages = ["amd_flashinfer_jit_cache"]
-include-package-data = true
+include-package-data = false
 
 [tool.setuptools.package-data]
-amd_flashinfer_jit_cache = ["hip_cache/**/*.so"]
+amd_flashinfer_jit_cache = ["jit_cache/**/*.so"]
 
 [tool.setuptools_scm]
 root = ".."
 write_to = "amd-flashinfer-jit-cache/amd_flashinfer_jit_cache/_version.py"
 tag_regex = "^v?(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)(?:[+](?P<local>[a-zA-Z0-9.]+))?$"
 version_scheme = "no-guess-dev"
-local_scheme = "dirty-tag"
+local_scheme = "no-local-version"
 git_describe_command = ["python", "../scripts/git_describe_rocm.py"]
 fallback_version = "0.0.0"

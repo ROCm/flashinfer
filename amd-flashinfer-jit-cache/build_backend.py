@@ -16,8 +16,8 @@ limitations under the License.
 """
 
 import os
-import platform
 import sys
+import sysconfig
 from pathlib import Path
 
 from setuptools import build_meta as _orig
@@ -92,7 +92,7 @@ def _compile_jit_cache(output_dir: Path, verbose: bool = True):
 def _build_aot_modules():
     """Build AOT HIP modules."""
     # First, ensure AOT modules are compiled
-    aot_package_dir = Path(__file__).parent / "amd_flashinfer_jit_cache" / "hip_cache"
+    aot_package_dir = Path(__file__).parent / "amd_flashinfer_jit_cache" / "jit_cache"
     aot_package_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -131,19 +131,8 @@ class PlatformSpecificBdistWheel(bdist_wheel):
         python_tag = "cp310"
         abi_tag = "abi3"  # Stable ABI tag
 
-        # Get platform tag
-        machine = platform.machine()
-        if platform.system() == "Linux":
-            # Use manylinux_2_28 as specified
-            if machine == "x86_64":
-                plat_tag = "manylinux_2_28_x86_64"
-            elif machine == "aarch64":
-                plat_tag = "manylinux_2_28_aarch64"
-            else:
-                plat_tag = f"linux_{machine}"
-        else:
-            # Fallback for other platforms
-            plat_tag = f"{platform.system().lower()}_{machine}"
+        # Get platform tag using sysconfig (PEP 425 compliant)
+        plat_tag = sysconfig.get_platform().replace("-", "_").replace(".", "_")
 
         return python_tag, abi_tag, plat_tag
 

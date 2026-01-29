@@ -1,0 +1,3 @@
+# Build time generated files
+amd_flashinfer_jit_cache/_build_meta.py
+amd_flashinfer_jit_cache/_version.py

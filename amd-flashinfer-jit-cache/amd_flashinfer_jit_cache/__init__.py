@@ -1,20 +1,39 @@
+# SPDX-FileCopyrightText : 2025 Advanced Micro Devices, Inc.
+#
+# SPDX-License-Identifier : Apache-2.0
+
 """AMD FlashInfer JIT Cache Package
 
 This package provides pre-compiled HIP kernels for FlashInfer on AMD ROCm platforms.
 """
 
+from pathlib import Path
+
+# Get the path to the AOT modules directory within this package
+jit_cache_dir = Path(__file__).parent / "jit_cache"
+
+
+def get_jit_cache_dir() -> str:
+    """Get the path to the jit_cache directory containing pre-compiled kernels.
+
+    Returns:
+        Path: Absolute path to the jit_cache directory
+    """
+    return str(jit_cache_dir)
+
+
 try:
-    from ._build_meta import __version__
-except ImportError:
-    # Fallback for development or when _build_meta.py hasn't been generated yet
-    try:
-        from importlib.metadata import PackageNotFoundError, version
+    from ._build_meta import __version__ as __version__
+except (ModuleNotFoundError, ImportError):
+    __version__ = "0.0.0+unknown"
 
-        try:
-            __version__ = version("amd-flashinfer-jit-cache")
-        except PackageNotFoundError:
-            __version__ = "0.0.0+unknown"
-    except ImportError:
-        __version__ = "0.0.0+unknown"
+try:
+    from ._build_meta import __git_version__ as __git_version__
+except (ModuleNotFoundError, ImportError, AttributeError):
+    __git_version__ = "unknown"
 
-__all__ = ["__version__"]
+
+__all__ = [
+    "__version__",
+    "get_jit_cache_dir",
+]
