@@ -190,13 +190,20 @@ def compile_and_package_modules(
         verbose: Whether to print verbose build output
         skip_prebuilt: Whether to skip pre-built modules
     """
-    # CRITICAL: Set FLASHINFER_WORKSPACE_BASE before importing jit modules
-    # jit/env.py reads this at import time to set directory constants
+    # Set environment variable (for potential subprocess spawns)
     os.environ["FLASHINFER_WORKSPACE_BASE"] = str(build_dir)
 
-    # NOW safe to import jit modules - they will use build_dir
+    # Import jit modules
     from .jit import JitSpec, build_jit_specs
     from .jit import env as jit_env
+
+    # Override jit_env module variables directly (upstream pattern from v0.6.1)
+    # This allows AOT build to use custom build directories instead of user's cache
+    jit_env.FLASHINFER_WORKSPACE_DIR = build_dir
+    jit_env.FLASHINFER_JIT_DIR = build_dir / "cached_ops"
+    jit_env.FLASHINFER_GEN_SRC_DIR = build_dir / "generated"
+    jit_env.FLASHINFER_JIT_DIR.mkdir(parents=True, exist_ok=True)
+    jit_env.FLASHINFER_GEN_SRC_DIR.mkdir(parents=True, exist_ok=True)
 
     # Start with default config and override with user config
     final_config = get_default_config()
@@ -222,13 +229,10 @@ def compile_and_package_modules(
             print(f"Using ROCm architectures: {arch_list}")
 
     # Verify paths are correct
+    rocm_arch_list = os.environ["FLASHINFER_ROCM_ARCH_LIST"]
     expected_jit_dir = (
         build_dir / ".cache" / "flashinfer" / rocm_arch_list / "cached_ops"
     )
-    if verbose:
-        print(f"JIT cache will be at: {expected_jit_dir}")
-        print(f"Actual FLASHINFER_JIT_DIR: {jit_env.FLASHINFER_JIT_DIR}")
-
     # Print summary
     if verbose:
         print("AOT build summary:")
