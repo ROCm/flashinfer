@@ -43,7 +43,9 @@ from .attention import (
 from .attention import (
     gen_customize_single_prefill_module as gen_customize_single_prefill_module,
 )
-from .attention import gen_fmha_cutlass_sm100a_module as gen_fmha_cutlass_sm100a_module
+from .attention import (
+    gen_fmha_cutlass_sm100a_module as gen_fmha_cutlass_sm100a_module,
+)
 from .attention import gen_pod_module as gen_pod_module
 from .attention import gen_single_decode_module as gen_single_decode_module
 from .attention import gen_single_prefill_module as gen_single_prefill_module
@@ -55,23 +57,11 @@ from .attention import get_batch_prefill_uri as get_batch_prefill_uri
 from .attention import get_pod_uri as get_pod_uri
 from .attention import get_single_decode_uri as get_single_decode_uri
 from .attention import get_single_prefill_uri as get_single_prefill_uri
-from .attention import trtllm_gen_fmha_module as trtllm_gen_fmha_module
 from .core import JitSpec as JitSpec
 from .core import build_jit_specs as build_jit_specs
-from .core import clear_cache_dir as clear_cache_dir
-from .core import gen_jit_spec as gen_jit_spec
-from .core import sm90a_nvcc_flags as sm90a_nvcc_flags
-from .core import sm100a_nvcc_flags as sm100a_nvcc_flags
-from .cubin_loader import setup_cubin_loader
-
-
-@functools.cache
-def get_cudnn_fmha_gen_module():
-    mod = cudnn_fmha_gen_module()
-    op = mod.build_and_load()
-    setup_cubin_loader(mod.get_library_path())
-    return op
-
+from .core import clear_cache_dir, load_cuda_ops  # noqa: F401
+from .env import *
+from .utils import parallel_load_modules as parallel_load_modules
 
 
 def _get_extension_path(name: str) -> Optional[str]:
