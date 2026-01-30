@@ -11,7 +11,6 @@ Tests the flashinfer.aot_hip module to ensure:
 3. .so files are created and can be loaded
 """
 
-import os
 import shutil
 import tempfile
 from pathlib import Path
