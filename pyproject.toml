@@ -201,6 +201,7 @@ addopts = "-v"
 # HIP-specific test files - running 'pytest' with no args runs only these
 testpaths = [
     "tests/test_activation.py",
+    "tests/test_aot_hip.py",
     "tests/test_batch_decode_kernels_hip_fp8.py",
     "tests/test_batch_decode_kernels_hip.py",
     "tests/test_batch_decode_vllm.py",
@@ -223,7 +224,7 @@ python_functions = ["test_*"]
 # Note: 'source' is commented out because 'include' would be ignored if source is set
 # source = ["flashinfer"]
 branch = true
-# AMD/HIP modified files - auto-updated by GitHub Action
+# AMD/HIP modified files - auto-updated by GitHub Action - DO NOT EDIT THIS SECTION MANUALLY
 include = [
     "flashinfer/__init__.py",
     "flashinfer/activation.py",

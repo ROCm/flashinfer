@@ -36,9 +36,9 @@ def warmup_jit():
             yield
 
 
-@pytest.mark.parametrize("batch_size", [12, 17, 128])
+@pytest.mark.parametrize("batch_size", [12, 17, 30])
 @pytest.mark.parametrize("kv_len", [54, 97, 512, 2048])
-@pytest.mark.parametrize("qo_len", [37, 17, 127, 577])
+@pytest.mark.parametrize("qo_len", [37, 17, 127])
 @pytest.mark.parametrize("page_size", [1, 5, 16])
 @pytest.mark.parametrize("num_kv_heads", [4])
 @pytest.mark.parametrize("num_qo_heads", [4, 32])
@@ -46,7 +46,7 @@ def warmup_jit():
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("kv_layout", ["NHD"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
-@pytest.mark.parametrize("use_cuda_graph", [False])
+@pytest.mark.parametrize("use_cuda_graph", [False, True])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
 @pytest.mark.parametrize("contiguous_kv", [True])
@@ -68,6 +68,14 @@ def test_batch_prefill_with_paged_kv_cache(
 ):
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
+
+    max_num_batched_tokens = 4096
+
+    if batch_size * qo_len > max_num_batched_tokens:
+        pytest.skip(
+            f"batch_size * qo_len ({batch_size * qo_len}) exceeds max_num_batched_tokens ({max_num_batched_tokens}). You may see OOM errors."
+        )
+
     q = torch.randn(
         batch_size * qo_len,
         num_qo_heads,
@@ -106,7 +114,9 @@ def test_batch_prefill_with_paged_kv_cache(
         (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32
     )
 
-    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    workspace_buffer = torch.empty(
+        1024 * 1024 * 1024, dtype=torch.int8, device="cuda:0"
+    )
     if not use_cuda_graph:
         q_indptr_gpu = q_indptr_cpu.to(0)
         kv_indptr_gpu = kv_indptr_cpu.to(0)
@@ -268,9 +278,9 @@ def test_batch_prefill_with_paged_kv_cache(
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize("batch_size", [12, 17, 128])
+@pytest.mark.parametrize("batch_size", [12, 17, 30])
 @pytest.mark.parametrize("kv_len", [54, 97, 512, 2048])
-@pytest.mark.parametrize("qo_len", [37, 17, 127, 577])
+@pytest.mark.parametrize("qo_len", [37, 17, 127])
 @pytest.mark.parametrize("page_size", [1, 5, 16])
 @pytest.mark.parametrize("num_kv_heads", [4])
 @pytest.mark.parametrize("num_qo_heads", [4, 32])
@@ -278,7 +288,7 @@ def test_batch_prefill_with_paged_kv_cache(
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("kv_layout", ["NHD"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
-@pytest.mark.parametrize("use_cuda_graph", [False])
+@pytest.mark.parametrize("use_cuda_graph", [False, True])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
 @pytest.mark.parametrize("contiguous_kv", [True])
@@ -300,6 +310,14 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
 ):
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
+
+    max_num_batched_tokens = 4096
+
+    if batch_size * qo_len > max_num_batched_tokens:
+        pytest.skip(
+            f"batch_size * qo_len ({batch_size * qo_len}) exceeds max_num_batched_tokens ({max_num_batched_tokens}). You may see OOM errors."
+        )
+
     q = torch.randn(
         batch_size * qo_len,
         num_qo_heads,
@@ -346,7 +364,9 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32
     )
 
-    workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    workspace_buffer = torch.empty(
+        1024 * 1024 * 1024, dtype=torch.int8, device="cuda:0"
+    )
     if not use_cuda_graph:
         q_indptr_gpu = q_indptr_cpu.to(0)
         kv_indptr_gpu = kv_indptr_cpu.to(0)
