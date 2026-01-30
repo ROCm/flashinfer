@@ -46,7 +46,7 @@ def warmup_jit():
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("kv_layout", ["NHD"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
-@pytest.mark.parametrize("use_cuda_graph", [True])
+@pytest.mark.parametrize("use_cuda_graph", [False, True])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
 @pytest.mark.parametrize("contiguous_kv", [True])
