@@ -23,7 +23,6 @@ def get_system_rocm_version():
     try:
         with open(version_file, "r") as f:
             version = f.read().strip()
-            # Convert "6.4.0" to "6.4"
             return ".".join(version.split(".")[:3])
     except (FileNotFoundError, IOError):
         pass
@@ -138,7 +137,8 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     if not supported_archs:
         raise RuntimeError(
-            f"ROCm version {system_rocm_version} does not support the provided architectures: {', '.join(requested_archs)}.\n"
+            f"ROCm version {system_rocm_version} is not recognized in the ROCm "
+            f"compatibility matrix. Requested architectures: {', '.join(requested_archs)}.\n"
             f"See compatibility matrix: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html"
         )
 
