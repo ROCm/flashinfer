@@ -222,7 +222,7 @@ def compile_and_package_modules(
     else:
         # Validate provided arch list by creating a local context
         arch_list = os.environ["FLASHINFER_ROCM_ARCH_LIST"]
-        compilation_context = CompilationContext()  # Validates via env var
+        CompilationContext()  # Validates arch_list set via env var
         if verbose:
             print(f"Using ROCm architectures: {arch_list}")
 
