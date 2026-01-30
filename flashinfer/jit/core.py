@@ -10,20 +10,17 @@ import torch
 import torch.utils.cpp_extension as torch_cpp_ext
 from filelock import FileLock
 
+from ..compilation_context_hip import CompilationContext
+from . import env as jit_env
 from .cpp_ext import (
     check_hip_availability,
     generate_ninja_build_for_op,
     run_ninja,
 )
-from .env import FLASHINFER_CSRC_DIR as FLASHINFER_CSRC_DIR
-from .env import FLASHINFER_GEN_SRC_DIR as FLASHINFER_GEN_SRC_DIR
-from .env import FLASHINFER_INCLUDE_DIR as FLASHINFER_INCLUDE_DIR
-from .env import FLASHINFER_JIT_DIR as FLASHINFER_JIT_DIR
-from .env import FLASHINFER_WORKSPACE_DIR as FLASHINFER_WORKSPACE_DIR
 from .utils import write_if_different
 
-os.makedirs(FLASHINFER_WORKSPACE_DIR, exist_ok=True)
-os.makedirs(FLASHINFER_CSRC_DIR, exist_ok=True)
+os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
+os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
 
 
 class FlashInferJITLogger(logging.Logger):
@@ -31,7 +28,7 @@ class FlashInferJITLogger(logging.Logger):
         super().__init__(name)
         self.setLevel(logging.INFO)
         self.addHandler(logging.StreamHandler())
-        log_path = FLASHINFER_WORKSPACE_DIR / "flashinfer_jit.log"
+        log_path = jit_env.FLASHINFER_WORKSPACE_DIR / "flashinfer_jit.log"
         if not os.path.exists(log_path):
             # create an empty file
             with open(log_path, "w") as f:  # noqa: F841
@@ -50,6 +47,10 @@ class FlashInferJITLogger(logging.Logger):
 
 
 logger = FlashInferJITLogger("flashinfer.jit")
+
+
+# Global compilation context singleton - created once at module import
+current_compilation_context = CompilationContext()
 
 
 def check_cuda_arch():
@@ -71,10 +72,10 @@ def check_rocm_arch():
 
 
 def clear_cache_dir():
-    if os.path.exists(FLASHINFER_JIT_DIR):
+    if os.path.exists(jit_env.FLASHINFER_JIT_DIR):
         import shutil
 
-        shutil.rmtree(FLASHINFER_JIT_DIR)
+        shutil.rmtree(jit_env.FLASHINFER_JIT_DIR)
 
 
 @dataclasses.dataclass
@@ -89,11 +90,11 @@ class JitSpec:
 
     @property
     def ninja_path(self) -> Path:
-        return FLASHINFER_JIT_DIR / self.name / "build.ninja"
+        return jit_env.FLASHINFER_JIT_DIR / self.name / "build.ninja"
 
     @property
     def jit_library_path(self) -> Path:
-        return FLASHINFER_JIT_DIR / self.name / f"{self.name}.so"
+        return jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}.so"
 
     def get_library_path(self) -> Path:
         return self.jit_library_path
@@ -114,7 +115,7 @@ class JitSpec:
     def build(self, verbose: bool) -> None:
         tmpdir = get_tmpdir()
         with FileLock(tmpdir / f"{self.name}.lock", thread_local=False):
-            run_ninja(FLASHINFER_JIT_DIR, self.ninja_path, verbose)
+            run_ninja(jit_env.FLASHINFER_JIT_DIR, self.ninja_path, verbose)
 
     def build_and_load(self, class_name: str = None):
         so_path = self.jit_library_path
@@ -145,14 +146,8 @@ def gen_jit_spec(
 
     cflags = ["-O3", "-std=c++20", "-Wno-switch-bool"]
     if check_hip_availability():
-        cflags += [
-            "--offload-arch=gfx942",
-            "-DFLASHINFER_ENABLE_HIP",
-            "-DFLASHINFER_ENABLE_FP8",
-            "-DFLASHINFER_ENABLE_FP8_E4M3",
-            "-DFLASHINFER_ENABLE_FP8_E5M2",
-            "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
-        ]
+        # Use dynamically-generated flags from CompilationContext (includes arch flags)
+        cflags += current_compilation_context.get_hipcc_flags_list()
     cuda_cflags = [
         "-O3",
         "-std=c++20",
@@ -198,7 +193,7 @@ def gen_jit_spec(
 
 def get_tmpdir() -> Path:
     # TODO(lequn): Try /dev/shm first. This should help Lock on NFS.
-    tmpdir = FLASHINFER_JIT_DIR / "tmp"
+    tmpdir = jit_env.FLASHINFER_JIT_DIR / "tmp"
     if not tmpdir.exists():
         tmpdir.mkdir(parents=True, exist_ok=True)
     return tmpdir
@@ -221,7 +216,7 @@ def build_jit_specs(
     with FileLock(tmpdir / "flashinfer_jit.lock", thread_local=False):
         ninja_path = tmpdir / "flashinfer_jit.ninja"
         write_if_different(ninja_path, "\n".join(lines))
-        run_ninja(FLASHINFER_JIT_DIR, ninja_path, verbose)
+        run_ninja(jit_env.FLASHINFER_JIT_DIR, ninja_path, verbose)
 
 
 def load_cuda_ops(
