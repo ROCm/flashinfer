@@ -17,7 +17,7 @@ def get_jit_cache_dir() -> str:
     """Get the path to the jit_cache directory containing pre-compiled kernels.
 
     Returns:
-        Path: Absolute path to the jit_cache directory
+        str: Absolute path to the jit_cache directory
     """
     return str(jit_cache_dir)
 

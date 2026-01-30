@@ -12,8 +12,6 @@ from typing import Iterator, List, Optional, Tuple
 
 import torch
 
-from . import hip_utils
-
 # NOTE: Do NOT import jit modules at top level!
 # They must be imported inside compile_and_package_modules() after setting
 # FLASHINFER_WORKSPACE_BASE env var, because jit/env.py reads this at import time.
@@ -194,7 +192,7 @@ def compile_and_package_modules(
     os.environ["FLASHINFER_WORKSPACE_BASE"] = str(build_dir)
 
     # Import jit modules
-    from .jit import JitSpec, build_jit_specs
+    from .jit import build_jit_specs
     from .jit import env as jit_env
 
     # Override jit_env module variables directly (upstream pattern from v0.6.1)
@@ -230,9 +228,7 @@ def compile_and_package_modules(
 
     # Verify paths are correct
     rocm_arch_list = os.environ["FLASHINFER_ROCM_ARCH_LIST"]
-    expected_jit_dir = (
-        build_dir / ".cache" / "flashinfer" / rocm_arch_list / "cached_ops"
-    )
+
     # Print summary
     if verbose:
         print("AOT build summary:")
