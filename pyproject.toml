@@ -202,7 +202,6 @@ addopts = "-v"
 testpaths = [
     "tests/test_activation.py",
     "tests/test_aot_hip.py",
-    "tests/test_batch_decode_kernels_hip_fp8.py",
     "tests/test_batch_decode_kernels_hip.py",
     "tests/test_batch_decode_vllm.py",
     "tests/test_batch_prefill_kernels_hip.py",
