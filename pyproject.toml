@@ -245,6 +245,7 @@ include = [
     "flashinfer/page.py",
     "flashinfer/prefill.py",
     "flashinfer/rope.py",
+    "flashinfer/sampling.py",
     "flashinfer/utils.py",
 ]
 
