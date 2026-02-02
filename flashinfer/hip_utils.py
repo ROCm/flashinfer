@@ -253,7 +253,8 @@ def check_torch_rocm_compatibility() -> None:
             "  2. Install PyTorch for ROCm:\n"
             "     pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/\n\n"
             "See https://github.com/rocm/flashinfer for detailed installation instructions.\n"
-            + "=" * 70
+            + "="
+            * 70
         )
 
     # ROCm version compatibility warning
@@ -265,7 +266,7 @@ def check_torch_rocm_compatibility() -> None:
 
     if system_rocm and torch_rocm_major_minor != system_rocm:
         warnings.warn(
-            f"\n{'='*70}\n"
+            f"\n{'=' * 70}\n"
             f"WARNING: ROCm version mismatch detected!\n\n"
             f"  System ROCm version: {system_rocm}\n"
             f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
@@ -277,7 +278,7 @@ def check_torch_rocm_compatibility() -> None:
             f"  export FLASHINFER_ROCM_VERSION={system_rocm}\n"
             f"  uv pip install torch==2.7.1 --index-url "
             f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n"
-            f"{'='*70}",
+            f"{'=' * 70}",
             RuntimeWarning,
             stacklevel=2,
         )

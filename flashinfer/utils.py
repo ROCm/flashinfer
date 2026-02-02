@@ -442,7 +442,6 @@ def has_cuda_cudart() -> bool:
 
 
 def is_sm90a_supported(device: torch.device) -> bool:
-
     if torch.version.hip is not None:
         return False
 

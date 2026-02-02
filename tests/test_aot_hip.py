@@ -168,9 +168,9 @@ def test_module_naming_convention():
                 found_patterns[pattern] = True
 
     # At least some expected patterns should be found
-    assert any(
-        found_patterns.values()
-    ), f"No expected module patterns found in: {[s.name for s in jit_specs]}"
+    assert any(found_patterns.values()), (
+        f"No expected module patterns found in: {[s.name for s in jit_specs]}"
+    )
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])

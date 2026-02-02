@@ -25,8 +25,6 @@ from ..core import (
     check_hip_availability,
     gen_jit_spec,
     load_cuda_ops,
-    logger,
-    sm90a_nvcc_flags,
 )
 from ..env import FLASHINFER_CSRC_DIR, FLASHINFER_GEN_SRC_DIR
 from ..utils import (
@@ -176,9 +174,9 @@ def gen_single_decode_module(
         ["double", "double", "double", "double"],  # additional_scalar_dtypes
         f"DefaultAttention<false, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>",  # variant_name
         (
-            f"#include<flashinfer/attention/generic/variants.cuh>"
+            "#include<flashinfer/attention/generic/variants.cuh>"
             if check_hip_availability()
-            else f"#include<flashinfer/attention/variants.cuh>"
+            else "#include<flashinfer/attention/variants.cuh>"
         ),  # variant_decl
         pos_encoding_mode=pos_encoding_mode,
         use_sliding_window=use_sliding_window,
@@ -222,9 +220,9 @@ def gen_single_prefill_module(
         additional_scalar_dtypes = ["double", "double", "double", "double"]
         variant_name = f"DefaultAttention<use_custom_mask, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>"
         variant_decl = (
-            f"#include<flashinfer/attention/generic/variants.cuh>"
+            "#include<flashinfer/attention/generic/variants.cuh>"
             if check_hip_availability()
-            else f"#include<flashinfer/attention/variants.cuh>"
+            else "#include<flashinfer/attention/variants.cuh>"
         )
     else:
         additional_tensor_names = []
@@ -232,7 +230,7 @@ def gen_single_prefill_module(
         additional_scalar_names = ["logits_soft_cap", "sm_scale"]
         additional_scalar_dtypes = ["double", "double"]
         variant_name = f"DefaultAttention<{str(use_logits_soft_cap).lower()}>"
-        variant_decl = f"#include<flashinfer/attention/hopper/variants.cuh>"
+        variant_decl = "#include<flashinfer/attention/hopper/variants.cuh>"
 
     return gen_customize_single_prefill_module(
         backend,
@@ -296,9 +294,9 @@ def gen_batch_decode_module(
         ["double", "double", "double", "double"],  # additional_scalar_dtypes
         f"DefaultAttention<false, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>",  # variant_name
         (
-            f"#include<flashinfer/attention/generic/variants.cuh>"
+            "#include<flashinfer/attention/generic/variants.cuh>"
             if check_hip_availability()
-            else f"#include<flashinfer/attention/variants.cuh>"
+            else "#include<flashinfer/attention/variants.cuh>"
         ),  # variant_decl
         pos_encoding_mode=pos_encoding_mode,
         use_sliding_window=use_sliding_window,
@@ -353,9 +351,9 @@ def gen_batch_prefill_module(
         additional_scalar_dtypes = ["double", "double", "double", "double"]
         variant_name = f"DefaultAttention<use_custom_mask, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>"
         variant_decl = (
-            f"#include<flashinfer/attention/generic/variants.cuh>"
+            "#include<flashinfer/attention/generic/variants.cuh>"
             if check_hip_availability()
-            else f"#include<flashinfer/attention/variants.cuh>"
+            else "#include<flashinfer/attention/variants.cuh>"
         )
     else:
         additional_tensor_names = []
@@ -363,7 +361,7 @@ def gen_batch_prefill_module(
         additional_scalar_names = ["logits_soft_cap", "sm_scale"]
         additional_scalar_dtypes = ["double", "double"]
         variant_name = f"DefaultAttention<{str(use_logits_soft_cap).lower()}>"
-        variant_decl = f"#include<flashinfer/attention/hopper/variants.cuh>"
+        variant_decl = "#include<flashinfer/attention/hopper/variants.cuh>"
 
     return gen_customize_batch_prefill_module(
         backend,
@@ -896,7 +894,6 @@ def gen_customize_batch_prefill_module(
                 else "batch_prefill_jit_pybind.cu"
             ),
         ]:
-
             src_path = FLASHINFER_CSRC_DIR / filename
             dest_path = gen_directory / filename
             source_paths.append(dest_path)

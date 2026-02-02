@@ -17,10 +17,8 @@ from torch.utils.cpp_extension import (
     _TORCH_PATH,
     CUDA_HOME,
     ROCM_HOME,
-    _get_cuda_arch_flags,
     _get_num_workers,
     _get_pybind11_abi_build_flags,
-    _get_rocm_arch_flags,
 )
 
 from . import env as jit_env

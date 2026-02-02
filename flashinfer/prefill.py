@@ -189,9 +189,7 @@ def get_batch_prefill_module(backend):
                     plan_func = (
                         _kernels_sm90.batch_prefill_with_kv_cache_sm90_plan.default
                     )
-                    ragged_run_func = (
-                        _kernels_sm90.batch_prefill_with_ragged_kv_cache_sm90_run.default
-                    )
+                    ragged_run_func = _kernels_sm90.batch_prefill_with_ragged_kv_cache_sm90_run.default
                     paged_run_func = (
                         _kernels_sm90.batch_prefill_with_paged_kv_cache_sm90_run.default
                     )
