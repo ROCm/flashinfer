@@ -35,7 +35,6 @@ if IS_HIP:
     from .activation import gelu_and_mul as gelu_and_mul
     from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
     from .activation import silu_and_mul as silu_and_mul
-    from .attention import BatchAttention as BatchAttention
     from .decode import (
         BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
     )
