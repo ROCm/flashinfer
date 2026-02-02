@@ -133,29 +133,25 @@ elif IS_CUDA:
     from .decode import (
         CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
     )
-    from .decode import (
-        cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache,
-    )
-    from .decode import (
-        single_decode_with_kv_cache as single_decode_with_kv_cache,
-    )
+    from .decode import cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache
+    from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache
     from .fp4_quantization import (
         SfLayout,
         block_scale_interleave,
+        nvfp4_block_scale_interleave,
         e2m1_and_ufp8sf_scale_to_float,
         fp4_quantize,
-        mxfp4_dequantize,
         mxfp4_dequantize_host,
+        mxfp4_dequantize,
         mxfp4_quantize,
-        nvfp4_block_scale_interleave,
         nvfp4_quantize,
         shuffle_matrix_a,
         shuffle_matrix_sf_a,
     )
     from .fp8_quantization import mxfp8_dequantize_host, mxfp8_quantize
     from .fused_moe import (
-        GatedActType,
         RoutingMethodType,
+        GatedActType,
         cutlass_fused_moe,
         reorder_rows_for_gated_act_gemm,
         trtllm_fp4_block_scale_moe,
@@ -167,9 +163,7 @@ elif IS_CUDA:
     from .gemm import bmm_fp8 as bmm_fp8
     from .gemm import mm_fp4 as mm_fp4
     from .get_include_paths import get_csrc_dir, get_include
-    from .mla import (
-        BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper,
-    )
+    from .mla import BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper
     from .norm import fused_add_rmsnorm as fused_add_rmsnorm
     from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
     from .norm import gemma_rmsnorm as gemma_rmsnorm
@@ -185,9 +179,7 @@ elif IS_CUDA:
     from .prefill import (
         BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
     )
-    from .prefill import (
-        single_prefill_with_kv_cache as single_prefill_with_kv_cache,
-    )
+    from .prefill import single_prefill_with_kv_cache as single_prefill_with_kv_cache
     from .prefill import (
         single_prefill_with_kv_cache_return_lse as single_prefill_with_kv_cache_return_lse,
     )
@@ -203,15 +195,11 @@ elif IS_CUDA:
     from .rope import apply_rope_inplace as apply_rope_inplace
     from .rope import apply_rope_pos_ids as apply_rope_pos_ids
     from .rope import apply_rope_pos_ids_inplace as apply_rope_pos_ids_inplace
-    from .rope import (
-        apply_rope_with_cos_sin_cache as apply_rope_with_cos_sin_cache,
-    )
+    from .rope import apply_rope_with_cos_sin_cache as apply_rope_with_cos_sin_cache
     from .rope import (
         apply_rope_with_cos_sin_cache_inplace as apply_rope_with_cos_sin_cache_inplace,
     )
-    from .sampling import (
-        chain_speculative_sampling as chain_speculative_sampling,
-    )
+    from .sampling import chain_speculative_sampling as chain_speculative_sampling
     from .sampling import min_p_sampling_from_probs as min_p_sampling_from_probs
     from .sampling import sampling_from_logits as sampling_from_logits
     from .sampling import sampling_from_probs as sampling_from_probs
@@ -222,14 +210,10 @@ elif IS_CUDA:
     from .sampling import (
         top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
     )
-    from .sampling import (
-        top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs,
-    )
+    from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
     from .sampling import top_p_renorm_probs as top_p_renorm_probs
     from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
-    from .sparse import (
-        BlockSparseAttentionWrapper as BlockSparseAttentionWrapper,
-    )
+    from .sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
     from .sparse import (
         VariableBlockSparseAttentionWrapper as VariableBlockSparseAttentionWrapper,
     )
