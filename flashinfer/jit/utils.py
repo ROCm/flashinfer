@@ -48,8 +48,8 @@ dtype_cutlass_map = {
 dtype_map_hip = {
     torch.float16: "__half",
     torch.bfloat16: "__hip_bfloat16",
-    torch.float8_e4m3fnuz: "__hip_fp8_e4m3_fnuz",
-    torch.float8_e5m2fnuz: "__hip_fp8_e5m2_fnuz",
+    torch.float8_e4m3fn: "__nv_fp8_e4m3",
+    torch.float8_e5m2: "__nv_fp8_e5m2",
     torch.int8: "int8_t",
     torch.uint8: "uint8_t",
     torch.int32: "int32_t",
