@@ -156,9 +156,6 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     return arch_list
 
 
-# New consolidated validation function to add to hip_utils.py
-
-
 def validate_flashinfer_rocm_arch(
     arch_list: str = None, torch_cpp_ext_module=None, verbose: bool = False
 ) -> tuple:
@@ -222,3 +219,65 @@ def validate_flashinfer_rocm_arch(
     # Return both the flags list and the set
     arch_set = set(requested_archs)
     return arch_flags, arch_set
+
+
+def check_torch_rocm_compatibility() -> None:
+    """
+    Verify that PyTorch is installed with compatible ROCm support.
+
+    This function checks:
+    1. PyTorch is installed
+    2. PyTorch has ROCm/HIP support (not CPU-only)
+    3. PyTorch ROCm version matches system ROCm version (if detectable)
+
+    Provides helpful error messages to guide users to correct installation.
+
+    Raises:
+        ImportError: If PyTorch is not installed
+        RuntimeError: If PyTorch doesn't have ROCm support
+    """
+    import warnings
+
+    from torch import version
+
+    # Check for torch package with rocm support
+    if not hasattr(version, "hip") or version.hip is None:
+        raise RuntimeError(
+            "\n" + "=" * 70 + "\n"
+            "ERROR: PyTorch does NOT have ROCm support.\n\n"
+            "You installed the CPU-only version from PyPI.\n"
+            "amd-flashinfer requires PyTorch compiled with ROCm support.\n\n"
+            "Fix this by:\n"
+            "  1. Uninstall current PyTorch:\n"
+            "     pip uninstall torch\n\n"
+            "  2. Install PyTorch for ROCm:\n"
+            "     pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/\n\n"
+            "See https://github.com/rocm/flashinfer for detailed installation instructions.\n"
+            + "=" * 70
+        )
+
+    # ROCm version compatibility warning
+    torch_rocm = version.hip
+    torch_rocm_major_minor = ".".join(torch_rocm.split(".")[:3])
+
+    # Try to detect system ROCm version
+    system_rocm = get_system_rocm_version()
+
+    if system_rocm and torch_rocm_major_minor != system_rocm:
+        warnings.warn(
+            f"\n{'='*70}\n"
+            f"WARNING: ROCm version mismatch detected!\n\n"
+            f"  System ROCm version: {system_rocm}\n"
+            f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
+            f"This may cause runtime errors or crashes.\n\n"
+            f"To fix, reinstall PyTorch for your ROCm version:\n"
+            f"  pip install torch==2.7.1 --index-url "
+            f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n\n"
+            f"Or if using uv:\n"
+            f"  export FLASHINFER_ROCM_VERSION={system_rocm}\n"
+            f"  uv pip install torch==2.7.1 --index-url "
+            f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n"
+            f"{'='*70}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
