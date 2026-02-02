@@ -162,7 +162,6 @@ elif IS_CUDA:
     from .gemm import SegmentGEMMWrapper as SegmentGEMMWrapper
     from .gemm import bmm_fp8 as bmm_fp8
     from .gemm import mm_fp4 as mm_fp4
-    from .get_include_paths import get_csrc_dir, get_include
     from .mla import BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper
     from .norm import fused_add_rmsnorm as fused_add_rmsnorm
     from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
