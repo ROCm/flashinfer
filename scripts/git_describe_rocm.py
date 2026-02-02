@@ -7,6 +7,7 @@ Output format:
   (embeds .devN in local part, sets distance to 0 to prevent version_scheme modification)
 - Otherwise: tag-distance-ghash (standard git describe --long format)
 """
+
 import subprocess
 import sys
 
