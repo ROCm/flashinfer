@@ -7,15 +7,13 @@ import os
 
 import jinja2
 
-from .core import check_hip_availability, gen_jit_spec
-from .env import (
-    FLASHINFER_CSRC_DIR,
-    FLASHINFER_GEN_SRC_DIR,
-    FLASHINFER_INCLUDE_DIR,
-)
+from . import env as jit_env
+from .core import JitSpec, gen_jit_spec
 from .utils import write_if_different
 
-if check_hip_availability():
+from ..device_utils import IS_HIP
+
+if IS_HIP:
     activation_templ = r"""
   #include <gpu_iface/platform.hpp>
   #include <flashinfer/attention/generic/activation.cuh>
@@ -114,17 +112,19 @@ def get_act_and_mul_cu_str(act_func_name: str, act_func_def: str) -> str:
     return template.render(act_func_name=act_func_name, act_func_def=act_func_def)
 
 
-def gen_act_and_mul_module(act_func_name: str, act_func_def: str):
-    gen_directory = FLASHINFER_GEN_SRC_DIR
+def gen_act_and_mul_module(act_func_name: str, act_func_def: str) -> JitSpec:
+    gen_directory = jit_env.FLASHINFER_GEN_SRC_DIR
     os.makedirs(gen_directory, exist_ok=True)
     sources = [gen_directory / f"{act_func_name}_and_mul.cu"]
     write_if_different(
         sources[0],
         get_act_and_mul_cu_str(act_func_name, act_func_def),
     )
-    spec = gen_jit_spec(
+    return gen_jit_spec(
         f"{act_func_name}_and_mul",
         sources,
-        extra_include_paths=[FLASHINFER_INCLUDE_DIR, FLASHINFER_CSRC_DIR],
+        extra_include_paths=[
+            jit_env.FLASHINFER_INCLUDE_DIR,
+            jit_env.FLASHINFER_CSRC_DIR,
+        ],
     )
-    return spec.build_and_load()

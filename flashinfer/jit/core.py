@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import warnings
+from contextlib import nullcontext
 from pathlib import Path
 from typing import List, Optional, Sequence, Union
 
@@ -12,12 +13,9 @@ from filelock import FileLock
 
 from ..compilation_context_hip import CompilationContext
 from . import env as jit_env
-from .cpp_ext import (
-    check_hip_availability,
-    generate_ninja_build_for_op,
-    run_ninja,
-)
+from .cpp_ext import generate_ninja_build_for_op, run_ninja
 from .utils import write_if_different
+from ..device_utils import IS_HIP, IS_CUDA
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
 os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
@@ -84,6 +82,15 @@ def clear_cache_dir():
         shutil.rmtree(jit_env.FLASHINFER_JIT_DIR)
 
 
+if IS_CUDA:
+    common_nvcc_flags = [
+        "-DFLASHINFER_ENABLE_FP8_E8M0",
+        "-DFLASHINFER_ENABLE_FP4_E2M1",
+    ]
+    sm90a_nvcc_flags = ["-gencode=arch=compute_90a,code=sm_90a"] + common_nvcc_flags
+    sm100a_nvcc_flags = ["-gencode=arch=compute_100a,code=sm_100a"] + common_nvcc_flags
+
+
 @dataclasses.dataclass
 class JitSpec:
     name: str
@@ -93,47 +100,7 @@ class JitSpec:
     extra_ldflags: Optional[List[str]]
     extra_include_dirs: Optional[List[Path]]
     is_class: bool = False
-
-    @property
-    def ninja_path(self) -> Path:
-        return jit_env.FLASHINFER_JIT_DIR / self.name / "build.ninja"
-
-    @property
-    def jit_library_path(self) -> Path:
-        return jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}.so"
-
-    def get_library_path(self) -> Path:
-        return self.jit_library_path
-
-    def write_ninja(self) -> None:
-        ninja_path = self.ninja_path
-        ninja_path.parent.mkdir(parents=True, exist_ok=True)
-        content = generate_ninja_build_for_op(
-            name=self.name,
-            sources=self.sources,
-            extra_cflags=self.extra_cflags,
-            extra_cuda_cflags=self.extra_cuda_cflags,
-            extra_ldflags=self.extra_ldflags,
-            extra_include_dirs=self.extra_include_dirs,
-        )
-        write_if_different(ninja_path, content)
-
-    def build(self, verbose: bool) -> None:
-        tmpdir = get_tmpdir()
-        with FileLock(tmpdir / f"{self.name}.lock", thread_local=False):
-            run_ninja(jit_env.FLASHINFER_JIT_DIR, self.ninja_path, verbose)
-
-    def build_and_load(self, class_name: str = None):
-        so_path = self.jit_library_path
-        verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
-        self.build(verbose)
-        load_class = class_name is not None
-        loader = torch.classes if load_class else torch.ops
-        loader.load_library(so_path)
-        if load_class:
-            cls = torch._C._get_custom_class_python_wrapper(self.name, class_name)
-            return cls
-        return getattr(loader, self.name)
+    needs_device_linking: bool = False
 
     @property
     def ninja_path(self) -> Path:
@@ -207,31 +174,32 @@ class JitSpec:
 
 def gen_jit_spec(
     name: str,
-    sources: List[Union[str, Path]],
+    sources: Sequence[Union[str, Path]],
     extra_cflags: Optional[List[str]] = None,
     extra_cuda_cflags: Optional[List[str]] = None,
     extra_ldflags: Optional[List[str]] = None,
     extra_include_paths: Optional[List[Union[str, Path]]] = None,
+    needs_device_linking: bool = False,
 ) -> JitSpec:
-    check_rocm_arch() if check_hip_availability() else check_cuda_arch()
+    check_rocm_arch() if IS_HIP else check_cuda_arch()
     verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
 
     cflags = ["-O3", "-std=c++20", "-Wno-switch-bool"]
-    if check_hip_availability():
+    if IS_HIP:
         # Use dynamically-generated flags from CompilationContext (includes arch flags)
         cflags += current_compilation_context.get_hipcc_flags_list()
     cuda_cflags = [
         "-O3",
-        "-std=c++20",
+        "-std=c++17",
+        f"--threads={os.environ.get('FLASHINFER_NVCC_THREADS', '1')}",
         "-use_fast_math",
         "-DFLASHINFER_ENABLE_F16",
         "-DFLASHINFER_ENABLE_BF16",
-        "-DFLASHINFER_ENABLE_FP8",
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",
     ]
     if verbose:
-        if not check_hip_availability():
+        if not IS_HIP:
             cuda_cflags += [
                 "-g",
                 "-lineinfo",
@@ -253,11 +221,16 @@ def gen_jit_spec(
 
     spec = JitSpec(
         name=name,
-        sources=sources,
+        sources=[Path(x) for x in sources],
         extra_cflags=cflags,
         extra_cuda_cflags=cuda_cflags,
         extra_ldflags=extra_ldflags,
-        extra_include_dirs=extra_include_paths,
+        extra_include_dirs=(
+            [Path(x) for x in extra_include_paths]
+            if extra_include_paths is not None
+            else None
+        ),
+        needs_device_linking=needs_device_linking,
     )
     spec.write_ninja()
     return spec
@@ -278,6 +251,8 @@ def build_jit_specs(
 ) -> None:
     lines: List[str] = []
     for spec in specs:
+        if skip_prebuilt and spec.aot_path.exists():
+            continue
         lines.append(f"subninja {spec.ninja_path}")
     if not lines:
         return
@@ -293,7 +268,7 @@ def build_jit_specs(
 
 def load_cuda_ops(
     name: str,
-    sources: Sequence[Union[str, Path]],
+    sources: List[Union[str, Path]],
     extra_cflags: Optional[List[str]] = None,
     extra_cuda_cflags: Optional[List[str]] = None,
     extra_ldflags=None,

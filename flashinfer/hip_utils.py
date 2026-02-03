@@ -259,26 +259,28 @@ def check_torch_rocm_compatibility() -> None:
 
     # ROCm version compatibility warning
     torch_rocm = version.hip
-    torch_rocm_major_minor = ".".join(torch_rocm.split(".")[:3])
+    torch_rocm_major_minor = ".".join(torch_rocm.split(".")[:2])
 
     # Try to detect system ROCm version
     system_rocm = get_system_rocm_version()
 
-    if system_rocm and torch_rocm_major_minor != system_rocm:
-        warnings.warn(
-            f"\n{'=' * 70}\n"
-            f"WARNING: ROCm version mismatch detected!\n\n"
-            f"  System ROCm version: {system_rocm}\n"
-            f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
-            f"This may cause runtime errors or crashes.\n\n"
-            f"To fix, reinstall PyTorch for your ROCm version:\n"
-            f"  pip install torch==2.7.1 --index-url "
-            f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n\n"
-            f"Or if using uv:\n"
-            f"  export FLASHINFER_ROCM_VERSION={system_rocm}\n"
-            f"  uv pip install torch==2.7.1 --index-url "
-            f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n"
-            f"{'=' * 70}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    if system_rocm:
+        system_rocm_major_minor = ".".join(system_rocm.split(".")[:2])
+        if torch_rocm_major_minor != system_rocm_major_minor:
+            warnings.warn(
+                f"\n{'=' * 70}\n"
+                f"WARNING: ROCm version mismatch detected!\n\n"
+                f"  System ROCm version: {system_rocm}\n"
+                f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
+                f"This may cause runtime errors or crashes.\n\n"
+                f"To fix, reinstall PyTorch for your ROCm version:\n"
+                f"  pip install torch==2.7.1 --index-url "
+                f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n\n"
+                f"Or if using uv:\n"
+                f"  export FLASHINFER_ROCM_VERSION={system_rocm}\n"
+                f"  uv pip install torch==2.7.1 --index-url "
+                f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n"
+                f"{'=' * 70}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
