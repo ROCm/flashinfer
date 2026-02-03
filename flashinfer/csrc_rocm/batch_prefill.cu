@@ -20,7 +20,7 @@
 #include <gpu_iface/enums.hpp>
 #include <optional>
 
-#include "batch_prefill_config_hip.inc"
+#include "batch_prefill_config.inc"
 #include "pytorch_conversion_utils.h"
 #include "pytorch_extension_utils.h"
 

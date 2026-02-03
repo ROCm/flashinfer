@@ -18,7 +18,7 @@
 #include <gpu_iface/utils.cuh>
 #include <optional>
 
-#include "batch_decode_config_hip.inc"
+#include "batch_decode_config.inc"
 #include "pytorch_conversion_utils.h"
 #include "pytorch_extension_utils.h"
 

@@ -19,7 +19,7 @@
 #include <optional>
 
 #include "pytorch_extension_utils.h"
-#include "single_decode_config_hip.inc"
+#include "single_decode_config.inc"
 
 namespace flashinfer {
 

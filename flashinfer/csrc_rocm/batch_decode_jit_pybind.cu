@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "batch_decode_config_hip.inc"
+#include "batch_decode_config.inc"
 #include "pytorch_extension_utils.h"
 
 at::Tensor BatchDecodeWithPagedKVCachePlan(

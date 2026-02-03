@@ -21,7 +21,7 @@
 #include <optional>
 
 #include "pytorch_extension_utils.h"
-#include "single_prefill_config_hip.inc"
+#include "single_prefill_config.inc"
 
 namespace flashinfer {
 

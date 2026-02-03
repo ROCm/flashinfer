@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "pytorch_extension_utils.h"
-#include "single_prefill_config_hip.inc"
+#include "single_prefill_config.inc"
 
 void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::Tensor tmp,
                                   at::Tensor o, std::optional<at::Tensor> maybe_lse,

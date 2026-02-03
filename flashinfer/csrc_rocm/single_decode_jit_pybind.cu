@@ -15,7 +15,7 @@
  */
 
 #include "pytorch_extension_utils.h"
-#include "single_decode_config_hip.inc"
+#include "single_decode_config.inc"
 
 void single_decode_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::Tensor tmp,
                                  at::Tensor o, std::optional<at::Tensor> maybe_lse, int64_t layout,

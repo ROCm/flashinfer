@@ -380,10 +380,10 @@ def gen_customize_single_decode_module(
         additional_scalar_dtypes,
     )
 
-    with open(FLASHINFER_CSRC_DIR / "single_decode_customize_config_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "single_decode_customize_config.jinja") as f:
         config_templ = jinja2.Template(f.read())
 
-    with open(FLASHINFER_CSRC_DIR / "single_decode_kernel_inst_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "single_decode_kernel_inst.jinja") as f:
         kernel_inst_templ = jinja2.Template(f.read())
 
     kwargs = {
@@ -392,9 +392,9 @@ def gen_customize_single_decode_module(
         "additional_params_setter": additional_params_setter,
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -417,8 +417,8 @@ def gen_customize_single_decode_module(
     )
     write_if_different(dest_path, source)
     for filename in [
-        "single_decode_hip.cu",
-        ("single_decode_jit_pybind_hip.cu"),
+        "single_decode.cu",
+        ("single_decode_jit_pybind.cu"),
     ]:
         src_path = FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
@@ -427,7 +427,7 @@ def gen_customize_single_decode_module(
             source = f.read()
         write_if_different(dest_path, source)
 
-    generated_config_path = gen_directory / "single_decode_config_hip.inc"
+    generated_config_path = gen_directory / "single_decode_config.inc"
     write_if_different(generated_config_path, generated_inc_str)
 
     return gen_jit_spec(uri, source_paths)
@@ -455,9 +455,9 @@ def gen_customize_single_prefill_module(
     kwargs = {
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -478,12 +478,10 @@ def gen_customize_single_prefill_module(
             )
         )
 
-        with open(
-            FLASHINFER_CSRC_DIR / "single_prefill_customize_config_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "single_prefill_customize_config.jinja") as f:
             config_templ = jinja2.Template(f.read())
 
-        with open(FLASHINFER_CSRC_DIR / "single_prefill_kernel_inst_hip.jinja") as f:
+        with open(FLASHINFER_CSRC_DIR / "single_prefill_kernel_inst.jinja") as f:
             kernel_inst_templ = jinja2.Template(f.read())
 
         kwargs |= {
@@ -509,8 +507,8 @@ def gen_customize_single_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            ("single_prefill_hip.cu"),
-            ("single_prefill_jit_pybind_hip.cu"),
+            ("single_prefill.cu"),
+            ("single_prefill_jit_pybind.cu"),
         ]:
             src_path = FLASHINFER_CSRC_DIR / filename
             dest_path = gen_directory / filename
@@ -519,7 +517,7 @@ def gen_customize_single_prefill_module(
                 source = f.read()
             write_if_different(dest_path, source)
 
-        generated_config_path = gen_directory / "single_prefill_config_hip.inc"
+        generated_config_path = gen_directory / "single_prefill_config.inc"
         write_if_different(generated_config_path, generated_inc_str)
 
         return gen_jit_spec(uri, source_paths)
@@ -622,10 +620,10 @@ def gen_customize_batch_decode_module(
         "additional_params_setter": additional_params_setter,
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
-        "idtype": (dtype_map_hip[idtype]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
+        "idtype": dtype_map_hip[idtype],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -633,10 +631,10 @@ def gen_customize_batch_decode_module(
         "use_logits_soft_cap": str(use_logits_soft_cap).lower(),
     }
 
-    with open(FLASHINFER_CSRC_DIR / "batch_decode_customize_config_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "batch_decode_customize_config.jinja") as f:
         config_templ = jinja2.Template(f.read())
 
-    with open(FLASHINFER_CSRC_DIR / "batch_decode_kernel_inst_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "batch_decode_kernel_inst.jinja") as f:
         kernel_inst_templ = jinja2.Template(f.read())
 
     generated_inc_str = config_templ.render(
@@ -653,8 +651,8 @@ def gen_customize_batch_decode_module(
     write_if_different(dest_path, source)
 
     for filename in [
-        "batch_decode_hip.cu",
-        ("batch_decode_jit_pybind_hip.cu"),
+        "batch_decode.cu",
+        "batch_decode_jit_pybind.cu",
     ]:
         src_path = FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
@@ -663,7 +661,7 @@ def gen_customize_batch_decode_module(
             source = f.read()
         write_if_different(dest_path, source)
 
-    generated_config_path = gen_directory / "batch_decode_config_hip.inc"
+    generated_config_path = gen_directory / "batch_decode_config.inc"
     write_if_different(generated_config_path, generated_inc_str)
 
     return gen_jit_spec(uri, source_paths)
@@ -692,10 +690,10 @@ def gen_customize_batch_prefill_module(
     kwargs = {
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
-        "idtype": (dtype_map_hip[idtype]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
+        "idtype": dtype_map_hip[idtype],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -716,19 +714,13 @@ def gen_customize_batch_prefill_module(
             )
         )
 
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_customize_config_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "batch_prefill_customize_config.jinja") as f:
             config_templ = jinja2.Template(f.read())
 
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_paged_kernel_inst_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "batch_prefill_paged_kernel_inst.jinja") as f:
             paged_kernel_inst_templ = jinja2.Template(f.read())
 
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_ragged_kernel_inst_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "batch_prefill_ragged_kernel_inst.jinja") as f:
             ragged_kernel_inst_templ = jinja2.Template(f.read())
 
         kwargs |= {
@@ -765,8 +757,8 @@ def gen_customize_batch_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            ("batch_prefill_hip.cu"),
-            ("batch_prefill_jit_pybind_hip.cu"),
+            "batch_prefill.cu",
+            "batch_prefill_jit_pybind.cu",
         ]:
 
             src_path = FLASHINFER_CSRC_DIR / filename
@@ -776,7 +768,7 @@ def gen_customize_batch_prefill_module(
                 source = f.read()
             write_if_different(dest_path, source)
 
-        generated_config_path = gen_directory / "batch_prefill_config_hip.inc"
+        generated_config_path = gen_directory / "batch_prefill_config.inc"
         write_if_different(generated_config_path, generated_inc_str)
         return gen_jit_spec(
             uri,
