@@ -163,7 +163,7 @@ def gen_single_decode_module(
         ],  # additional_scalar_names
         ["double", "double", "double", "double"],  # additional_scalar_dtypes
         f"DefaultAttention<false, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>",  # variant_name
-        ("#include<flashinfer/attention/generic/variants.cuh>"),  # variant_decl
+        "#include<flashinfer/attention/generic/variants.cuh>",  # variant_decl
         pos_encoding_mode=pos_encoding_mode,
         use_sliding_window=use_sliding_window,
         use_logits_soft_cap=use_logits_soft_cap,
@@ -275,7 +275,7 @@ def gen_batch_decode_module(
         ],  # additional_scalar_names
         ["double", "double", "double", "double"],  # additional_scalar_dtypes
         f"DefaultAttention<false, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>",  # variant_name
-        ("#include<flashinfer/attention/generic/variants.cuh>"),  # variant_decl
+        "#include<flashinfer/attention/generic/variants.cuh>",  # variant_decl
         pos_encoding_mode=pos_encoding_mode,
         use_sliding_window=use_sliding_window,
         use_logits_soft_cap=use_logits_soft_cap,
@@ -426,7 +426,7 @@ def gen_customize_single_decode_module(
     write_if_different(dest_path, source)
     for filename in [
         "single_decode.cu",
-        ("single_decode_jit_pybind.cu"),
+        "single_decode_jit_pybind.cu",
     ]:
         src_path = FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
@@ -515,8 +515,8 @@ def gen_customize_single_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            ("single_prefill.cu"),
-            ("single_prefill_jit_pybind.cu"),
+            "single_prefill.cu",
+            "single_prefill_jit_pybind.cu",
         ]:
             src_path = FLASHINFER_CSRC_DIR / filename
             dest_path = gen_directory / filename
