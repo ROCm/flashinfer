@@ -8,18 +8,18 @@ message(STATUS "Building FlashInfer with AOT Torch ROCm Extensions")
 file(
   GLOB
   KERNEL_HIP_SOURCES
-  "${CMAKE_CURRENT_SOURCE_DIR}/activation_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/batch_decode_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/cascade_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_ops_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/norm_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/page_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/rope_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/single_decode_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/batch_prefill_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/sampling_hip.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/renorm_hip.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/activation.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/batch_decode.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cascade.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_ops.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/norm.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/page.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/rope.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/single_decode.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/batch_prefill.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sampling.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/renorm.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_sampling_ops.cu")
 
 set(COMMON_HIP_INCLUDE_DIRS
