@@ -3,7 +3,7 @@
 # If building AOT PyTorch CUDA/HIP extensions
 if(FLASHINFER_AOT_TORCH_EXTS)
   message(STATUS "Building AOT PyTorch extensions")
-  add_subdirectory(csrc)
+  add_subdirectory(csrc_rocm)
 endif()
 
 # Ensure Python package version matches CMake version
