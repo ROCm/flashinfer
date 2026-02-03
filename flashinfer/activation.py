@@ -20,12 +20,9 @@ from typing import Optional
 
 import torch
 
-from .jit import (  # noqa: F401
-    gen_act_and_mul_module,
-    has_prebuilt_ops,
-    load_cuda_ops,
-)
-from .utils import register_custom_op, register_fake_op
+from .jit import JitSpec
+from .jit import gen_act_and_mul_module as gen_act_and_mul_module_impl
+from .utils import device_support_pdl, register_custom_op, register_fake_op
 
 silu_def_cu_str = r"""
 __device__ __forceinline__ float silu(const float& val) {
@@ -61,10 +58,7 @@ def gen_act_and_mul_module(act_func_name: str) -> JitSpec:
 
 @functools.cache
 def get_act_and_mul_module(act_func_name: str):
-    global _jit_modules
-    if act_func_name not in _jit_modules:
-        if has_prebuilt_ops:
-            _kernels = torch.ops.flashinfer_hip_kernels
+    module = gen_act_and_mul_module(act_func_name).build_and_load()
 
     # torch library for act_and_mul
     fname = f"{act_func_name}_and_mul"
