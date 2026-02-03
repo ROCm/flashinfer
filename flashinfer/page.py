@@ -43,29 +43,7 @@ def gen_page_module() -> JitSpec:
 
 @functools.cache
 def get_page_module():
-    global _page_module
-    if _page_module is None:
-        if has_prebuilt_ops:
-            _kernels = torch.ops.flashinfer_hip_kernels
-
-            _page_module = _kernels
-        else:
-            _page_module = load_cuda_ops(
-                "page",
-                [
-                    FLASHINFER_CSRC_DIR / "page.cu",
-                    FLASHINFER_CSRC_DIR / "flashinfer_page_ops.cu",
-                ],
-            )
-    return _page_module
-
-
-@cache
-def get_module_attr(attr: str) -> Any:
-    global _page_module
-    if _page_module is None:
-        get_page_module()
-    return getattr(_page_module, attr).default
+    return gen_page_module().build_and_load()
 
 
 def block_sparse_indices_to_vector_sparse_offsets(
