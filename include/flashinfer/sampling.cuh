@@ -372,7 +372,7 @@ __device__ __forceinline__ void DeviceSamplingFromProb(
   }
   int max_valid_index =
       BlockReduce<int, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage->block_prim.reduce_int)
-          .Reduce(valid_index, hipcub::Max());
+          .Reduce(valid_index, cub::Max());
   if (tx == 0 && max_valid_index != -1) {
     temp_storage->last_valid_id = max_valid_index;
   }
@@ -1434,8 +1434,8 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
                                          uint64_t philox_seed, uint64_t philox_offset) {
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
   const uint32_t row_idx = bx;
-  hiprandStatePhilox4_32_10_t curand_state;
-  hiprand_init(philox_seed, bx, philox_offset, &curand_state);
+  hiprandStatePhilox4_32_10_t rand_state;
+  hiprand_init(philox_seed, bx, philox_offset, &rand_state);
 
   extern __shared__ __align__(
       alignof(SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>))
@@ -1449,7 +1449,7 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
     IdType draft_id = draft_token_ids[row_idx * num_speculative_tokens + i];
     float q = target_probs[(row_idx * (num_speculative_tokens + 1) + i) * d + draft_id],
           p = draft_probs[(row_idx * num_speculative_tokens + i) * d + draft_id];
-    float u = hiprand_uniform(&curand_state);
+    float u = hiprand_uniform(&rand_state);
     if (u * p < q) {
       // accept the draft models output
       output_token_ids[row_idx * (num_speculative_tokens + 1) + i] = draft_id;
@@ -1465,7 +1465,7 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
     int draft_id = draft_token_ids[row_idx * num_speculative_tokens + i];
     float q = target_probs[(row_idx * (num_speculative_tokens + 1) + i) * d + draft_id],
           p = draft_probs[(row_idx * num_speculative_tokens + i) * d + draft_id];
-    float u = hiprand_uniform(&curand_state);
+    float u = hiprand_uniform(&rand_state);
     if (u * p < q) {
       ++accepted_token_num;
     }
@@ -1510,7 +1510,7 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
   temp_storage.sampled_id = d;
   __syncthreads();
   sum_relu_q_minus_p = temp_storage.block_aggregate.value;
-  float u = hiprand_uniform(&curand_state) * sum_relu_q_minus_p;
+  float u = hiprand_uniform(&rand_state) * sum_relu_q_minus_p;
 
   float aggregate_relu_q_minus_p(0);
 #pragma unroll 2
@@ -1599,4 +1599,4 @@ gpuError_t ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token_ids,
 
 }  // namespace flashinfer
 
-#endif  // GPU_IFACE_SAMPLING_CUH_
+#endif  // FLASHINFER_SAMPLING_CUH_
