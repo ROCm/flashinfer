@@ -20,7 +20,6 @@ from typing import Optional, Union
 import torch
 
 from .jit import FLASHINFER_CSRC_DIR, has_prebuilt_ops, load_cuda_ops
-from .jit.cpp_ext import check_hip_availability
 from .utils import register_custom_op, register_fake_op
 
 _sampling_module = None
@@ -34,19 +33,11 @@ def get_sampling_module():
 
             module = _kernels
         else:
-            # Use HIP-specific source files for ROCm
-            if check_hip_availability():
-                sources = [
-                    FLASHINFER_CSRC_DIR / "sampling_hip.cu",
-                    FLASHINFER_CSRC_DIR / "renorm_hip.cu",
-                    FLASHINFER_CSRC_DIR / "flashinfer_sampling_ops.cu",
-                ]
-            else:
-                sources = [
-                    FLASHINFER_CSRC_DIR / "sampling.cu",
-                    FLASHINFER_CSRC_DIR / "renorm.cu",
-                    FLASHINFER_CSRC_DIR / "flashinfer_sampling_ops.cu",
-                ]
+            sources = [
+                FLASHINFER_CSRC_DIR / "sampling.cu",
+                FLASHINFER_CSRC_DIR / "renorm.cu",
+                FLASHINFER_CSRC_DIR / "flashinfer_sampling_ops.cu",
+            ]
             module = load_cuda_ops("sampling", sources)
 
         # torch library for sampling_from_probs

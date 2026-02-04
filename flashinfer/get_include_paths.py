@@ -41,7 +41,7 @@ def get_csrc_dir():
     Returns
     -------
     csrc_dir : str
-        Path to flashinfer's C++/CUDA source files.
+        Path to flashinfer's C++/ROCm source files.
     """
-    csrc_dir = pathlib.Path(__file__).parent / "csrc"
+    csrc_dir = pathlib.Path(__file__).parent / "csrc_rocm"
     return str(csrc_dir)
