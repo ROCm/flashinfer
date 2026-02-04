@@ -19,22 +19,25 @@ import logging
 import math
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
+from .device_utils import IS_CUDA, IS_HIP
 
 import torch
-
+from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
-    gen_fmha_cutlass_sm100a_module,
     gen_single_prefill_module,
     get_batch_prefill_uri,
     get_single_prefill_uri,
     setup_cubin_loader,
-    trtllm_gen_fmha_module,
 )
-from .cudnn import cudnn_batch_prefill_with_kv_cache
+
+if IS_CUDA:
+    from .jit import gen_fmha_cutlass_sm100a_module, trtllm_gen_fmha_module
+    from .cudnn import cudnn_batch_prefill_with_kv_cache
+    from .quantization import packbits, segment_packbits
+
 from .page import block_sparse_indices_to_vector_sparse_offsets, get_seq_lens
-from .quantization import packbits, segment_packbits
 from .utils import (
     FP4Tensor,
     MaskMode,
@@ -59,34 +62,35 @@ from .utils import (
     round_up,
 )
 
+if IS_CUDA:
 
-@functools.cache
-def get_fmha_module(
-    dtype_q: torch.dtype,
-    dtype_kv: torch.dtype,
-    dtype_o: torch.dtype,
-    dtype_idx: torch.dtype,
-    head_dim_qk: int,
-    head_dim_vo: int,
-    pos_encoding_mode: int,
-    use_sliding_window: bool,
-    use_logits_soft_cap: bool,
-    use_fp16_qk_reduction: bool = False,
-):
-    if is_sm100a_supported(torch.device("cuda")):
-        return gen_fmha_cutlass_sm100a_module(
-            dtype_q,
-            dtype_kv,
-            dtype_o,
-            dtype_idx,
-            head_dim_qk,
-            head_dim_vo,
-            pos_encoding_mode,
-            use_sliding_window,
-            use_logits_soft_cap,
-        ).build_and_load()
-    else:
-        raise ValueError("SM100A is not supported on this device")
+    @functools.cache
+    def get_fmha_module(
+        dtype_q: torch.dtype,
+        dtype_kv: torch.dtype,
+        dtype_o: torch.dtype,
+        dtype_idx: torch.dtype,
+        head_dim_qk: int,
+        head_dim_vo: int,
+        pos_encoding_mode: int,
+        use_sliding_window: bool,
+        use_logits_soft_cap: bool,
+        use_fp16_qk_reduction: bool = False,
+    ):
+        if is_sm100a_supported(torch.device("cuda")):
+            return gen_fmha_cutlass_sm100a_module(
+                dtype_q,
+                dtype_kv,
+                dtype_o,
+                dtype_idx,
+                head_dim_qk,
+                head_dim_vo,
+                pos_encoding_mode,
+                use_sliding_window,
+                use_logits_soft_cap,
+            ).build_and_load()
+        else:
+            raise ValueError("SM100A is not supported on this device")
 
 
 def make_hashable_cache(func):
@@ -166,77 +170,79 @@ def get_customize_batch_prefill_module(
     ).build_and_load()
 
 
-@functools.cache
-def get_trtllm_gen_prefill_module():
-    mod = trtllm_gen_fmha_module()
-    op = mod.build_and_load()
-    setup_cubin_loader(mod.get_library_path())
+if IS_CUDA:
 
-    def _paged_run(
-        query: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
-        workspace_buffer: torch.Tensor,
-        block_tables: torch.Tensor,
-        seq_lens: torch.Tensor,
-        max_q_len: int,
-        max_kv_len: int,
-        bmm1_scale: float,
-        bmm2_scale: float,
-        batch_size: int,
-        cum_seq_lens_q: torch.Tensor,
-        cum_seq_lens_kv: torch.Tensor,
-        enable_pdl: bool,
-        workspace_size: int,
-        window_left: int = -1,
-        out: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        sm_count = get_device_sm_count(query.device)
-        if out is None:
-            out = torch.empty_like(query)
-        op.trtllm_paged_attention_context(
-            out,
-            None,  # fp4 output not supported in wrapper api yet.
-            query,
-            k_cache,
-            v_cache,
-            workspace_buffer,
-            block_tables,
-            seq_lens,
-            max_q_len,
-            max_kv_len,
-            bmm1_scale,
-            bmm2_scale,
-            -1,  # o_sf_scale
-            -1,  # o_sf_vec_size
-            0,  # o_sf_start_index
-            batch_size,
-            window_left,
-            cum_seq_lens_q,
-            cum_seq_lens_kv,
-            sm_count,
-            enable_pdl,
-            workspace_size,
-            sinks,
+    @functools.cache
+    def get_trtllm_gen_prefill_module():
+        mod = trtllm_gen_fmha_module()
+        op = mod.build_and_load()
+        setup_cubin_loader(mod.get_library_path())
+
+        def _paged_run(
+            query: torch.Tensor,
+            k_cache: torch.Tensor,
+            v_cache: torch.Tensor,
+            workspace_buffer: torch.Tensor,
+            block_tables: torch.Tensor,
+            seq_lens: torch.Tensor,
+            max_q_len: int,
+            max_kv_len: int,
+            bmm1_scale: float,
+            bmm2_scale: float,
+            batch_size: int,
+            cum_seq_lens_q: torch.Tensor,
+            cum_seq_lens_kv: torch.Tensor,
+            enable_pdl: bool,
+            workspace_size: int,
+            window_left: int = -1,
+            out: Optional[torch.Tensor] = None,
+            sinks: Optional[torch.Tensor] = None,
+        ) -> torch.Tensor:
+            sm_count = get_device_sm_count(query.device)
+            if out is None:
+                out = torch.empty_like(query)
+            op.trtllm_paged_attention_context(
+                out,
+                None,  # fp4 output not supported in wrapper api yet.
+                query,
+                k_cache,
+                v_cache,
+                workspace_buffer,
+                block_tables,
+                seq_lens,
+                max_q_len,
+                max_kv_len,
+                bmm1_scale,
+                bmm2_scale,
+                -1,  # o_sf_scale
+                -1,  # o_sf_vec_size
+                0,  # o_sf_start_index
+                batch_size,
+                window_left,
+                cum_seq_lens_q,
+                cum_seq_lens_kv,
+                sm_count,
+                enable_pdl,
+                workspace_size,
+                sinks,
+            )
+            return out
+
+        def _ragged_run(*args, **kwargs):
+            # TODO(Zihao): trtllm-gen backend already supports variable length attention,
+            # but not integrated into flashinfer yet.
+            raise NotImplementedError(
+                "Variable length is not implemented for trtllm-gen backend yet."
+            )
+
+        def _plan(*args, **kwargs):
+            pass
+
+        return SimpleNamespace(
+            paged_run=_paged_run,
+            ragged_run=_ragged_run,
+            plan=_plan,
         )
-        return out
-
-    def _ragged_run(*args, **kwargs):
-        # TODO(Zihao): trtllm-gen backend already supports variable length attention,
-        # but not integrated into flashinfer yet.
-        raise NotImplementedError(
-            "Variable length is not implemented for trtllm-gen backend yet."
-        )
-
-    def _plan(*args, **kwargs):
-        pass
-
-    return SimpleNamespace(
-        paged_run=_paged_run,
-        ragged_run=_ragged_run,
-        plan=_plan,
-    )
 
 
 @functools.cache
@@ -270,7 +276,11 @@ def get_single_prefill_module(backend, *args):
         rope_scale: float,
         rope_theta: float,
     ) -> None:
-        if backend == "fa3":
+        if IS_HIP and backend == "fa3":
+            logger.warning(
+                "FA3 backend not supported on ROCm. The backend argument will be ignored."
+            )
+        if IS_CUDA and backend == "fa3":
             if not is_float8(q):
                 run_func(
                     q,
@@ -348,7 +358,7 @@ def get_single_prefill_module(backend, *args):
 
 @functools.cache
 def get_batch_prefill_module(backend, *args):
-    if backend == "trtllm-gen":
+    if IS_CUDA and backend == "trtllm-gen":
         uri = "trtllm_gen_context"
         module = get_trtllm_gen_prefill_module()
         plan_func = module.plan
@@ -540,7 +550,7 @@ def get_batch_prefill_module(backend, *args):
         cum_seq_lens_kv: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> None:
-        if backend == "trtllm-gen":
+        if IS_CUDA and backend == "trtllm-gen":
             assert maybe_lse is None
             assert num_qo_heads is not None
             assert num_kv_heads is not None

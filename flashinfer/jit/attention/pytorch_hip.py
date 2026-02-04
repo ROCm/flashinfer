@@ -80,7 +80,7 @@ def get_single_prefill_uri(
 ) -> str:
     if backend == "fa3":
         logger.warning(
-            f"FA3 backend not supported on ROCm. The backend argument will be ignored."
+            "FA3 backend not supported on ROCm. The backend argument will be ignored."
         )
     return (
         f"single_prefill_with_kv_cache_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
@@ -110,7 +110,7 @@ def get_batch_prefill_uri(
 ) -> str:
     if backend == "fa3":
         logger.warning(
-            f"FA3 backend not supported on ROCm. The backend argument will be ignored."
+            "FA3 backend not supported on ROCm. The backend argument will be ignored."
         )
     return (
         f"batch_prefill_with_kv_cache_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
