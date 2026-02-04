@@ -8,7 +8,7 @@ from typing import List
 import jinja2
 import torch
 
-from ..core import JitSpec, gen_jit_spec, load_cuda_ops
+from ..core import JitSpec, gen_jit_spec, logger
 from ..env import FLASHINFER_CSRC_DIR, FLASHINFER_GEN_SRC_DIR
 from ..utils import (
     dtype_map_hip,
@@ -78,6 +78,10 @@ def get_single_prefill_uri(
     use_logits_soft_cap: bool,
     use_fp16_qk_reduction: bool,
 ) -> str:
+    if backend == "fa3":
+        logger.warning(
+            f"FA3 backend not supported on ROCm. The backend argument will be ignored."
+        )
     return (
         f"single_prefill_with_kv_cache_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
         f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
@@ -87,7 +91,7 @@ def get_single_prefill_uri(
         f"posenc_{pos_encoding_mode}_"
         f"use_swa_{use_sliding_window}_"
         f"use_logits_cap_{use_logits_soft_cap}_"
-        f"f16qk_{use_fp16_qk_reduction}" + ("_sm90" if backend == "fa3" else "")
+        f"f16qk_{use_fp16_qk_reduction}"
     )
 
 
@@ -104,6 +108,10 @@ def get_batch_prefill_uri(
     use_logits_soft_cap: bool,
     use_fp16_qk_reduction: bool,
 ) -> str:
+    if backend == "fa3":
+        logger.warning(
+            f"FA3 backend not supported on ROCm. The backend argument will be ignored."
+        )
     return (
         f"batch_prefill_with_kv_cache_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
         f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
@@ -114,7 +122,7 @@ def get_batch_prefill_uri(
         f"posenc_{pos_encoding_mode}_"
         f"use_swa_{use_sliding_window}_"
         f"use_logits_cap_{use_logits_soft_cap}_"
-        f"f16qk_{use_fp16_qk_reduction}" + ("_sm90" if backend == "fa3" else "")
+        f"f16qk_{use_fp16_qk_reduction}"
     )
 
 
@@ -380,10 +388,10 @@ def gen_customize_single_decode_module(
         additional_scalar_dtypes,
     )
 
-    with open(FLASHINFER_CSRC_DIR / "single_decode_customize_config_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "single_decode_customize_config.jinja") as f:
         config_templ = jinja2.Template(f.read())
 
-    with open(FLASHINFER_CSRC_DIR / "single_decode_kernel_inst_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "single_decode_kernel_inst.jinja") as f:
         kernel_inst_templ = jinja2.Template(f.read())
 
     kwargs = {
@@ -392,9 +400,9 @@ def gen_customize_single_decode_module(
         "additional_params_setter": additional_params_setter,
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -417,8 +425,8 @@ def gen_customize_single_decode_module(
     )
     write_if_different(dest_path, source)
     for filename in [
-        "single_decode_hip.cu",
-        ("single_decode_jit_pybind_hip.cu"),
+        "single_decode.cu",
+        ("single_decode_jit_pybind.cu"),
     ]:
         src_path = FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
@@ -427,7 +435,7 @@ def gen_customize_single_decode_module(
             source = f.read()
         write_if_different(dest_path, source)
 
-    generated_config_path = gen_directory / "single_decode_config_hip.inc"
+    generated_config_path = gen_directory / "single_decode_config.inc"
     write_if_different(generated_config_path, generated_inc_str)
 
     return gen_jit_spec(uri, source_paths)
@@ -455,9 +463,9 @@ def gen_customize_single_prefill_module(
     kwargs = {
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -478,12 +486,10 @@ def gen_customize_single_prefill_module(
             )
         )
 
-        with open(
-            FLASHINFER_CSRC_DIR / "single_prefill_customize_config_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "single_prefill_customize_config.jinja") as f:
             config_templ = jinja2.Template(f.read())
 
-        with open(FLASHINFER_CSRC_DIR / "single_prefill_kernel_inst_hip.jinja") as f:
+        with open(FLASHINFER_CSRC_DIR / "single_prefill_kernel_inst.jinja") as f:
             kernel_inst_templ = jinja2.Template(f.read())
 
         kwargs |= {
@@ -509,8 +515,8 @@ def gen_customize_single_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            ("single_prefill_hip.cu"),
-            ("single_prefill_jit_pybind_hip.cu"),
+            ("single_prefill.cu"),
+            ("single_prefill_jit_pybind.cu"),
         ]:
             src_path = FLASHINFER_CSRC_DIR / filename
             dest_path = gen_directory / filename
@@ -519,71 +525,12 @@ def gen_customize_single_prefill_module(
                 source = f.read()
             write_if_different(dest_path, source)
 
-        generated_config_path = gen_directory / "single_prefill_config_hip.inc"
+        generated_config_path = gen_directory / "single_prefill_config.inc"
         write_if_different(generated_config_path, generated_inc_str)
 
         return gen_jit_spec(uri, source_paths)
     elif backend == "fa3":
-        gen_directory = FLASHINFER_GEN_SRC_DIR / uri
-
-        (additional_params_decl, additional_func_params, additional_params_setter) = (
-            generate_additional_params(
-                additional_tensor_names,
-                additional_tensor_dtypes,
-                additional_scalar_names,
-                additional_scalar_dtypes,
-                is_sm90_template=True,
-            )
-        )
-
-        with open(
-            FLASHINFER_CSRC_DIR / "single_prefill_sm90_customize_config.jinja"
-        ) as f:
-            config_templ = jinja2.Template(f.read())
-
-        with open(FLASHINFER_CSRC_DIR / "single_prefill_sm90_kernel_inst.jinja") as f:
-            kernel_inst_templ = jinja2.Template(f.read())
-
-        kwargs |= {
-            "additional_func_params": additional_func_params,
-            "additional_params_decl": additional_params_decl,
-            "additional_params_setter": additional_params_setter,
-        }
-
-        generated_inc_str = config_templ.render(
-            **kwargs,
-        )
-        os.makedirs(gen_directory, exist_ok=True)
-
-        source_paths = []
-        for mask_mode in [0, 1, 2]:
-            filename = f"single_prefill_sm90_kernel_mask_{mask_mode}.cu"
-            dest_path = gen_directory / filename
-            source_paths.append(dest_path)
-            source = kernel_inst_templ.render(
-                mask_mode=mask_mode_literal[mask_mode],
-                **kwargs,
-            )
-            write_if_different(dest_path, source)
-
-        for filename in [
-            "single_prefill_sm90.cu",
-            "single_prefill_sm90_jit_pybind.cu",
-        ]:
-            src_path = FLASHINFER_CSRC_DIR / filename
-            dest_path = gen_directory / filename
-            source_paths.append(dest_path)
-            with open(src_path, "r") as f:
-                source = f.read()
-            write_if_different(dest_path, source)
-
-        generated_config_path = gen_directory / "single_prefill_sm90_config.inc"
-        write_if_different(generated_config_path, generated_inc_str)
-        return load_cuda_ops(
-            uri,
-            source_paths,
-            extra_cuda_cflags=["-gencode=arch=compute_90a,code=sm_90a"],
-        )
+        raise ValueError("FA3 backend not currently supported for ROCm")
     else:
         raise ValueError(f"Invalid backend: {backend}")
 
@@ -622,10 +569,10 @@ def gen_customize_batch_decode_module(
         "additional_params_setter": additional_params_setter,
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
-        "idtype": (dtype_map_hip[idtype]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
+        "idtype": dtype_map_hip[idtype],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -633,10 +580,10 @@ def gen_customize_batch_decode_module(
         "use_logits_soft_cap": str(use_logits_soft_cap).lower(),
     }
 
-    with open(FLASHINFER_CSRC_DIR / "batch_decode_customize_config_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "batch_decode_customize_config.jinja") as f:
         config_templ = jinja2.Template(f.read())
 
-    with open(FLASHINFER_CSRC_DIR / "batch_decode_kernel_inst_hip.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / "batch_decode_kernel_inst.jinja") as f:
         kernel_inst_templ = jinja2.Template(f.read())
 
     generated_inc_str = config_templ.render(
@@ -653,8 +600,8 @@ def gen_customize_batch_decode_module(
     write_if_different(dest_path, source)
 
     for filename in [
-        "batch_decode_hip.cu",
-        ("batch_decode_jit_pybind_hip.cu"),
+        "batch_decode.cu",
+        "batch_decode_jit_pybind.cu",
     ]:
         src_path = FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
@@ -663,7 +610,7 @@ def gen_customize_batch_decode_module(
             source = f.read()
         write_if_different(dest_path, source)
 
-    generated_config_path = gen_directory / "batch_decode_config_hip.inc"
+    generated_config_path = gen_directory / "batch_decode_config.inc"
     write_if_different(generated_config_path, generated_inc_str)
 
     return gen_jit_spec(uri, source_paths)
@@ -692,10 +639,10 @@ def gen_customize_batch_prefill_module(
     kwargs = {
         "variant_decl": variant_decl,
         "variant_name": variant_name,
-        "dtype_q": (dtype_map_hip[dtype_q]),
-        "dtype_kv": (dtype_map_hip[dtype_kv]),
-        "dtype_o": (dtype_map_hip[dtype_o]),
-        "idtype": (dtype_map_hip[idtype]),
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
+        "idtype": dtype_map_hip[idtype],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
         "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
@@ -716,19 +663,13 @@ def gen_customize_batch_prefill_module(
             )
         )
 
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_customize_config_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "batch_prefill_customize_config.jinja") as f:
             config_templ = jinja2.Template(f.read())
 
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_paged_kernel_inst_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "batch_prefill_paged_kernel_inst.jinja") as f:
             paged_kernel_inst_templ = jinja2.Template(f.read())
 
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_ragged_kernel_inst_hip.jinja"
-        ) as f:
+        with open(FLASHINFER_CSRC_DIR / "batch_prefill_ragged_kernel_inst.jinja") as f:
             ragged_kernel_inst_templ = jinja2.Template(f.read())
 
         kwargs |= {
@@ -765,8 +706,8 @@ def gen_customize_batch_prefill_module(
             write_if_different(dest_path, source)
 
         for filename in [
-            ("batch_prefill_hip.cu"),
-            ("batch_prefill_jit_pybind_hip.cu"),
+            "batch_prefill.cu",
+            "batch_prefill_jit_pybind.cu",
         ]:
             src_path = FLASHINFER_CSRC_DIR / filename
             dest_path = gen_directory / filename
@@ -775,83 +716,13 @@ def gen_customize_batch_prefill_module(
                 source = f.read()
             write_if_different(dest_path, source)
 
-        generated_config_path = gen_directory / "batch_prefill_config_hip.inc"
+        generated_config_path = gen_directory / "batch_prefill_config.inc"
         write_if_different(generated_config_path, generated_inc_str)
         return gen_jit_spec(
             uri,
             source_paths,
         )
     elif backend == "fa3":
-        gen_directory = FLASHINFER_GEN_SRC_DIR / uri
-        (additional_params_decl, additional_func_params, additional_params_setter) = (
-            generate_additional_params(
-                additional_tensor_names,
-                additional_tensor_dtypes,
-                additional_scalar_names,
-                additional_scalar_dtypes,
-                is_sm90_template=True,
-            )
-        )
-
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_sm90_customize_config.jinja"
-        ) as f:
-            config_templ = jinja2.Template(f.read())
-
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_paged_sm90_kernel_inst.jinja"
-        ) as f:
-            paged_kernel_inst_templ = jinja2.Template(f.read())
-
-        with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_ragged_sm90_kernel_inst.jinja"
-        ) as f:
-            ragged_kernel_inst_templ = jinja2.Template(f.read())
-
-        kwargs |= {
-            "additional_params_decl": additional_params_decl,
-            "additional_func_params": additional_func_params,
-            "additional_params_setter": additional_params_setter,
-        }
-        generated_inc_str = config_templ.render(**kwargs)
-
-        source_paths = []
-        for mask_mode in [0, 1, 2]:
-            filename = f"batch_prefill_paged_sm90_kernel_mask_{mask_mode}.cu"
-            dest_path = gen_directory / filename
-            source_paths.append(dest_path)
-            source = paged_kernel_inst_templ.render(
-                mask_mode=mask_mode_literal[mask_mode],
-                **kwargs,
-            )
-            write_if_different(dest_path, source)
-
-            filename = f"batch_prefill_ragged_sm90_kernel_mask_{mask_mode}.cu"
-            dest_path = gen_directory / filename
-            source_paths.append(dest_path)
-            source = ragged_kernel_inst_templ.render(
-                mask_mode=mask_mode_literal[mask_mode],
-                **kwargs,
-            )
-            write_if_different(dest_path, source)
-
-        for filename in [
-            "batch_prefill_sm90.cu",
-            "batch_prefill_sm90_jit_pybind.cu",
-        ]:
-            src_path = FLASHINFER_CSRC_DIR / filename
-            dest_path = gen_directory / filename
-            source_paths.append(dest_path)
-            with open(src_path, "r") as f:
-                source = f.read()
-            write_if_different(dest_path, source)
-
-        generated_config_path = gen_directory / "batch_prefill_sm90_config.inc"
-        write_if_different(generated_config_path, generated_inc_str)
-        return load_cuda_ops(
-            uri,
-            source_paths,
-            extra_cuda_cflags=["-gencode=arch=compute_90a,code=sm_90a"],
-        )
+        raise ValueError("FA3 backend not currently supported for ROCm")
     else:
         raise ValueError(f"Invalid backend: {backend}")
