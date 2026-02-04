@@ -27,7 +27,7 @@ namespace block_ops = hipcub;
 namespace block_ops = cub;
 #endif
 
-#include "utils.cuh"
+#include <gpu_iface/utils.cuh>
 
 namespace flashinfer {
 namespace quantization {
@@ -96,7 +96,7 @@ gpuError_t PackBits(bool* input, uint8_t* output, int64_t num_elements, BitOrder
     const dim3 nthrs(256);
     const dim3 nblks(ceil_div(num_elements, nthrs.x * 8));
     void* args[] = {&input, &output, &num_elements};
-    FLASHINFER_CUDA_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
   return gpuSuccess;
 }
@@ -110,7 +110,7 @@ gpuError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
     const dim3 nthrs(256);
     const dim3 nblks(batch_size);
     void* args[] = {&input, &output, &input_indptr, &output_indptr};
-    FLASHINFER_CUDA_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
   return gpuSuccess;
 }
