@@ -15,10 +15,17 @@
  */
 #ifndef FLASHINFER_QUANTIZATION_CUH_
 #define FLASHINFER_QUANTIZATION_CUH_
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
+#include <gpu_iface/gpu_runtime_compat.hpp>
+#include <gpu_iface/macros.hpp>
 
+// CUB/hipCUB abstraction
+#ifdef PLATFORM_HIP_DEVICE
+#include <hipcub/hipcub.hpp>
+namespace block_ops = hipcub;
+#else
 #include <cub/cub.cuh>
+namespace block_ops = cub;
+#endif
 
 #include "utils.cuh"
 
@@ -37,12 +44,12 @@ enum class BitOrder { kBig = 0U, kLittle = 1U };
   }
 
 template <BitOrder BITORDER>
-__global__ void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
+FI_GLOBAL_QUAL void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
   int64_t start_offset = blockIdx.x * blockDim.x * 8, tx = threadIdx.x;
   uint8_t ret = 0;
   bool input_vec[8];
-  typedef cub::BlockLoad<bool, 256, 8, cub::BLOCK_LOAD_VECTORIZE> BlockLoad;
-  __shared__ typename BlockLoad::TempStorage temp_storage;
+  typedef block_ops::BlockLoad<bool, 256, 8, block_ops::BLOCK_LOAD_VECTORIZE> BlockLoad;
+  FI_SHARED_QUAL typename BlockLoad::TempStorage temp_storage;
   BlockLoad(temp_storage)
       .Load(input + start_offset, input_vec, num_elements - start_offset, /*default=*/0);
 
@@ -57,12 +64,12 @@ __global__ void PackBitsKernel(bool* input, uint8_t* output, int64_t num_element
 }
 
 template <BitOrder BITORDER, typename IdType>
-__global__ void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* input_indptr,
-                                      IdType* output_indptr) {
+FI_GLOBAL_QUAL void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* input_indptr,
+                                          IdType* output_indptr) {
   int64_t bx = blockIdx.x, tx = threadIdx.x;
   bool input_vec[8];
-  typedef cub::BlockLoad<bool, 256, 8, cub::BLOCK_LOAD_VECTORIZE> BlockLoad;
-  __shared__ typename BlockLoad::TempStorage temp_storage;
+  typedef block_ops::BlockLoad<bool, 256, 8, block_ops::BLOCK_LOAD_VECTORIZE> BlockLoad;
+  FI_SHARED_QUAL typename BlockLoad::TempStorage temp_storage;
   int64_t num_elements = input_indptr[bx + 1] - input_indptr[bx];
   for (uint32_t start_offset = 0; start_offset < num_elements; start_offset += 8 * blockDim.x) {
     uint8_t ret = 0;
@@ -82,30 +89,30 @@ __global__ void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* inpu
   }
 }
 
-cudaError_t PackBits(bool* input, uint8_t* output, int64_t num_elements, BitOrder bitorder,
-                     cudaStream_t stream) {
+gpuError_t PackBits(bool* input, uint8_t* output, int64_t num_elements, BitOrder bitorder,
+                    gpuStream_t stream) {
   DISPATCH_BITORDER(bitorder, BITORDER, {
     auto kernel = PackBitsKernel<BITORDER>;
     const dim3 nthrs(256);
     const dim3 nblks(ceil_div(num_elements, nthrs.x * 8));
     void* args[] = {&input, &output, &num_elements};
-    FLASHINFER_CUDA_CALL(cudaLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FLASHINFER_CUDA_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return cudaSuccess;
+  return gpuSuccess;
 }
 
 template <typename IdType>
-cudaError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
-                            IdType* output_indptr, uint32_t batch_size, BitOrder bitorder,
-                            cudaStream_t stream) {
+gpuError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
+                           IdType* output_indptr, uint32_t batch_size, BitOrder bitorder,
+                           gpuStream_t stream) {
   DISPATCH_BITORDER(bitorder, BITORDER, {
     auto kernel = SegmentPackBitsKernel<BITORDER, IdType>;
     const dim3 nthrs(256);
     const dim3 nblks(batch_size);
     void* args[] = {&input, &output, &input_indptr, &output_indptr};
-    FLASHINFER_CUDA_CALL(cudaLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FLASHINFER_CUDA_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return cudaSuccess;
+  return gpuSuccess;
 }
 
 }  // namespace quantization
