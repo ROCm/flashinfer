@@ -20,6 +20,7 @@ file(
   "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/sampling.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/renorm.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_quantization_ops.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_sampling_ops.cu")
 
 set(COMMON_HIP_INCLUDE_DIRS
@@ -63,8 +64,3 @@ install(TARGETS flashinfer_hip_kernels DESTINATION flashinfer)
 
 flashinfer_configure_prebuilt_uris()
 message(STATUS "AMD-FlashInfer AOT PyTorch extensions configured")
-
-# Quantization operations
-file(GLOB_RECURSE QUANTIZATION_SRCS quantization.cu
-     flashinfer_quantization_ops.cu)
-list(APPEND FLASHINFER_SRCS ${QUANTIZATION_SRCS})
