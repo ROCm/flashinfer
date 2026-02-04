@@ -2,14 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// HIP-specific renorm implementation
-// Define CUDA types before PyTorch headers for HIP compatibility
-#include <hip/hip_runtime.h>
-#ifndef cudaStream_t
-typedef hipStream_t cudaStream_t;
-#endif
-
-#include <gpu_iface/sampling.cuh>
+#include <flashinfer/sampling.cuh>
 
 #include "pytorch_extension_utils.h"
 
