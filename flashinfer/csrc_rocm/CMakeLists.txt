@@ -20,6 +20,8 @@ file(
   "${CMAKE_CURRENT_SOURCE_DIR}/single_prefill.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/sampling.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/renorm.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/quantization.cu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_quantization_ops.cu"
   "${CMAKE_CURRENT_SOURCE_DIR}/flashinfer_sampling_ops.cu")
 
 set(COMMON_HIP_INCLUDE_DIRS
