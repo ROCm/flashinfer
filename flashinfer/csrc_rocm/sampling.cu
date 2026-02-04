@@ -14,7 +14,7 @@ typedef hipStream_t cudaStream_t;
 #include <ATen/cuda/CUDAGeneratorImpl.h>
 
 #include <ATen/cuda/detail/UnpackRaw.cuh>
-#include <gpu_iface/sampling.cuh>
+#include <flashinfer/sampling.cuh>
 #include <mutex>
 
 #include "pytorch_extension_utils.h"
