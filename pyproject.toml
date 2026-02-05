@@ -232,6 +232,7 @@ include = [
     "flashinfer/aot_hip.py",
     "flashinfer/compilation_context_hip.py",
     "flashinfer/decode.py",
+    "flashinfer/device_utils.py",
     "flashinfer/get_include_paths.py",
     "flashinfer/hip_utils.py",
     "flashinfer/jit/__init__.py",
