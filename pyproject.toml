@@ -211,7 +211,6 @@ branch = true
 # AMD/HIP modified files - auto-updated by GitHub Action - DO NOT EDIT THIS SECTION MANUALLY
 include = [
     "flashinfer/__init__.py",
-    "flashinfer/activation.py",
     "flashinfer/aot_hip.py",
     "flashinfer/compilation_context_hip.py",
     "flashinfer/decode.py",
@@ -226,11 +225,7 @@ include = [
     "flashinfer/jit/cpp_ext.py",
     "flashinfer/jit/env.py",
     "flashinfer/jit/utils.py",
-    "flashinfer/norm.py",
-    "flashinfer/page.py",
     "flashinfer/prefill.py",
-    "flashinfer/rope.py",
-    "flashinfer/sampling.py",
     "flashinfer/utils.py",
 ]
 
