@@ -70,7 +70,7 @@ def get_single_prefill_module(backend):
             uri = get_single_prefill_uri(backend, *args)
             if has_prebuilt_ops and uri in prebuilt_ops_uri:
                 if backend == "fa2":
-                    _kernels = torch.ops.flashinfer_hip_kernels
+                    _kernels = torch.ops.flashinfer_kernels
 
                     run_func = _kernels.single_prefill_with_kv_cache.default
                 else:
@@ -78,10 +78,10 @@ def get_single_prefill_module(backend):
 
                     run_func = _kernels_sm90.single_prefill_with_kv_cache_sm90.default
             else:
-                module = gen_single_prefill_module(backend, *args).build_and_load()
-                run_func = module.run.default
+                run_func = gen_single_prefill_module(backend, *args).run.default
 
             # torch library for single_prefill_with_kv_cache
+
             @register_custom_op(
                 f"flashinfer::{uri}_run", mutates_args=("tmp", "o", "maybe_lse")
             )
@@ -174,7 +174,7 @@ def get_batch_prefill_module(backend):
             uri = get_batch_prefill_uri(backend, *args)
             if has_prebuilt_ops and uri in prebuilt_ops_uri:
                 if backend == "fa2":
-                    _kernels = torch.ops.flashinfer_hip_kernels
+                    _kernels = torch.ops.flashinfer_kernels
 
                     plan_func = _kernels.batch_prefill_with_kv_cache_plan.default
                     ragged_run_func = (
@@ -196,7 +196,7 @@ def get_batch_prefill_module(backend):
                         _kernels_sm90.batch_prefill_with_paged_kv_cache_sm90_run.default
                     )
             else:
-                module = gen_batch_prefill_module(backend, *args).build_and_load()
+                module = gen_batch_prefill_module(backend, *args)
                 plan_func = module.plan.default
                 ragged_run_func = module.ragged_run.default
                 paged_run_func = module.paged_run.default

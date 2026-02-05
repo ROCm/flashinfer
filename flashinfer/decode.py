@@ -66,13 +66,11 @@ def get_single_decode_module(*args):
     if args not in _single_decode_modules:
         uri = get_single_decode_uri(*args)
         if has_prebuilt_ops and uri in prebuilt_ops_uri:
-            print("JIT: Using prebuilt ops")
-            _kernels = torch.ops.flashinfer_hip_kernels
+            _kernels = torch.ops.flashinfer_kernels
 
             run_func = _kernels.single_decode_with_kv_cache.default
         else:
-            module = gen_single_decode_module(*args).build_and_load()
-            run_func = module.run.default
+            run_func = gen_single_decode_module(*args).run.default
 
         # torch library for single_decode_with_kv_cache
 
@@ -214,12 +212,12 @@ def get_batch_decode_module(*args):
     if args not in _batch_decode_modules:
         uri = get_batch_decode_uri(*args)
         if has_prebuilt_ops and uri in prebuilt_ops_uri:
-            _kernels = torch.ops.flashinfer_hip_kernels
+            _kernels = torch.ops.flashinfer_kernels
 
             plan_func = _kernels.batch_decode_with_paged_kv_cache_plan.default
             run_func = _kernels.batch_decode_with_paged_kv_cache_run.default
         else:
-            mod = gen_batch_decode_module(*args).build_and_load()
+            mod = gen_batch_decode_module(*args)
             plan_func = mod.plan.default
             run_func = mod.run.default
 
