@@ -18,13 +18,6 @@ if IS_HIP:
     from .hip_utils import check_torch_rocm_compatibility
     from .jit.core import logger
 
-    # FIXME: To be removed once we fully integrate the amd-flashinfer-jit-cache package
-    try:
-        from .__aot_prebuilt_uris__ import prebuilt_ops_uri
-    except ImportError:
-        logger.info("Prebuilt AOT kernels not found, using JIT backend.")
-        prebuilt_ops_uri = None
-
     # Checks compatibility with installed torch
     check_torch_rocm_compatibility()
 

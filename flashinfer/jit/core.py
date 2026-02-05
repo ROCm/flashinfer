@@ -191,13 +191,22 @@ def gen_jit_spec(
     cuda_cflags = [
         "-O3",
         "-std=c++17",
-        f"--threads={os.environ.get('FLASHINFER_NVCC_THREADS', '1')}",
-        "-use_fast_math",
         "-DFLASHINFER_ENABLE_F16",
         "-DFLASHINFER_ENABLE_BF16",
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",
     ]
+    # Add CUDA-specific nvcc flags
+    if IS_CUDA:
+        cuda_cflags += [
+            f"--threads={os.environ.get('FLASHINFER_NVCC_THREADS', '1')}",
+            "-use_fast_math",
+        ]
+    elif IS_HIP:
+        cuda_cflags += [
+            "-ffast-math",  # HIP equivalent of -use_fast_math
+        ]
+
     if verbose:
         if not IS_HIP:
             cuda_cflags += [

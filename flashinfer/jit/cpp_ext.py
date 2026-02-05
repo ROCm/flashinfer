@@ -26,7 +26,7 @@ from torch.utils.cpp_extension import (
 if IS_CUDA:
     from torch.utils.cpp_extension import CUDA_HOME, _get_cuda_arch_flags
 elif IS_HIP:
-    from torch.utils.cpp_extension import ROCM_HOME, _get_rocm_arch_flags
+    from torch.utils.cpp_extension import ROCM_HOME
 
 from . import env as jit_env
 
@@ -127,7 +127,6 @@ def generate_ninja_build_for_op(
             "$common_cflags",
             "-fPIC",
         ]
-        cuda_cflags += _get_rocm_arch_flags(extra_cuda_cflags)
         if extra_cuda_cflags is not None:
             cuda_cflags += extra_cuda_cflags
 
@@ -238,9 +237,6 @@ def generate_ninja_build_for_op(
             "  depfile = $out.d",
             "  deps = gcc",
             "",
-            "rule link",
-            "  command = $cxx $in $ldflags -o $out",
-            "",
         ]
 
     # Add nvcc linking rule for device code
@@ -270,7 +266,7 @@ def generate_ninja_build_for_op(
         cmd = ""
         if is_cuda and IS_CUDA:
             cmd = "cuda_compile"
-        elif is_cuda and not IS_HIP:
+        elif is_cuda and IS_HIP:
             cmd = "hip_compile"
         else:
             cmd = "compile"
@@ -282,7 +278,6 @@ def generate_ninja_build_for_op(
     lines.append("")
     link_rule = "nvcc_link" if needs_device_linking else "link"
     lines.append(f"build $name/$name.so: {link_rule} " + " ".join(objects))
-    lines.append("build $name/$name.so: link " + " ".join(objects))
     lines.append("default $name/$name.so")
     lines.append("")
 

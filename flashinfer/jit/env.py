@@ -47,19 +47,27 @@ def _get_workspace_dir_name() -> pathlib.Path:
             arch = "noarch"
         # e.g.: $HOME/.cache/flashinfer/75_80_89_90/
     elif IS_HIP:
-        from torch.utils.cpp_extension import _get_rocm_arch_flags
-
         try:
-            # Get ROCm architecture flags from PyTorch (e.g., ["--offload-arch=gfx942"])
-            flags = _get_rocm_arch_flags()
-            # Extract gfx arch names (strip "--offload-arch=" prefix)
-            archs = [
-                flag.replace("--offload-arch=", "")
-                for flag in flags
-                if flag.startswith("--offload-arch=")
-            ]
-            # Use first arch for cache directory name
-            arch = archs[0] if archs else "noarch"
+            # Prioritize actual device architecture over PyTorch's build list
+            import torch
+
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            gcn_arch = props.gcnArchName
+            # Extract gfx arch (e.g., "gfx942:sramecc+:xnack-" -> "gfx942")
+            match = re.match(r"(gfx\d+)", gcn_arch)
+            if match:
+                arch = match.group(1)
+            else:
+                # Fallback to PyTorch's arch list if device detection fails
+                from torch.utils.cpp_extension import _get_rocm_arch_flags
+
+                flags = _get_rocm_arch_flags()
+                archs = [
+                    flag.replace("--offload-arch=", "")
+                    for flag in flags
+                    if flag.startswith("--offload-arch=")
+                ]
+                arch = archs[0] if archs else "noarch"
         except Exception:
             arch = "noarch"
         # e.g.: $HOME/.cache/flashinfer/gfx942/
@@ -108,7 +116,12 @@ if IS_CUDA:
         path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "lib"
         return [path]
 elif IS_HIP:
-    from ..get_include_paths import get_csrc_dir, get_include
+    from ..get_include_paths import _get_package_root_dir, get_csrc_dir, get_include
 
+    # FIXME: Remove once upgrade to v0.4.1 is completed and we move to using
+    # amd-flashinfer-jit-cache package.
+    _package_root = _get_package_root_dir()
+    aot_dir = str(os.path.join(_get_package_root_dir(), "data", "aot"))
+    FLASHINFER_AOT_DIR = pathlib.Path(aot_dir)
     FLASHINFER_INCLUDE_DIR = pathlib.Path(get_include())
     FLASHINFER_CSRC_DIR = pathlib.Path(get_csrc_dir())
