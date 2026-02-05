@@ -37,29 +37,7 @@ def gen_norm_module() -> JitSpec:
 
 @functools.cache
 def get_norm_module():
-    global _norm_module
-    if _norm_module is None:
-        if has_prebuilt_ops:
-            _kernels = torch.ops.flashinfer_hip_kernels
-
-            _norm_module = _kernels
-        else:
-            _norm_module = load_cuda_ops(
-                "norm",
-                [
-                    FLASHINFER_CSRC_DIR / "norm.cu",
-                    FLASHINFER_CSRC_DIR / "flashinfer_norm_ops.cu",
-                ],
-            )
-    return _norm_module
-
-
-@cache
-def get_module_attr(attr: str) -> Any:
-    global _norm_module
-    if _norm_module is None:
-        get_norm_module()
-    return getattr(_norm_module, attr).default
+    return gen_norm_module().build_and_load()
 
 
 def rmsnorm(

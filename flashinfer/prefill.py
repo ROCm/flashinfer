@@ -29,11 +29,14 @@ from .jit import (
     gen_single_prefill_module,
     get_batch_prefill_uri,
     get_single_prefill_uri,
-    setup_cubin_loader,
 )
 
 if IS_CUDA:
-    from .jit import gen_fmha_cutlass_sm100a_module, trtllm_gen_fmha_module
+    from .jit import (
+        setup_cubin_loader,
+        gen_fmha_cutlass_sm100a_module,
+        trtllm_gen_fmha_module,
+    )
     from .cudnn import cudnn_batch_prefill_with_kv_cache
 
 from .quantization import packbits, segment_packbits
