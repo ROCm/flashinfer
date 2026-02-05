@@ -14,12 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from functools import cache
-from typing import Any, Optional, Tuple, Union
+import functools
+from typing import Optional, Tuple, Union
 
 import torch
 
-from .jit import FLASHINFER_CSRC_DIR, has_prebuilt_ops, load_cuda_ops
+from .jit.page import gen_page_module
 from .utils import (
     TensorLayout,
     _check_kv_layout,
@@ -28,33 +28,10 @@ from .utils import (
     register_fake_op,
 )
 
-_page_module = None
 
-
+@functools.cache
 def get_page_module():
-    global _page_module
-    if _page_module is None:
-        if has_prebuilt_ops:
-            _kernels = torch.ops.flashinfer_kernels
-
-            _page_module = _kernels
-        else:
-            _page_module = load_cuda_ops(
-                "page",
-                [
-                    FLASHINFER_CSRC_DIR / "page.cu",
-                    FLASHINFER_CSRC_DIR / "flashinfer_page_ops.cu",
-                ],
-            )
-    return _page_module
-
-
-@cache
-def get_module_attr(attr: str) -> Any:
-    global _page_module
-    if _page_module is None:
-        get_page_module()
-    return getattr(_page_module, attr).default
+    return gen_page_module().build_and_load()
 
 
 def block_sparse_indices_to_vector_sparse_offsets(
@@ -79,7 +56,7 @@ def block_sparse_indices_to_vector_sparse_offsets(
     assert vector_sparse_indptr.dtype == torch.int32
     assert kv_lens.dtype == torch.int32
     batch_size = block_sparse_indptr.size(0) - 1
-    get_module_attr("block_sparse_indices_to_vector_sparse_offsets")(
+    get_page_module().block_sparse_indices_to_vector_sparse_offsets(
         block_sparse_indices,
         block_sparse_indptr,
         vector_sparse_offsets,
@@ -113,7 +90,7 @@ def _append_paged_mla_kv_cache_kernel(
     kv_indices = kv_indices.int()
     kv_indptr = kv_indptr.int()
     kv_last_page_len = kv_last_page_len.int()
-    get_module_attr("append_paged_mla_kv_cache")(
+    get_page_module().append_paged_mla_kv_cache(
         append_ckv,
         append_kpe,
         batch_indices,
@@ -147,7 +124,7 @@ def _append_paged_kv_cache_kernel(
     kv_indices = kv_indices.int()
     kv_indptr = kv_indptr.int()
     kv_last_page_len = kv_last_page_len.int()
-    get_module_attr("append_paged_kv_cache")(
+    get_page_module().append_paged_kv_cache(
         append_key,
         append_value,
         batch_indices,
