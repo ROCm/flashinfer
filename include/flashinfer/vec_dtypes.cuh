@@ -16,9 +16,13 @@
 #ifndef VEC_DTYPES_CUH_
 #define VEC_DTYPES_CUH_
 
+#include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
+#if CUDA_VERSION >= 12080
+#include <cuda_fp4.h>
+#endif
 #include <cuda_runtime.h>
 
 #include <type_traits>
@@ -30,6 +34,32 @@ namespace flashinfer {
 #endif
 
 #define FLASHINFER_INLINE inline __attribute__((always_inline)) __device__
+
+__device__ __forceinline__ void st_global_release(int4 const& val, int4* addr) {
+  asm volatile("st.release.global.sys.v4.b32 [%4], {%0, %1, %2, %3};" ::"r"(val.x), "r"(val.y),
+               "r"(val.z), "r"(val.w), "l"(addr));
+}
+
+__device__ __forceinline__ int4 ld_global_acquire(int4* addr) {
+  int4 val;
+  asm volatile("ld.acquire.global.sys.v4.b32 {%0, %1, %2, %3}, [%4];"
+               : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
+               : "l"(addr));
+  return val;
+}
+
+__device__ __forceinline__ void st_global_volatile(int4 const& val, int4* addr) {
+  asm volatile("st.volatile.global.v4.b32 [%4], {%0, %1, %2, %3};" ::"r"(val.x), "r"(val.y),
+               "r"(val.z), "r"(val.w), "l"(addr));
+}
+
+__device__ __forceinline__ int4 ld_global_volatile(int4* addr) {
+  int4 val;
+  asm volatile("ld.volatile.global.v4.b32 {%0, %1, %2, %3}, [%4];"
+               : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
+               : "l"(addr));
+  return val;
+}
 
 #if (__CUDACC_VER_MAJOR__ * 10000 + __CUDACC_VER_MINOR__ * 100 < 120200) && \
     (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800))
@@ -85,6 +115,38 @@ struct vec_cast {
 #pragma unroll
     for (size_t i = 0; i < vec_size; ++i) {
       dst[i] = (dst_t)src[i];
+    }
+  }
+};
+
+template <>
+struct vec_cast<__nv_fp8_e4m3, float> {
+  template <size_t vec_size>
+  FLASHINFER_INLINE static void cast(__nv_fp8_e4m3* dst, const float* src) {
+    if constexpr (vec_size == 1) {
+      dst[0] = __nv_fp8_e4m3(src[0]);
+    } else {
+#pragma unroll
+      for (size_t i = 0; i < vec_size / 2; ++i) {
+        ((__nv_fp8x2_storage_t*)dst)[i] =
+            __nv_cvt_float2_to_fp8x2(((float2*)src)[i], __NV_SATFINITE, __NV_E4M3);
+      }
+    }
+  }
+};
+
+template <>
+struct vec_cast<__nv_fp8_e5m2, float> {
+  template <size_t vec_size>
+  FLASHINFER_INLINE static void cast(__nv_fp8_e5m2* dst, const float* src) {
+    if constexpr (vec_size == 1) {
+      dst[0] = __nv_fp8_e5m2(src[0]);
+    } else {
+#pragma unroll
+      for (size_t i = 0; i < vec_size / 2; ++i) {
+        ((__nv_fp8x2_storage_t*)dst)[i] =
+            __nv_cvt_float2_to_fp8x2(((float2*)src)[i], __NV_SATFINITE, __NV_E5M2);
+      }
     }
   }
 };
@@ -389,6 +451,10 @@ struct vec_t {
   FLASHINFER_INLINE void fill(float_t val);
   FLASHINFER_INLINE void load(const float_t* ptr);
   FLASHINFER_INLINE void store(float_t* ptr) const;
+  FLASHINFER_INLINE void load_global_acquire(float* addr);
+  FLASHINFER_INLINE void store_global_release(float* addr) const;
+  FLASHINFER_INLINE void load_global_volatile(float* addr);
+  FLASHINFER_INLINE void store_global_volatile(float* addr) const;
   template <typename T>
   FLASHINFER_INLINE void cast_from(const vec_t<T, vec_size>& src);
   template <typename T>
@@ -620,7 +686,8 @@ FLASHINFER_INLINE void vec_t<__nv_fp8_e4m3, 8>::memcpy(__nv_fp8_e4m3* dst,
 // __nv_fp8_e4m3 x 16 or more
 template <size_t vec_size>
 struct vec_t<__nv_fp8_e4m3, vec_size> {
-  uint4 data[vec_size / 16];
+  static_assert(vec_size % 16 == 0, "Invalid vector size");
+  int4 data[vec_size / 16];
 
   FLASHINFER_INLINE __nv_fp8_e4m3& operator[](size_t i) { return ((__nv_fp8_e4m3*)data)[i]; }
   FLASHINFER_INLINE const __nv_fp8_e4m3& operator[](size_t i) const {
@@ -647,13 +714,37 @@ struct vec_t<__nv_fp8_e4m3, vec_size> {
   FLASHINFER_INLINE void load(const __nv_fp8_e4m3* ptr) {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 16; ++i) {
-      data[i] = ((uint4*)ptr)[i];
+      data[i] = ((int4*)ptr)[i];
     }
   }
   FLASHINFER_INLINE void store(__nv_fp8_e4m3* ptr) const {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 16; ++i) {
-      ((uint4*)ptr)[i] = data[i];
+      ((int4*)ptr)[i] = data[i];
+    }
+  }
+  FLASHINFER_INLINE void load_global_acquire(__nv_fp8_e4m3* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      *((int4*)(data + i)) = ld_global_acquire((int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void store_global_release(__nv_fp8_e4m3* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      st_global_release(data[i], (int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void load_global_volatile(__nv_fp8_e4m3* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      data[i] = ld_global_volatile((int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void store_global_volatile(__nv_fp8_e4m3* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      st_global_volatile(data[i], (int4*)(addr + i * 16));
     }
   }
   template <typename T>
@@ -672,7 +763,7 @@ struct vec_t<__nv_fp8_e4m3, vec_size> {
   FLASHINFER_INLINE static void memcpy(__nv_fp8_e4m3* dst, const __nv_fp8_e4m3* src) {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 16; ++i) {
-      ((uint4*)dst)[i] = ((uint4*)src)[i];
+      ((int4*)dst)[i] = ((int4*)src)[i];
     }
   }
 };
@@ -868,7 +959,8 @@ FLASHINFER_INLINE void vec_t<__nv_fp8_e5m2, 8>::memcpy(__nv_fp8_e5m2* dst,
 
 template <size_t vec_size>
 struct vec_t<__nv_fp8_e5m2, vec_size> {
-  uint4 data[vec_size / 16];
+  static_assert(vec_size % 16 == 0, "Invalid vector size");
+  int4 data[vec_size / 16];
 
   FLASHINFER_INLINE __nv_fp8_e5m2& operator[](size_t i) { return ((__nv_fp8_e5m2*)data)[i]; }
   FLASHINFER_INLINE const __nv_fp8_e5m2& operator[](size_t i) const {
@@ -895,13 +987,37 @@ struct vec_t<__nv_fp8_e5m2, vec_size> {
   FLASHINFER_INLINE void load(const __nv_fp8_e5m2* ptr) {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 16; ++i) {
-      data[i] = ((uint4*)ptr)[i];
+      data[i] = ((int4*)ptr)[i];
     }
   }
   FLASHINFER_INLINE void store(__nv_fp8_e5m2* ptr) const {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 16; ++i) {
-      ((uint4*)ptr)[i] = data[i];
+      ((int4*)ptr)[i] = data[i];
+    }
+  }
+  FLASHINFER_INLINE void store_global_release(__nv_fp8_e5m2* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      st_global_release(data[i], (int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void load_global_acquire(__nv_fp8_e5m2* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      data[i] = ld_global_acquire((int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void store_global_volatile(__nv_fp8_e5m2* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      st_global_volatile(data[i], (int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void load_global_volatile(__nv_fp8_e5m2* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      data[i] = ld_global_volatile((int4*)(addr + i * 16));
     }
   }
   template <typename T>
@@ -919,10 +1035,211 @@ struct vec_t<__nv_fp8_e5m2, vec_size> {
   FLASHINFER_INLINE static void memcpy(__nv_fp8_e5m2* dst, const __nv_fp8_e5m2* src) {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 16; ++i) {
-      ((uint4*)dst)[i] = ((uint4*)src)[i];
+      ((int4*)dst)[i] = ((int4*)src)[i];
     }
   }
 };
+
+#if defined(FLASHINFER_ENABLE_FP4_E2M1) && CUDA_VERSION >= 12080
+/******************* vec_t<__nv_fp4_e2m1> *******************/
+
+// __nv_fp4_e2m1 x 2
+template <>
+struct vec_t<__nv_fp4_e2m1, 2> {
+  uint8_t data;
+  // index access is not supported for sub-byte data type
+  FLASHINFER_INLINE __nv_fp4_e2m1* ptr() { return reinterpret_cast<__nv_fp4_e2m1*>(&data); }
+  FLASHINFER_INLINE void fill(__nv_fp4_e2m1 val) {
+    data = (__nv_fp4x2_storage_t(val.__x) << 4) | __nv_fp4x2_storage_t(val.__x);
+  }
+  FLASHINFER_INLINE void load(const __nv_fp4_e2m1* ptr) { data = *((uint8_t*)ptr); }
+  FLASHINFER_INLINE void store(__nv_fp4_e2m1* ptr) const { *((uint8_t*)ptr) = data; }
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 2>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+  FLASHINFER_INLINE static void memcpy(__nv_fp4_e2m1* dst, const __nv_fp4_e2m1* src) {
+    *((uint8_t*)dst) = *((uint8_t*)src);
+  }
+};
+
+// __nv_fp4_e2m1 x 4
+template <>
+struct vec_t<__nv_fp4_e2m1, 4> {
+  uint16_t data;
+
+  FLASHINFER_INLINE __nv_fp4_e2m1* ptr() { return reinterpret_cast<__nv_fp4_e2m1*>(&data); }
+  FLASHINFER_INLINE void fill(__nv_fp4_e2m1 val) {
+    __nv_fp4x2_storage_t val8 =
+        (__nv_fp4x2_storage_t(val.__x) << 4) | __nv_fp4x2_storage_t(val.__x);
+    data = (uint16_t(val8) << 8) | uint16_t(val8);
+  }
+  FLASHINFER_INLINE void load(const __nv_fp4_e2m1* ptr) { data = *((uint16_t*)ptr); }
+  FLASHINFER_INLINE void store(__nv_fp4_e2m1* ptr) const { *((uint16_t*)ptr) = data; }
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 4>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+  FLASHINFER_INLINE static void memcpy(__nv_fp4_e2m1* dst, const __nv_fp4_e2m1* src) {
+    *((uint16_t*)dst) = *((uint16_t*)src);
+  }
+};
+
+// __nv_fp4_e2m1 x 8
+template <>
+struct vec_t<__nv_fp4_e2m1, 8> {
+  uint32_t data;
+
+  FLASHINFER_INLINE __nv_fp4_e2m1* ptr() { return reinterpret_cast<__nv_fp4_e2m1*>(&data); }
+  FLASHINFER_INLINE void fill(__nv_fp4_e2m1 val) {
+    __nv_fp4x2_storage_t val8 =
+        (__nv_fp4x2_storage_t(val.__x) << 4) | __nv_fp4x2_storage_t(val.__x);
+    uint16_t val16 = (uint16_t(val8) << 8) | uint16_t(val8);
+    data = (uint32_t(val16) << 16) | uint32_t(val16);
+  }
+  FLASHINFER_INLINE void load(const __nv_fp4_e2m1* ptr) { data = *((uint32_t*)ptr); }
+  FLASHINFER_INLINE void store(__nv_fp4_e2m1* ptr) const { *((uint32_t*)ptr) = data; }
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 8>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+  FLASHINFER_INLINE static void memcpy(__nv_fp4_e2m1* dst, const __nv_fp4_e2m1* src) {
+    *((uint32_t*)dst) = *((uint32_t*)src);
+  }
+};
+
+template <>
+struct vec_t<__nv_fp4_e2m1, 16> {
+  uint2 data;
+  FLASHINFER_INLINE __nv_fp4_e2m1* ptr() { return reinterpret_cast<__nv_fp4_e2m1*>(&data); }
+  FLASHINFER_INLINE void fill(__nv_fp4_e2m1 val) {
+    __nv_fp4x2_storage_t val8 =
+        (__nv_fp4x2_storage_t(val.__x) << 4) | __nv_fp4x2_storage_t(val.__x);
+    uint16_t val16 = (uint16_t(val8) << 8) | uint16_t(val8);
+    uint32_t val32 = (uint32_t(val16) << 16) | uint32_t(val16);
+    data.x = val32;
+    data.y = val32;
+  }
+  FLASHINFER_INLINE void load(const __nv_fp4_e2m1* ptr) { data = *((uint2*)ptr); }
+  FLASHINFER_INLINE void store(__nv_fp4_e2m1* ptr) const { *((uint2*)ptr) = data; }
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 16>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+  FLASHINFER_INLINE static void memcpy(__nv_fp4_e2m1* dst, const __nv_fp4_e2m1* src) {
+    *((uint2*)dst) = *((uint2*)src);
+  }
+};
+
+// __nv_fp4_e2m1 x 32 or more
+template <size_t vec_size>
+struct vec_t<__nv_fp4_e2m1, vec_size> {
+  static_assert(vec_size % 32 == 0, "Invalid vector size");
+  int4 data[vec_size / 32];
+
+  FLASHINFER_INLINE __nv_fp4_e2m1* ptr() { return reinterpret_cast<__nv_fp4_e2m1*>(&data); }
+  FLASHINFER_INLINE void fill(__nv_fp4_e2m1 val) {
+    __nv_fp4x2_storage_t val8 =
+        (__nv_fp4x2_storage_t(val.__x) << 4) | __nv_fp4x2_storage_t(val.__x);
+    uint16_t val16 = (uint16_t(val8) << 8) | uint16_t(val8);
+    uint32_t val32 = (uint32_t(val16) << 16) | uint32_t(val16);
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      data[i].x = val32;
+      data[i].y = val32;
+      data[i].z = val32;
+      data[i].w = val32;
+    }
+  }
+  FLASHINFER_INLINE void load(const __nv_fp4_e2m1* ptr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      data[i] = ((int4*)ptr)[i];
+    }
+  }
+  FLASHINFER_INLINE void store(__nv_fp4_e2m1* ptr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      ((int4*)ptr)[i] = data[i];
+    }
+  }
+  FLASHINFER_INLINE void store_global_release(__nv_fp4_e2m1* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      st_global_release(*(int4*)&data[i], (int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void load_global_acquire(__nv_fp4_e2m1* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      *(int4*)&data[i] = ld_global_acquire((int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void store_global_volatile(__nv_fp4_e2m1* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      st_global_volatile(*(int4*)&data[i], (int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void load_global_volatile(__nv_fp4_e2m1* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      *(int4*)&data[i] = ld_global_volatile((int4*)(addr + i * 16));
+    }
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, vec_size>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+  FLASHINFER_INLINE static void memcpy(__nv_fp4_e2m1* dst, const __nv_fp4_e2m1* src) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 32; ++i) {
+      ((int4*)dst)[i] = ((int4*)src)[i];
+    }
+  }
+};
+
+#endif  // FLASHINFER_ENABLE_FP4_E2M1 && CUDA_VERSION >= 12080
 
 /******************* vec_t<half> *******************/
 
@@ -1042,7 +1359,8 @@ FLASHINFER_INLINE void vec_t<half, 4>::memcpy(half* dst, const half* src) {
 
 template <size_t vec_size>
 struct vec_t<half, vec_size> {
-  uint4 data[vec_size / 8];
+  static_assert(vec_size % 8 == 0, "Invalid vector size");
+  int4 data[vec_size / 8];
   FLASHINFER_INLINE half& operator[](size_t i) { return ((half*)data)[i]; }
   FLASHINFER_INLINE const half& operator[](size_t i) const { return ((const half*)data)[i]; }
   FLASHINFER_INLINE half* ptr() { return reinterpret_cast<half*>(&data); }
@@ -1058,15 +1376,40 @@ struct vec_t<half, vec_size> {
   FLASHINFER_INLINE void load(const half* ptr) {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 8; ++i) {
-      data[i] = ((uint4*)ptr)[i];
+      data[i] = ((int4*)ptr)[i];
     }
   }
   FLASHINFER_INLINE void store(half* ptr) const {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 8; ++i) {
-      ((uint4*)ptr)[i] = data[i];
+      ((int4*)ptr)[i] = data[i];
     }
   }
+  FLASHINFER_INLINE void load_global_acquire(half* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      data[i] = ld_global_acquire((int4*)(addr + i * 8));
+    }
+  }
+  FLASHINFER_INLINE void store_global_release(half* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      st_global_release(data[i], (int4*)(addr + i * 8));
+    }
+  }
+  FLASHINFER_INLINE void store_global_volatile(half* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      st_global_volatile(data[i], (int4*)(addr + i * 8));
+    }
+  }
+  FLASHINFER_INLINE void load_global_volatile(half* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      data[i] = ld_global_volatile((int4*)(addr + i * 8));
+    }
+  }
+
   template <typename T>
   FLASHINFER_INLINE void cast_from(const vec_t<T, vec_size>& src) {
     cast_from_impl(*this, src);
@@ -1082,7 +1425,7 @@ struct vec_t<half, vec_size> {
   FLASHINFER_INLINE static void memcpy(half* dst, const half* src) {
 #pragma unroll
     for (size_t i = 0; i < vec_size / 8; ++i) {
-      ((uint4*)dst)[i] = ((uint4*)src)[i];
+      ((int4*)dst)[i] = ((int4*)src)[i];
     }
   }
 };
@@ -1220,7 +1563,8 @@ FLASHINFER_INLINE void vec_t<nv_bfloat16, 4>::memcpy(nv_bfloat16* dst, const nv_
 
 template <size_t vec_size>
 struct vec_t<nv_bfloat16, vec_size> {
-  uint4 data[vec_size / 8];
+  static_assert(vec_size % 8 == 0, "Invalid vector size");
+  int4 data[vec_size / 8];
 
   FLASHINFER_INLINE nv_bfloat16& operator[](size_t i) { return ((nv_bfloat16*)data)[i]; }
   FLASHINFER_INLINE const nv_bfloat16& operator[](size_t i) const {
@@ -1239,13 +1583,37 @@ struct vec_t<nv_bfloat16, vec_size> {
   FLASHINFER_INLINE void load(const nv_bfloat16* ptr) {
 #pragma unoll
     for (size_t i = 0; i < vec_size / 8; ++i) {
-      data[i] = ((uint4*)ptr)[i];
+      data[i] = ((int4*)ptr)[i];
     }
   }
   FLASHINFER_INLINE void store(nv_bfloat16* ptr) const {
 #pragma unoll
     for (size_t i = 0; i < vec_size / 8; ++i) {
-      ((uint4*)ptr)[i] = data[i];
+      ((int4*)ptr)[i] = data[i];
+    }
+  }
+  FLASHINFER_INLINE void store_global_release(nv_bfloat16* addr) const {
+#pragma unoll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      st_global_release(data[i], (int4*)(addr + i * 8));
+    }
+  }
+  FLASHINFER_INLINE void load_global_acquire(nv_bfloat16* addr) {
+#pragma unoll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      data[i] = ld_global_acquire((int4*)(addr + i * 8));
+    }
+  }
+  FLASHINFER_INLINE void store_global_volatile(nv_bfloat16* addr) const {
+#pragma unoll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      st_global_volatile(data[i], (int4*)(addr + i * 8));
+    }
+  }
+  FLASHINFER_INLINE void load_global_volatile(nv_bfloat16* addr) {
+#pragma unoll
+    for (size_t i = 0; i < vec_size / 8; ++i) {
+      data[i] = ld_global_volatile((int4*)(addr + i * 8));
     }
   }
   template <typename T>
@@ -1263,7 +1631,250 @@ struct vec_t<nv_bfloat16, vec_size> {
   FLASHINFER_INLINE static void memcpy(nv_bfloat16* dst, const nv_bfloat16* src) {
 #pragma unoll
     for (size_t i = 0; i < vec_size / 8; ++i) {
-      ((uint4*)dst)[i] = ((uint4*)src)[i];
+      ((int4*)dst)[i] = ((int4*)src)[i];
+    }
+  }
+};
+
+/******************* vec_t<uint8_t> *******************/
+
+// uint8_t x 1
+template <>
+struct vec_t<uint8_t, 1> {
+  uint8_t data;
+
+  FLASHINFER_INLINE uint8_t& operator[](size_t i) { return ((uint8_t*)(&data))[i]; }
+  FLASHINFER_INLINE const uint8_t& operator[](size_t i) const {
+    return ((const uint8_t*)(&data))[i];
+  }
+  FLASHINFER_INLINE uint8_t* ptr() { return reinterpret_cast<uint8_t*>(&data); }
+  FLASHINFER_INLINE void fill(uint8_t val);
+  FLASHINFER_INLINE void load(const uint8_t* ptr);
+  FLASHINFER_INLINE void store(uint8_t* ptr) const;
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 1>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+
+  FLASHINFER_INLINE static void memcpy(uint8_t* dst, const uint8_t* src);
+};
+
+FLASHINFER_INLINE void vec_t<uint8_t, 1>::fill(uint8_t val) { data = val; }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 1>::load(const uint8_t* ptr) { data = *ptr; }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 1>::store(uint8_t* ptr) const { *ptr = data; }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 1>::memcpy(uint8_t* dst, const uint8_t* src) { *dst = *src; }
+
+// uint8_t x 2
+template <>
+struct vec_t<uint8_t, 2> {
+  uint16_t data;
+
+  FLASHINFER_INLINE uint8_t& operator[](size_t i) { return ((uint8_t*)(&data))[i]; }
+  FLASHINFER_INLINE const uint8_t& operator[](size_t i) const {
+    return ((const uint8_t*)(&data))[i];
+  }
+  FLASHINFER_INLINE uint8_t* ptr() { return reinterpret_cast<uint8_t*>(&data); }
+  FLASHINFER_INLINE void fill(uint8_t val);
+  FLASHINFER_INLINE void load(const uint8_t* ptr);
+  FLASHINFER_INLINE void store(uint8_t* ptr) const;
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 2>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+
+  FLASHINFER_INLINE static void memcpy(uint8_t* dst, const uint8_t* src);
+};
+
+FLASHINFER_INLINE void vec_t<uint8_t, 2>::fill(uint8_t val) {
+  data = (uint16_t(val) << 8) | uint16_t(val);
+}
+
+FLASHINFER_INLINE void vec_t<uint8_t, 2>::load(const uint8_t* ptr) { data = *((uint16_t*)ptr); }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 2>::store(uint8_t* ptr) const { *((uint16_t*)ptr) = data; }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 2>::memcpy(uint8_t* dst, const uint8_t* src) {
+  *((uint16_t*)dst) = *((uint16_t*)src);
+}
+
+// uint8_t x 4
+
+template <>
+struct vec_t<uint8_t, 4> {
+  uint32_t data;
+
+  FLASHINFER_INLINE uint8_t& operator[](size_t i) { return ((uint8_t*)(&data))[i]; }
+  FLASHINFER_INLINE const uint8_t& operator[](size_t i) const {
+    return ((const uint8_t*)(&data))[i];
+  }
+  FLASHINFER_INLINE uint8_t* ptr() { return reinterpret_cast<uint8_t*>(&data); }
+  FLASHINFER_INLINE void fill(uint8_t val);
+  FLASHINFER_INLINE void load(const uint8_t* ptr);
+  FLASHINFER_INLINE void store(uint8_t* ptr) const;
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 4>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+
+  FLASHINFER_INLINE static void memcpy(uint8_t* dst, const uint8_t* src);
+};
+
+FLASHINFER_INLINE void vec_t<uint8_t, 4>::fill(uint8_t val) {
+  data = (uint32_t(val) << 24) | (uint32_t(val) << 16) | (uint32_t(val) << 8) | uint32_t(val);
+}
+
+FLASHINFER_INLINE void vec_t<uint8_t, 4>::load(const uint8_t* ptr) { data = *((uint32_t*)ptr); }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 4>::store(uint8_t* ptr) const { *((uint32_t*)ptr) = data; }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 4>::memcpy(uint8_t* dst, const uint8_t* src) {
+  *((uint32_t*)dst) = *((uint32_t*)src);
+}
+
+// uint8_t x 8
+
+template <>
+struct vec_t<uint8_t, 8> {
+  uint2 data;
+
+  FLASHINFER_INLINE uint8_t& operator[](size_t i) { return ((uint8_t*)(&data))[i]; }
+  FLASHINFER_INLINE const uint8_t& operator[](size_t i) const {
+    return ((const uint8_t*)(&data))[i];
+  }
+  FLASHINFER_INLINE uint8_t* ptr() { return reinterpret_cast<uint8_t*>(&data); }
+  FLASHINFER_INLINE void fill(uint8_t val);
+  FLASHINFER_INLINE void load(const uint8_t* ptr);
+  FLASHINFER_INLINE void store(uint8_t* ptr) const;
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, 8>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+  FLASHINFER_INLINE static void memcpy(uint8_t* dst, const uint8_t* src);
+};
+
+FLASHINFER_INLINE void vec_t<uint8_t, 8>::fill(uint8_t val) {
+  uint32_t val32 =
+      (uint32_t(val) << 24) | (uint32_t(val) << 16) | (uint32_t(val) << 8) | uint32_t(val);
+  data.x = val32;
+  data.y = val32;
+}
+
+FLASHINFER_INLINE void vec_t<uint8_t, 8>::load(const uint8_t* ptr) { data = *((uint2*)ptr); }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 8>::store(uint8_t* ptr) const { *((uint2*)ptr) = data; }
+
+FLASHINFER_INLINE void vec_t<uint8_t, 8>::memcpy(uint8_t* dst, const uint8_t* src) {
+  *((uint2*)dst) = *((uint2*)src);
+}
+
+// uint8_t x 16 or more
+
+template <size_t vec_size>
+struct vec_t<uint8_t, vec_size> {
+  static_assert(vec_size % 16 == 0, "Invalid vector size");
+  int4 data[vec_size / 16];
+
+  FLASHINFER_INLINE uint8_t& operator[](size_t i) { return ((uint8_t*)data)[i]; }
+  FLASHINFER_INLINE const uint8_t& operator[](size_t i) const { return ((const uint8_t*)data)[i]; }
+  FLASHINFER_INLINE uint8_t* ptr() { return reinterpret_cast<uint8_t*>(&data); }
+  FLASHINFER_INLINE void fill(uint8_t val) {
+    uint32_t val32 =
+        (uint32_t(val) << 24) | (uint32_t(val) << 16) | (uint32_t(val) << 8) | uint32_t(val);
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      data[i].x = val32;
+      data[i].y = val32;
+      data[i].z = val32;
+      data[i].w = val32;
+    }
+  }
+  FLASHINFER_INLINE void load(const uint8_t* ptr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      data[i] = ((int4*)ptr)[i];
+    }
+  }
+  FLASHINFER_INLINE void store(uint8_t* ptr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      ((int4*)ptr)[i] = data[i];
+    }
+  }
+  FLASHINFER_INLINE void load_global_acquire(uint8_t* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      data[i] = ld_global_acquire((int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void store_global_release(uint8_t* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      st_global_release(data[i], (int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void load_global_volatile(uint8_t* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      data[i] = ld_global_volatile((int4*)(addr + i * 16));
+    }
+  }
+  FLASHINFER_INLINE void store_global_volatile(uint8_t* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      st_global_volatile(data[i], (int4*)(addr + i * 16));
+    }
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_from(const vec_t<T, vec_size>& src) {
+    cast_from_impl(*this, src);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_load(const T* ptr) {
+    cast_load_impl(*this, ptr);
+  }
+  template <typename T>
+  FLASHINFER_INLINE void cast_store(T* ptr) const {
+    cast_store_impl(ptr, *this);
+  }
+  FLASHINFER_INLINE static void memcpy(uint8_t* dst, const uint8_t* src) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 16; ++i) {
+      ((int4*)dst)[i] = ((int4*)src)[i];
     }
   }
 };
@@ -1345,6 +1956,7 @@ FLASHINFER_INLINE void vec_t<float, 2>::memcpy(float* dst, const float* src) {
 // float x 4 or more
 template <size_t vec_size>
 struct vec_t<float, vec_size> {
+  static_assert(vec_size % 4 == 0, "Invalid vector size");
   float4 data[vec_size / 4];
 
   FLASHINFER_INLINE float& operator[](size_t i) { return ((float*)(data))[i]; }
@@ -1368,6 +1980,30 @@ struct vec_t<float, vec_size> {
       ((float4*)ptr)[i] = data[i];
     }
   }
+  FLASHINFER_INLINE void store_global_release(float* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 4; ++i) {
+      st_global_release(*(int4*)(data + i), (int4*)(addr + i * 4));
+    }
+  }
+  FLASHINFER_INLINE void load_global_acquire(float* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 4; ++i) {
+      *((int4*)(data + i)) = ld_global_acquire((int4*)(addr + i * 4));
+    }
+  }
+  FLASHINFER_INLINE void store_global_volatile(float* addr) const {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 4; ++i) {
+      st_global_volatile(*(int4*)(data + i), (int4*)(addr + i * 4));
+    }
+  }
+  FLASHINFER_INLINE void load_global_volatile(float* addr) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size / 4; ++i) {
+      *((int4*)(data + i)) = ld_global_volatile((int4*)(addr + i * 4));
+    }
+  }
   template <typename T>
   FLASHINFER_INLINE void cast_from(const vec_t<T, vec_size>& src) {
     cast_from_impl(*this, src);
@@ -1387,6 +2023,40 @@ struct vec_t<float, vec_size> {
     }
   }
 };
+
+template <typename T>
+struct vec2_dtype {
+  using type = T;
+};
+
+template <>
+struct vec2_dtype<half> {
+  using type = half2;
+};
+
+template <>
+struct vec2_dtype<__nv_bfloat16> {
+  using type = __nv_bfloat162;
+};
+
+template <>
+struct vec2_dtype<__nv_fp8_e4m3> {
+  using type = __nv_fp8x2_e4m3;
+};
+
+template <>
+struct vec2_dtype<__nv_fp8_e5m2> {
+  using type = __nv_fp8x2_e5m2;
+};
+
+template <typename T>
+using vec2_dtype_t = typename vec2_dtype<T>::type;
+
+template <typename T, size_t VEC_SIZE>
+FLASHINFER_INLINE vec2_dtype_t<T> get_vec2_element(vec_t<T, VEC_SIZE>& vec, int i) {
+  static_assert(VEC_SIZE % 2 == 0, "VEC_SIZE must be a multiple of 2");
+  return ((vec2_dtype_t<T>*)&(vec[0]))[i];
+}
 
 }  // namespace flashinfer
 

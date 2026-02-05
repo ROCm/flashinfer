@@ -142,28 +142,33 @@
     FLASHINFER_ERROR(err_msg.str());                         \
   }
 
-#define DISPATCH_MASK_MODE(mask_mode, MASK_MODE, ...)         \
-  switch (mask_mode) {                                        \
-    case MaskMode::kNone: {                                   \
-      constexpr MaskMode MASK_MODE = MaskMode::kNone;         \
-      __VA_ARGS__                                             \
-      break;                                                  \
-    }                                                         \
-    case MaskMode::kCausal: {                                 \
-      constexpr MaskMode MASK_MODE = MaskMode::kCausal;       \
-      __VA_ARGS__                                             \
-      break;                                                  \
-    }                                                         \
-    case MaskMode::kCustom: {                                 \
-      constexpr MaskMode MASK_MODE = MaskMode::kCustom;       \
-      __VA_ARGS__                                             \
-      break;                                                  \
-    }                                                         \
-    default: {                                                \
-      std::ostringstream err_msg;                             \
-      err_msg << "Unsupported mask_mode: " << int(mask_mode); \
-      FLASHINFER_ERROR(err_msg.str());                        \
-    }                                                         \
+#define DISPATCH_MASK_MODE(mask_mode, MASK_MODE, ...)             \
+  switch (mask_mode) {                                            \
+    case MaskMode::kNone: {                                       \
+      constexpr MaskMode MASK_MODE = MaskMode::kNone;             \
+      __VA_ARGS__                                                 \
+      break;                                                      \
+    }                                                             \
+    case MaskMode::kCausal: {                                     \
+      constexpr MaskMode MASK_MODE = MaskMode::kCausal;           \
+      __VA_ARGS__                                                 \
+      break;                                                      \
+    }                                                             \
+    case MaskMode::kCustom: {                                     \
+      constexpr MaskMode MASK_MODE = MaskMode::kCustom;           \
+      __VA_ARGS__                                                 \
+      break;                                                      \
+    }                                                             \
+    case MaskMode::kMultiItemScoring: {                           \
+      constexpr MaskMode MASK_MODE = MaskMode::kMultiItemScoring; \
+      __VA_ARGS__                                                 \
+      break;                                                      \
+    }                                                             \
+    default: {                                                    \
+      std::ostringstream err_msg;                                 \
+      err_msg << "Unsupported mask_mode: " << int(mask_mode);     \
+      FLASHINFER_ERROR(err_msg.str());                            \
+    }                                                             \
   }
 
 // convert head_dim to compile-time constant
@@ -194,6 +199,52 @@
       err_msg << "Unsupported head_dim: " << head_dim; \
       FLASHINFER_ERROR(err_msg.str());                 \
     }                                                  \
+  }
+
+// convert interleave to compile-time constant
+#define DISPATCH_INTERLEAVE(interleave, INTERLEAVE, ...) \
+  if (interleave) {                                      \
+    constexpr bool INTERLEAVE = true;                    \
+    __VA_ARGS__                                          \
+  } else {                                               \
+    constexpr bool INTERLEAVE = false;                   \
+    __VA_ARGS__                                          \
+  }
+
+#define DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, ...)           \
+  switch (rope_dim) {                                        \
+    case 16: {                                               \
+      constexpr uint32_t ROPE_DIM = 16;                      \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 32: {                                               \
+      constexpr uint32_t ROPE_DIM = 32;                      \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 64: {                                               \
+      constexpr uint32_t ROPE_DIM = 64;                      \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 128: {                                              \
+      constexpr uint32_t ROPE_DIM = 128;                     \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 256: {                                              \
+      constexpr uint32_t ROPE_DIM = 256;                     \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    default: {                                               \
+      std::ostringstream err_msg;                            \
+      err_msg << "Unsupported ROPE_DIM: " << rope_dim;       \
+      err_msg << ". Supported values: 16, 32, 64, 128, 256"; \
+      err_msg << " in DISPATCH_ROPE_DIM";                    \
+      FLASHINFER_ERROR(err_msg.str());                       \
+    }                                                        \
   }
 
 #define DISPATCH_POS_ENCODING_MODE(pos_encoding_mode, POS_ENCODING_MODE, ...)    \
@@ -270,6 +321,11 @@ __forceinline__ __device__ __host__ T1 ceil_div(const T1 x, const T2 y) {
   return (x + y - 1) / y;
 }
 
+template <typename T1, typename T2>
+__forceinline__ __device__ __host__ T1 round_up(const T1 x, const T2 y) {
+  return ceil_div(x, y) * y;
+}
+
 inline std::pair<int, int> GetCudaComputeCapability() {
   int device_id = 0;
   cudaGetDevice(&device_id);
@@ -318,6 +374,30 @@ inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_di
     }
   }
 }
+
+inline int UpPowerOfTwo(int x) {
+  // Returns the smallest power of two greater than or equal to x
+  if (x <= 0) return 1;
+  --x;
+  x |= x >> 1;
+  x |= x >> 2;
+  x |= x >> 4;
+  x |= x >> 8;
+  x |= x >> 16;
+  return x + 1;
+}
+
+#define LOOP_SPLIT_MASK(iter, COND1, COND2, ...)       \
+  {                                                    \
+    _Pragma("unroll 1") for (; (COND1); (iter) -= 1) { \
+      constexpr bool WITH_MASK = true;                 \
+      __VA_ARGS__                                      \
+    }                                                  \
+    _Pragma("unroll 1") for (; (COND2); (iter) -= 1) { \
+      constexpr bool WITH_MASK = false;                \
+      __VA_ARGS__                                      \
+    }                                                  \
+  }
 
 /*!
  * \brief Return x - y if x > y, otherwise return 0.
