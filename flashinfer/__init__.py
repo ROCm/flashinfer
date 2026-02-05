@@ -160,17 +160,9 @@ except ImportError:
     prebuilt_ops_uri = None
 
 try:
-    from .__config__ import __version__, get_info, show
-
-    if __config__.get_info("enable_cuda"):
-        cuda_lib_path = os.environ.get(
-            "CUDA_LIB_PATH", "/usr/local/cuda/targets/x86_64-linux/lib/"
-        )
-        if os.path.exists(f"{cuda_lib_path}/libcudart.so.12"):
-            ctypes.CDLL(f"{cuda_lib_path}/libcudart.so.12", mode=ctypes.RTLD_GLOBAL)
-except ImportError as e:
-    logger.error(f"Failed to import __config__: {e}")
-    raise e
+    from ._version import __version__ as __version__
+except (ModuleNotFoundError, ImportError):
+    __version__ = "0.0.0+unknown"
 
 # Run the Rocm check
 _check_torch_rocm_compatibility()
