@@ -82,14 +82,9 @@ exclude = [
     "scripts",
     "tests",
     "docs",
-    "3rdparty/mscclpp/**/*",
-    "3rdparty/googletest/**/*",
-    "3rdparty/nvbench/**/*",
     "3rdparty/spdlog/**/*",
-    "3rdparty/composable_kernels/**/*",
     "3rdparty/cutlass/**/*",
     "ci",
-    "aot_build_utils",
     "Jenkinsfile",
     "format.sh",
     "custom_backend.py",
@@ -99,18 +94,6 @@ exclude = [
 include = [
     "flashinfer/_version.py"
 ]
-
-# Base CMake definitions - applied to all builds
-[tool.scikit-build.cmake.define]
-FLASHINFER_HIP_ARCHITECTURES = {env="FLASHINFER_HIP_ARCHITECTURES", default="gfx942"}
-FLASHINFER_BUILD_WHEELS="ON"
-FLASHINFER_AOT_TORCH_EXTS = {env="FLASHINFER_AOT_TORCH_EXTS", default="OFF"}
-FLASHINFER_ENABLE_F16="ON"
-FLASHINFER_ENABLE_BF16="ON"
-FLASHINFER_ENABLE_FP8="ON"
-FLASHINFER_ENABLE_FP8_E4M3="ON"
-FLASHINFER_ENABLE_FP8_E5M2="ON"
-FLASHINFER_ENABLE_HIP = {env="FLASHINFER_ENABLE_HIP", default="ON"}
 
 [tool.setuptools_scm]
 write_to = "flashinfer/_version.py"
