@@ -61,6 +61,8 @@ if IS_HIP:
     from .prefill import (
         single_prefill_with_kv_cache_return_lse as single_prefill_with_kv_cache_return_lse,
     )
+    from .quantization import packbits as packbits
+    from .quantization import segment_packbits as segment_packbits
     from .rope import apply_llama31_rope as apply_llama31_rope
     from .rope import apply_llama31_rope_inplace as apply_llama31_rope_inplace
     from .rope import apply_llama31_rope_pos_ids as apply_llama31_rope_pos_ids
@@ -133,7 +135,9 @@ elif IS_CUDA:
     from .decode import (
         CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
     )
-    from .decode import cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache
+    from .decode import (
+        cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache,
+    )
     from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache
     from .fp4_quantization import (
         SfLayout,
@@ -209,7 +213,9 @@ elif IS_CUDA:
     from .sampling import (
         top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
     )
-    from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
+    from .sampling import (
+        top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs,
+    )
     from .sampling import top_p_renorm_probs as top_p_renorm_probs
     from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
     from .sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper

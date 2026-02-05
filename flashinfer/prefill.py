@@ -35,8 +35,8 @@ from .jit import (
 if IS_CUDA:
     from .jit import gen_fmha_cutlass_sm100a_module, trtllm_gen_fmha_module
     from .cudnn import cudnn_batch_prefill_with_kv_cache
-    from .quantization import packbits, segment_packbits
 
+from .quantization import packbits, segment_packbits
 from .page import block_sparse_indices_to_vector_sparse_offsets, get_seq_lens
 from .utils import (
     FP4Tensor,
@@ -1409,8 +1409,18 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._jit_module = None
 
         self._kv_layout = kv_layout
+
+        # Validate backend availability
         if backend == "cudnn":
+            if not IS_CUDA:
+                raise ValueError("CUDNN backend requires CUDA")
             assert kv_layout == "NHD", "CUDNN backend only supports NHD layout"
+        elif backend == "fa3":
+            if not IS_CUDA:
+                raise ValueError("FA3 backend requires CUDA")
+        elif backend == "trtllm-gen":
+            if not IS_CUDA:
+                raise ValueError("TRTLLM-gen backend requires CUDA")
 
         self._float_workspace_buffer = float_workspace_buffer
         self._workspace_size = (
@@ -1419,7 +1429,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
         )
         self.device = float_workspace_buffer.device
         self._vector_sparse_indptr_buffer: Optional[torch.Tensor] = None
-        if backend in ["fa3", "auto", "trtllm-gen"]:
+        # Allocate buffers for backends that need them
+        # Filter out CUDA-only backends on HIP
+        backends_needing_buffers = ["auto"]
+        if IS_CUDA:
+            backends_needing_buffers.extend(["fa3", "trtllm-gen"])
+
+        if backend in backends_needing_buffers:
             # NOTE(Zihao): assume maximum accumulate kv length is 16M
             self._vector_sparse_indices_buffer = torch.empty(
                 (16 * 1024 * 1024,), dtype=torch.int32, device=self.device
@@ -2394,6 +2410,11 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             self._jit_module = None
 
         self._kv_layout = kv_layout
+
+        # Validate backend availability
+        if backend == "cutlass":
+            if not IS_CUDA:
+                raise ValueError("CUTLASS backend requires CUDA")
         self._float_workspace_buffer = float_workspace_buffer
         self.device = float_workspace_buffer.device
         self._int_workspace_buffer = torch.empty(
@@ -2963,495 +2984,495 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         pass
 
 
-def fmha_varlen_plan(
-    module,
-    qo_segment_offsets: torch.Tensor,
-    kv_segment_offsets: torch.Tensor,
-    num_qo_heads: int,
-    causal: bool,
-):
-    num_ctas = torch.cuda.get_device_properties(
-        qo_segment_offsets.device
-    ).multi_processor_count
-    work_indptr = torch.empty(
-        num_ctas + 1, device=qo_segment_offsets.device, dtype=torch.int32
-    )
-    qo_tile_indices = torch.empty(
-        131072, device=qo_segment_offsets.device, dtype=torch.int32
-    )
-    head_indices = torch.empty(
-        131072, device=qo_segment_offsets.device, dtype=torch.int32
-    )
-    batch_indices = torch.empty(
-        131072, device=qo_segment_offsets.device, dtype=torch.int32
-    )
-    module.plan(
-        qo_segment_offsets,
-        kv_segment_offsets,
-        work_indptr,
-        qo_tile_indices,
-        head_indices,
-        batch_indices,
-        256,  # qo_tile_size
-        num_qo_heads,
-        num_ctas,
-        causal,
-    )
-    return (
-        work_indptr,
-        qo_tile_indices,
-        head_indices,
-        batch_indices,
-    )
+if IS_CUDA:
 
-
-@overload
-def fmha_varlen(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    qo_segment_offsets: torch.Tensor,
-    kv_segment_offsets: torch.Tensor,
-    plan_info: Optional[List[torch.Tensor]] = None,
-    max_qo_len: Optional[int] = None,
-    out: Optional[torch.Tensor] = None,
-    lse: Optional[torch.Tensor] = None,
-    causal: bool = False,
-    sm_scale: Optional[float] = None,
-    return_lse: Literal[False] = False,
-) -> torch.Tensor: ...
-
-
-@overload
-def fmha_varlen(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    qo_segment_offsets: torch.Tensor,
-    kv_segment_offsets: torch.Tensor,
-    plan_info: Optional[List[torch.Tensor]] = None,
-    max_qo_len: Optional[int] = None,
-    out: Optional[torch.Tensor] = None,
-    lse: Optional[torch.Tensor] = None,
-    causal: bool = False,
-    sm_scale: Optional[float] = None,
-    return_lse: Literal[True] = True,
-) -> Tuple[torch.Tensor, torch.Tensor]: ...
-
-
-def fmha_varlen(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    qo_segment_offsets: torch.Tensor,
-    kv_segment_offsets: torch.Tensor,
-    plan_info: Optional[List[torch.Tensor]] = None,
-    max_qo_len: Optional[int] = None,
-    out: Optional[torch.Tensor] = None,
-    lse: Optional[torch.Tensor] = None,
-    causal: bool = False,
-    sm_scale: Optional[float] = None,
-    return_lse: bool = False,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    workspace_buffer = _get_cache_buf(
-        "fmha_varlen_cutlass_workspace", 32 * 1024 * 1024, q.device
-    )
-    module = get_fmha_module(
-        q.dtype,
-        k.dtype,
-        v.dtype,
-        torch.int32,
-        q.shape[2],
-        v.shape[2],
-        PosEncodingMode.NONE.value,
-        False,  # use_sliding_window
-        False,  # use_logits_soft_cap
-    )
-
-    nnz_qo, num_qo_heads, head_dim_qk = q.shape
-    nnz_kv, num_kv_heads, head_dim_vo = v.shape
-
-    mask_mode_code = 1 if causal else 0
-    if sm_scale is None:
-        sm_scale = 1.0 / math.sqrt(head_dim_qk)
-
-    qo_total_len = nnz_qo
-    if max_qo_len is None:
-        max_qo_len = torch.max(qo_segment_offsets[1:] - qo_segment_offsets[:-1]).item()
-
-    if plan_info is None:
-        plan_info = fmha_varlen_plan(
-            module, qo_segment_offsets, kv_segment_offsets, num_qo_heads, causal
+    def fmha_varlen_plan(
+        module,
+        qo_segment_offsets: torch.Tensor,
+        kv_segment_offsets: torch.Tensor,
+        num_qo_heads: int,
+        causal: bool,
+    ):
+        num_ctas = torch.cuda.get_device_properties(
+            qo_segment_offsets.device
+        ).multi_processor_count
+        work_indptr = torch.empty(
+            num_ctas + 1, device=qo_segment_offsets.device, dtype=torch.int32
         )
-
-    (
-        work_indptr,
-        qo_tile_indices,
-        head_indices,
-        batch_indices,
-    ) = plan_info
-
-    if out is None:
-        out = torch.empty(
-            qo_total_len + max(max_qo_len, 128),
+        qo_tile_indices = torch.empty(
+            131072, device=qo_segment_offsets.device, dtype=torch.int32
+        )
+        head_indices = torch.empty(
+            131072, device=qo_segment_offsets.device, dtype=torch.int32
+        )
+        batch_indices = torch.empty(
+            131072, device=qo_segment_offsets.device, dtype=torch.int32
+        )
+        module.plan(
+            qo_segment_offsets,
+            kv_segment_offsets,
+            work_indptr,
+            qo_tile_indices,
+            head_indices,
+            batch_indices,
+            256,  # qo_tile_size
             num_qo_heads,
+            num_ctas,
+            causal,
+        )
+        return (
+            work_indptr,
+            qo_tile_indices,
+            head_indices,
+            batch_indices,
+        )
+
+    @overload
+    def fmha_varlen(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        qo_segment_offsets: torch.Tensor,
+        kv_segment_offsets: torch.Tensor,
+        plan_info: Optional[List[torch.Tensor]] = None,
+        max_qo_len: Optional[int] = None,
+        out: Optional[torch.Tensor] = None,
+        lse: Optional[torch.Tensor] = None,
+        causal: bool = False,
+        sm_scale: Optional[float] = None,
+        return_lse: Literal[False] = False,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def fmha_varlen(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        qo_segment_offsets: torch.Tensor,
+        kv_segment_offsets: torch.Tensor,
+        plan_info: Optional[List[torch.Tensor]] = None,
+        max_qo_len: Optional[int] = None,
+        out: Optional[torch.Tensor] = None,
+        lse: Optional[torch.Tensor] = None,
+        causal: bool = False,
+        sm_scale: Optional[float] = None,
+        return_lse: Literal[True] = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor]: ...
+
+    def fmha_varlen(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        qo_segment_offsets: torch.Tensor,
+        kv_segment_offsets: torch.Tensor,
+        plan_info: Optional[List[torch.Tensor]] = None,
+        max_qo_len: Optional[int] = None,
+        out: Optional[torch.Tensor] = None,
+        lse: Optional[torch.Tensor] = None,
+        causal: bool = False,
+        sm_scale: Optional[float] = None,
+        return_lse: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        workspace_buffer = _get_cache_buf(
+            "fmha_varlen_cutlass_workspace", 32 * 1024 * 1024, q.device
+        )
+        module = get_fmha_module(
+            q.dtype,
+            k.dtype,
+            v.dtype,
+            torch.int32,
+            q.shape[2],
+            v.shape[2],
+            PosEncodingMode.NONE.value,
+            False,  # use_sliding_window
+            False,  # use_logits_soft_cap
+        )
+
+        nnz_qo, num_qo_heads, head_dim_qk = q.shape
+        nnz_kv, num_kv_heads, head_dim_vo = v.shape
+
+        mask_mode_code = 1 if causal else 0
+        if sm_scale is None:
+            sm_scale = 1.0 / math.sqrt(head_dim_qk)
+
+        qo_total_len = nnz_qo
+        if max_qo_len is None:
+            max_qo_len = torch.max(
+                qo_segment_offsets[1:] - qo_segment_offsets[:-1]
+            ).item()
+
+        if plan_info is None:
+            plan_info = fmha_varlen_plan(
+                module, qo_segment_offsets, kv_segment_offsets, num_qo_heads, causal
+            )
+
+        (
+            work_indptr,
+            qo_tile_indices,
+            head_indices,
+            batch_indices,
+        ) = plan_info
+
+        if out is None:
+            out = torch.empty(
+                qo_total_len + max(max_qo_len, 128),
+                num_qo_heads,
+                head_dim_vo,
+                device=q.device,
+                dtype=q.dtype,
+            )[max(max_qo_len, 128) :]
+
+        if lse is None and return_lse:
+            lse = torch.empty(
+                qo_total_len, num_qo_heads, device=q.device, dtype=torch.float32
+            )
+
+        module.run(
+            workspace_buffer,
+            q,
+            k,
+            v,
+            qo_segment_offsets,
+            kv_segment_offsets,
+            work_indptr,
+            qo_tile_indices,
+            head_indices,
+            batch_indices,
+            out,
+            lse,
+            mask_mode_code,
+            sm_scale,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim_qk,
             head_dim_vo,
-            device=q.device,
-            dtype=q.dtype,
-        )[max(max_qo_len, 128) :]
-
-    if lse is None and return_lse:
-        lse = torch.empty(
-            qo_total_len, num_qo_heads, device=q.device, dtype=torch.float32
+            max_qo_len,
         )
 
-    module.run(
-        workspace_buffer,
-        q,
-        k,
-        v,
-        qo_segment_offsets,
-        kv_segment_offsets,
-        work_indptr,
-        qo_tile_indices,
-        head_indices,
-        batch_indices,
-        out,
-        lse,
-        mask_mode_code,
-        sm_scale,
-        num_qo_heads,
-        num_kv_heads,
-        head_dim_qk,
-        head_dim_vo,
-        max_qo_len,
-    )
-
-    return out, lse
-
-
-@functools.cache
-def get_trtllm_gen_fmha_module():
-    mod = trtllm_gen_fmha_module()
-    op = mod.build_and_load()
-    setup_cubin_loader(mod.get_library_path())
-    return op
-
-
-def trtllm_ragged_attention_deepseek(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    workspace_buffer: torch.Tensor,
-    seq_lens: torch.Tensor,
-    max_q_len: int,
-    max_kv_len: int,
-    bmm1_scale: float,
-    bmm2_scale: float,
-    o_sf_scale: float,
-    batch_size: int,
-    window_left: int,
-    cum_seq_lens_q: torch.Tensor,
-    cum_seq_lens_kv: torch.Tensor,
-    enable_pdl: bool,
-    is_causal: bool,
-    return_lse: bool,
-    attention_sinks: Optional[torch.Tensor] = None,
-    out: Optional[torch.Tensor] = None,
-    lse: Optional[torch.Tensor] = None,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    """
-    Parameters
-    ----------
-    query : torch.Tensor
-        query tensor with shape [num_tokens, num_heads, head_dim]
-    key : torch.Tensor
-        key tensor with shape [num_tokens, num_heads, head_dim]
-    value : torch.Tensor
-        value tensor with shape [num_tokens, num_heads, head_dim]
-    workspace_buffer : torch.Tensor
-        workspace buffer
-    seq_lens : torch.Tensor
-        sequence lengths
-    max_q_len : int
-        max query length
-    max_kv_len : int
-        max key/value length
-    bmm1_scale : float
-        scale for bmm1, scale_q * scale_k * 1.0 / (head_dim_qk ** 0.5)
-    bmm2_scale : float
-        scale for bmm2, scale_v
-    o_sf_scale : float
-        scale for output
-    batch_size : int
-        batch size
-    window_left : int
-        window left
-    cum_seq_lens_q : torch.Tensor
-        cumulative sequence lengths for query
-    cum_seq_lens_kv : torch.Tensor
-        cumulative sequence lengths for key/value
-    enable_pdl : bool
-        enable pdl
-    is_causal : bool
-        is causal
-    attention_sinks : Optional[torch.Tensor]
-        attention sinks
-    out : Optional[torch.Tensor]
-        output tensor, if not provided, will be allocated with shape [query.shape[0], query.shape[1], value.shape[2]]
-    lse : Optional[torch.Tensor]
-        lse tensor, if not provided, will be allocated with shape [query.shape[0], query.shape[1]]
-
-    Returns
-    -------
-    out: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
-        output torch.Tensor or Tuple[torch.Tensor, torch.Tensor].
-        If return_lse is True, the output will be a tuple of two tensors, the first is the output tensor, the second is the lse tensor.
-        If return_lse is False, the output will be a single tensor.
-    """
-    assert query.shape[2] == 192 and key.shape[2] == 192 and value.shape[2] == 128, (
-        "currently only support deepseek r1 192 query and 128 value"
-    )
-
-    if enable_pdl is None:
-        enable_pdl = device_support_pdl(query.device)
-
-    run_func = get_trtllm_gen_fmha_module().trtllm_ragged_attention
-    sm_count = get_device_sm_count(query.device)
-    if out is None:
-        out = torch.empty(
-            query.shape[0],
-            query.shape[1],
-            value.shape[2],
-            device=query.device,
-            dtype=query.dtype,
-        )
-    if return_lse and lse is None:
-        lse = torch.empty(
-            query.shape[0],
-            query.shape[1],
-            device=query.device,
-            dtype=torch.float32,
-        )
-
-    workspace_size = workspace_buffer.numel() * workspace_buffer.element_size()
-    run_func(
-        out,
-        query,
-        key,
-        value,
-        workspace_buffer,
-        seq_lens,
-        max_q_len,
-        max_kv_len,
-        bmm1_scale,
-        bmm2_scale,
-        o_sf_scale,
-        batch_size,
-        window_left,
-        cum_seq_lens_q,
-        cum_seq_lens_kv,
-        sm_count,
-        enable_pdl,
-        is_causal,
-        workspace_size,
-        attention_sinks,
-        lse,
-    )
-    if return_lse:
         return out, lse
-    else:
-        return out
 
+    @functools.cache
+    def get_trtllm_gen_fmha_module():
+        mod = trtllm_gen_fmha_module()
+        op = mod.build_and_load()
+        setup_cubin_loader(mod.get_library_path())
+        return op
 
-def trtllm_batch_context_with_kv_cache(
-    query: torch.Tensor,
-    kv_cache: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
-    workspace_buffer: torch.Tensor,
-    block_tables: torch.Tensor,
-    seq_lens: torch.Tensor,
-    max_q_len: int,
-    max_kv_len: int,
-    bmm1_scale: float,
-    bmm2_scale: float,
-    batch_size: int,
-    cum_seq_lens_q: torch.Tensor,
-    cum_seq_lens_kv: torch.Tensor,
-    window_left: int = -1,
-    out: Optional[Union[torch.Tensor, FP4Tensor]] = None,
-    out_dtype: Optional[Union[torch.dtype, str]] = None,
-    o_sf_scale: Optional[float] = None,
-    o_sf_vec_size: Optional[int] = None,
-    enable_pdl: Optional[bool] = None,
-    sinks: Optional[List[torch.Tensor]] = None,
-) -> Union[torch.Tensor, FP4Tensor]:
-    """
-    Parameters
-    ----------
-    query : torch.Tensor
-        query tensor with shape [num_tokens, num_heads, head_dim]
-    kv_cache : Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
-        If kv_cache is a single tensor, it should be a tensor with shape [num_pages, 1 or 2, num_kv_heads, page_size, head_dim]
-        If kv_cache is a tuple of two tensors, it should be a tuple of two tensors with shape [num_pages, num_kv_heads, page_size, head_dim]
-    workspace_buffer : torch.Tensor. Must be initialized to 0 for its first use.
-        workspace
-    block_tables : torch.Tensor
-        page_table of kv cache, [batch_size, num_pages]
-    seq_lens : torch.Tensor
-        A uint32 1D tensor indicating the kv sequence length of each prompt. shape: ``[batch_size]``
-    max_q_len : int
-        max sequence length for query
-    max_kv_len : int
-        max sequence length for kv_cache
-    bmm1_scale : float
-        fused scale for bmm1 input.
-    bmm2_scale : float
-        fused scale for bmm2 input.
-    batch_size : int
-        batch size
-    cum_seq_lens_q : torch.Tensor
-        cumulative sequence length for query. shape: ``[batch_size + 1]``
-    cum_seq_lens_kv : torch.Tensor
-        cumulative sequence length for kv_cache. shape: ``[batch_size + 1]``
-    window_left : int = -1
-        The left (inclusive) window size for the attention window, when set to ``-1``, the window
-        size will be set to the full length of the sequence. Defaults to ``-1``.
-    out : Optional[Union[torch.Tensor, FP4Tensor]] = None
-        output tensor, if not provided, will be allocated with ``out_dtype``, if ``out_dtype`` is not provided, will use the type of ``query``.
-    out_dtype : Optional[Union[torch.dtype, str]] = None
-        output dtype, if not provided, will use the type of ``out``. For nvfp4, use string ``nvfp4``.
-    o_sf_scale : Optional[float] = None
-        scale for nvfp4 output tensor scale factor.
-    o_sf_vec_size : Optional[int] = None
-        vector size for nvfp4 output tensor scale factor.
-    sinks : Optional[List[torch.Tensor]] = None
-        additional value per head in the denominator of the softmax.
+    def trtllm_ragged_attention_deepseek(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        workspace_buffer: torch.Tensor,
+        seq_lens: torch.Tensor,
+        max_q_len: int,
+        max_kv_len: int,
+        bmm1_scale: float,
+        bmm2_scale: float,
+        o_sf_scale: float,
+        batch_size: int,
+        window_left: int,
+        cum_seq_lens_q: torch.Tensor,
+        cum_seq_lens_kv: torch.Tensor,
+        enable_pdl: bool,
+        is_causal: bool,
+        return_lse: bool,
+        attention_sinks: Optional[torch.Tensor] = None,
+        out: Optional[torch.Tensor] = None,
+        lse: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Parameters
+        ----------
+        query : torch.Tensor
+            query tensor with shape [num_tokens, num_heads, head_dim]
+        key : torch.Tensor
+            key tensor with shape [num_tokens, num_heads, head_dim]
+        value : torch.Tensor
+            value tensor with shape [num_tokens, num_heads, head_dim]
+        workspace_buffer : torch.Tensor
+            workspace buffer
+        seq_lens : torch.Tensor
+            sequence lengths
+        max_q_len : int
+            max query length
+        max_kv_len : int
+            max key/value length
+        bmm1_scale : float
+            scale for bmm1, scale_q * scale_k * 1.0 / (head_dim_qk ** 0.5)
+        bmm2_scale : float
+            scale for bmm2, scale_v
+        o_sf_scale : float
+            scale for output
+        batch_size : int
+            batch size
+        window_left : int
+            window left
+        cum_seq_lens_q : torch.Tensor
+            cumulative sequence lengths for query
+        cum_seq_lens_kv : torch.Tensor
+            cumulative sequence lengths for key/value
+        enable_pdl : bool
+            enable pdl
+        is_causal : bool
+            is causal
+        attention_sinks : Optional[torch.Tensor]
+            attention sinks
+        out : Optional[torch.Tensor]
+            output tensor, if not provided, will be allocated with shape [query.shape[0], query.shape[1], value.shape[2]]
+        lse : Optional[torch.Tensor]
+            lse tensor, if not provided, will be allocated with shape [query.shape[0], query.shape[1]]
 
-    Returns
-    -------
-    out: Union[torch.Tensor, FP4Tensor]
-        output torch.Tensor or FP4Tensor.
-    """
+        Returns
+        -------
+        out: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
+            output torch.Tensor or Tuple[torch.Tensor, torch.Tensor].
+            If return_lse is True, the output will be a tuple of two tensors, the first is the output tensor, the second is the lse tensor.
+            If return_lse is False, the output will be a single tensor.
+        """
+        assert (
+            query.shape[2] == 192 and key.shape[2] == 192 and value.shape[2] == 128
+        ), "currently only support deepseek r1 192 query and 128 value"
 
-    if enable_pdl is None:
-        enable_pdl = device_support_pdl(query.device)
+        if enable_pdl is None:
+            enable_pdl = device_support_pdl(query.device)
 
-    if isinstance(kv_cache, tuple):
-        k_cache, v_cache = kv_cache
-    else:
-        if kv_cache.shape[1] == 1:
-            k_cache, v_cache = kv_cache, kv_cache
-        else:
-            assert kv_cache.shape[1] == 2, (
-                "When kv_cache is a single tensor, the second dimension must be 1 or 2"
+        run_func = get_trtllm_gen_fmha_module().trtllm_ragged_attention
+        sm_count = get_device_sm_count(query.device)
+        if out is None:
+            out = torch.empty(
+                query.shape[0],
+                query.shape[1],
+                value.shape[2],
+                device=query.device,
+                dtype=query.dtype,
             )
-            # NOTE(Zihao): unbind transforms [num_pages, 2, ...] to ([num_pages, ...], [num_pages, ...])
-            # it doesn't change underlying storage
-            k_cache, v_cache = kv_cache.unbind(dim=1)
+        if return_lse and lse is None:
+            lse = torch.empty(
+                query.shape[0],
+                query.shape[1],
+                device=query.device,
+                dtype=torch.float32,
+            )
 
-    run_func = get_trtllm_gen_fmha_module().trtllm_paged_attention_context
-    sm_count = get_device_sm_count(query.device)
-
-    if out_dtype == "nvfp4" or (out_dtype is None and isinstance(out, FP4Tensor)):
-        assert query.dtype == torch.float8_e4m3fn, (
-            "query must be fp8 when out_dtype is nvfp4."
+        workspace_size = workspace_buffer.numel() * workspace_buffer.element_size()
+        run_func(
+            out,
+            query,
+            key,
+            value,
+            workspace_buffer,
+            seq_lens,
+            max_q_len,
+            max_kv_len,
+            bmm1_scale,
+            bmm2_scale,
+            o_sf_scale,
+            batch_size,
+            window_left,
+            cum_seq_lens_q,
+            cum_seq_lens_kv,
+            sm_count,
+            enable_pdl,
+            is_causal,
+            workspace_size,
+            attention_sinks,
+            lse,
         )
-        assert o_sf_scale is not None
-        assert o_sf_vec_size in [None, 16], "only o_sf_vec_size = 16 is supported"
-        o_sf_vec_size = o_sf_vec_size or 16
+        if return_lse:
+            return out, lse
+        else:
+            return out
 
-        fp4_out_shape = query.shape[:-1] + (ceil_div(query.shape[-1], 2),)
+    def trtllm_batch_context_with_kv_cache(
+        query: torch.Tensor,
+        kv_cache: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
+        workspace_buffer: torch.Tensor,
+        block_tables: torch.Tensor,
+        seq_lens: torch.Tensor,
+        max_q_len: int,
+        max_kv_len: int,
+        bmm1_scale: float,
+        bmm2_scale: float,
+        batch_size: int,
+        cum_seq_lens_q: torch.Tensor,
+        cum_seq_lens_kv: torch.Tensor,
+        window_left: int = -1,
+        out: Optional[Union[torch.Tensor, FP4Tensor]] = None,
+        out_dtype: Optional[Union[torch.dtype, str]] = None,
+        o_sf_scale: Optional[float] = None,
+        o_sf_vec_size: Optional[int] = None,
+        enable_pdl: Optional[bool] = None,
+        sinks: Optional[List[torch.Tensor]] = None,
+    ) -> Union[torch.Tensor, FP4Tensor]:
+        """
+        Parameters
+        ----------
+        query : torch.Tensor
+            query tensor with shape [num_tokens, num_heads, head_dim]
+        kv_cache : Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
+            If kv_cache is a single tensor, it should be a tensor with shape [num_pages, 1 or 2, num_kv_heads, page_size, head_dim]
+            If kv_cache is a tuple of two tensors, it should be a tuple of two tensors with shape [num_pages, num_kv_heads, page_size, head_dim]
+        workspace_buffer : torch.Tensor. Must be initialized to 0 for its first use.
+            workspace
+        block_tables : torch.Tensor
+            page_table of kv cache, [batch_size, num_pages]
+        seq_lens : torch.Tensor
+            A uint32 1D tensor indicating the kv sequence length of each prompt. shape: ``[batch_size]``
+        max_q_len : int
+            max sequence length for query
+        max_kv_len : int
+            max sequence length for kv_cache
+        bmm1_scale : float
+            fused scale for bmm1 input.
+        bmm2_scale : float
+            fused scale for bmm2 input.
+        batch_size : int
+            batch size
+        cum_seq_lens_q : torch.Tensor
+            cumulative sequence length for query. shape: ``[batch_size + 1]``
+        cum_seq_lens_kv : torch.Tensor
+            cumulative sequence length for kv_cache. shape: ``[batch_size + 1]``
+        window_left : int = -1
+            The left (inclusive) window size for the attention window, when set to ``-1``, the window
+            size will be set to the full length of the sequence. Defaults to ``-1``.
+        out : Optional[Union[torch.Tensor, FP4Tensor]] = None
+            output tensor, if not provided, will be allocated with ``out_dtype``, if ``out_dtype`` is not provided, will use the type of ``query``.
+        out_dtype : Optional[Union[torch.dtype, str]] = None
+            output dtype, if not provided, will use the type of ``out``. For nvfp4, use string ``nvfp4``.
+        o_sf_scale : Optional[float] = None
+            scale for nvfp4 output tensor scale factor.
+        o_sf_vec_size : Optional[int] = None
+            vector size for nvfp4 output tensor scale factor.
+        sinks : Optional[List[torch.Tensor]] = None
+            additional value per head in the denominator of the softmax.
 
-        if isinstance(out, FP4Tensor):
-            fp4_out_scale_shape = (
-                out.scale.shape[0],
-                round_up(query.shape[1] * query.shape[2] // o_sf_vec_size, 4),
+        Returns
+        -------
+        out: Union[torch.Tensor, FP4Tensor]
+            output torch.Tensor or FP4Tensor.
+        """
+
+        if enable_pdl is None:
+            enable_pdl = device_support_pdl(query.device)
+
+        if isinstance(kv_cache, tuple):
+            k_cache, v_cache = kv_cache
+        else:
+            if kv_cache.shape[1] == 1:
+                k_cache, v_cache = kv_cache, kv_cache
+            else:
+                assert kv_cache.shape[1] == 2, (
+                    "When kv_cache is a single tensor, the second dimension must be 1 or 2"
+                )
+                # NOTE(Zihao): unbind transforms [num_pages, 2, ...] to ([num_pages, ...], [num_pages, ...])
+                # it doesn't change underlying storage
+                k_cache, v_cache = kv_cache.unbind(dim=1)
+
+        run_func = get_trtllm_gen_fmha_module().trtllm_paged_attention_context
+        sm_count = get_device_sm_count(query.device)
+
+        if out_dtype == "nvfp4" or (out_dtype is None and isinstance(out, FP4Tensor)):
+            assert query.dtype == torch.float8_e4m3fn, (
+                "query must be fp8 when out_dtype is nvfp4."
             )
-            out_scale_factor = out.scale
-            o_sf_start_index = out.scale_start_index
-            out = out.data
-            # out_dtype may be None
-            out_dtype = out_dtype or "nvfp4"
-        elif out is None:
-            fp4_out_scale_shape = (
-                round_up(query.shape[0], 128),
-                round_up(query.shape[1] * query.shape[2] // o_sf_vec_size, 4),
+            assert o_sf_scale is not None
+            assert o_sf_vec_size in [None, 16], "only o_sf_vec_size = 16 is supported"
+            o_sf_vec_size = o_sf_vec_size or 16
+
+            fp4_out_shape = query.shape[:-1] + (ceil_div(query.shape[-1], 2),)
+
+            if isinstance(out, FP4Tensor):
+                fp4_out_scale_shape = (
+                    out.scale.shape[0],
+                    round_up(query.shape[1] * query.shape[2] // o_sf_vec_size, 4),
+                )
+                out_scale_factor = out.scale
+                o_sf_start_index = out.scale_start_index
+                out = out.data
+                # out_dtype may be None
+                out_dtype = out_dtype or "nvfp4"
+            elif out is None:
+                fp4_out_scale_shape = (
+                    round_up(query.shape[0], 128),
+                    round_up(query.shape[1] * query.shape[2] // o_sf_vec_size, 4),
+                )
+                out_scale_factor = torch.empty(
+                    fp4_out_scale_shape, dtype=torch.float8_e4m3fn, device=query.device
+                )
+                o_sf_start_index = 0
+                out = torch.empty(fp4_out_shape, dtype=torch.uint8, device=query.device)
+            else:
+                raise ValueError(f"Invalid out: {out}")
+
+            assert out_dtype == "nvfp4"
+            assert isinstance(out, torch.Tensor)
+
+            # Use uint8 as the container dtype to compliant with next fp4 gemm.
+            check_shape_dtype_device(
+                out, fp4_out_shape, torch.uint8, query.device, "out"
             )
-            out_scale_factor = torch.empty(
-                fp4_out_scale_shape, dtype=torch.float8_e4m3fn, device=query.device
+
+            check_shape_dtype_device(
+                out_scale_factor,
+                fp4_out_scale_shape,
+                torch.float8_e4m3fn,
+                query.device,
+                "out_scale_factor",
             )
+
+            # Check o_sf_start_index is valid
+            if (
+                o_sf_start_index < 0
+                or o_sf_start_index + out.shape[0] > out_scale_factor.shape[0]
+            ):
+                raise ValueError(
+                    f"o_sf_start_index is out of the valid range of out_scale_factor. "
+                    f"o_sf_start_index={o_sf_start_index}, out.shape[0]={out.shape[0]}, "
+                    f"out_scale_factor.shape[0]={out_scale_factor.shape[0]}"
+                )
+
+        elif isinstance(out_dtype, torch.dtype) or out_dtype is None:
+            assert o_sf_scale is None
+            assert o_sf_vec_size is None
+            out_scale_factor = None
             o_sf_start_index = 0
-            out = torch.empty(fp4_out_shape, dtype=torch.uint8, device=query.device)
+            if out_dtype is None:
+                out_dtype = out.dtype if out is not None else query.dtype
+            out = out if out is not None else torch.empty_like(query, dtype=out_dtype)
+            if out_dtype not in (query.dtype, torch.float16, torch.bfloat16):
+                raise ValueError(f"Unsupported out_dtype: {out_dtype}")
+            check_shape_dtype_device(out, query.shape, out_dtype, query.device, "out")
         else:
-            raise ValueError(f"Invalid out: {out}")
+            raise ValueError(f"Invalid out_dtype: {out_dtype}")
 
-        assert out_dtype == "nvfp4"
-        assert isinstance(out, torch.Tensor)
-
-        # Use uint8 as the container dtype to compliant with next fp4 gemm.
-        check_shape_dtype_device(out, fp4_out_shape, torch.uint8, query.device, "out")
-
-        check_shape_dtype_device(
+        workspace_size = workspace_buffer.numel() * workspace_buffer.element_size()
+        run_func(
+            out,
             out_scale_factor,
-            fp4_out_scale_shape,
-            torch.float8_e4m3fn,
-            query.device,
-            "out_scale_factor",
+            query,
+            k_cache,
+            v_cache,
+            workspace_buffer,
+            block_tables,
+            seq_lens,
+            max_q_len,
+            max_kv_len,
+            bmm1_scale,
+            bmm2_scale,
+            o_sf_scale or -1.0,
+            o_sf_vec_size or -1,
+            o_sf_start_index,
+            batch_size,
+            window_left,
+            cum_seq_lens_q,
+            cum_seq_lens_kv,
+            sm_count,
+            enable_pdl,
+            workspace_size,
+            sinks,
         )
-
-        # Check o_sf_start_index is valid
-        if (
-            o_sf_start_index < 0
-            or o_sf_start_index + out.shape[0] > out_scale_factor.shape[0]
-        ):
-            raise ValueError(
-                f"o_sf_start_index is out of the valid range of out_scale_factor. "
-                f"o_sf_start_index={o_sf_start_index}, out.shape[0]={out.shape[0]}, "
-                f"out_scale_factor.shape[0]={out_scale_factor.shape[0]}"
-            )
-
-    elif isinstance(out_dtype, torch.dtype) or out_dtype is None:
-        assert o_sf_scale is None
-        assert o_sf_vec_size is None
-        out_scale_factor = None
-        o_sf_start_index = 0
-        if out_dtype is None:
-            out_dtype = out.dtype if out is not None else query.dtype
-        out = out if out is not None else torch.empty_like(query, dtype=out_dtype)
-        if out_dtype not in (query.dtype, torch.float16, torch.bfloat16):
-            raise ValueError(f"Unsupported out_dtype: {out_dtype}")
-        check_shape_dtype_device(out, query.shape, out_dtype, query.device, "out")
-    else:
-        raise ValueError(f"Invalid out_dtype: {out_dtype}")
-
-    workspace_size = workspace_buffer.numel() * workspace_buffer.element_size()
-    run_func(
-        out,
-        out_scale_factor,
-        query,
-        k_cache,
-        v_cache,
-        workspace_buffer,
-        block_tables,
-        seq_lens,
-        max_q_len,
-        max_kv_len,
-        bmm1_scale,
-        bmm2_scale,
-        o_sf_scale or -1.0,
-        o_sf_vec_size or -1,
-        o_sf_start_index,
-        batch_size,
-        window_left,
-        cum_seq_lens_q,
-        cum_seq_lens_kv,
-        sm_count,
-        enable_pdl,
-        workspace_size,
-        sinks,
-    )
-    return (
-        out
-        if out_dtype != "nvfp4"
-        else FP4Tensor(out, out_scale_factor, o_sf_start_index, query.shape)
-    )
+        return (
+            out
+            if out_dtype != "nvfp4"
+            else FP4Tensor(out, out_scale_factor, o_sf_start_index, query.shape)
+        )
