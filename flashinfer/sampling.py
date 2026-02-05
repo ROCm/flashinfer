@@ -33,12 +33,14 @@ def get_sampling_module():
 
             module = _kernels
         else:
-            sources = [
-                FLASHINFER_CSRC_DIR / "sampling.cu",
-                FLASHINFER_CSRC_DIR / "renorm.cu",
-                FLASHINFER_CSRC_DIR / "flashinfer_sampling_ops.cu",
-            ]
-            module = load_cuda_ops("sampling", sources)
+            module = load_cuda_ops(
+                "sampling",
+                [
+                    FLASHINFER_CSRC_DIR / "sampling.cu",
+                    FLASHINFER_CSRC_DIR / "renorm.cu",
+                    FLASHINFER_CSRC_DIR / "flashinfer_sampling_ops.cu",
+                ],
+            )
 
         # torch library for sampling_from_probs
 
