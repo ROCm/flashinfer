@@ -112,15 +112,6 @@ skip = [
     ".venv"
 ]
 
-[tool.isort]
-ensure_newline_before_comments = true
-force_grid_wrap = 0
-include_trailing_comma = true
-line_length = 80
-multi_line_output = 3
-skip = ["flashinfer/_version.py", "flashinfer/cascade.py"]
-use_parentheses = true
-
 
 [tool.mypy]
 ignore_missing_imports = false
@@ -171,8 +162,11 @@ ignore = [
     "B020",
     # Return te negated condition directly
     "SIM103",
+    # Function definition does not bind loop variable
+    "B023",
 ]
-
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
 
 [tool.pytest.ini_options]
 # Ignore deprecation warnings
