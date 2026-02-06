@@ -25,6 +25,58 @@
 
 using namespace flashinfer;
 
+void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
+             std::optional<at::Tensor> maybe_temperature_arr, double temperature_val,
+             bool enable_pdl) {
+  CHECK_INPUT(workspace_buffer);
+  CHECK_INPUT(logits);
+  CHECK_INPUT(output);
+  auto device = logits.device();
+  CHECK_DIM(2, logits);  // logits: (batch_size, vocab_size)
+  unsigned int batch_size = logits.size(0);
+  unsigned int vocab_size = logits.size(1);
+
+  bool has_temperature_arr = maybe_temperature_arr.has_value();
+
+  const c10::cuda::OptionalCUDAGuard device_guard(device);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  cudaError_t status = sampling::OnlineSoftmax<float>(
+      static_cast<float*>(logits.data_ptr()), static_cast<float*>(output.data_ptr()), batch_size,
+      vocab_size,
+      has_temperature_arr ? static_cast<float*>(maybe_temperature_arr->data_ptr()) : nullptr,
+      temperature_val, workspace_buffer.data_ptr(),
+      workspace_buffer.element_size() * workspace_buffer.size(0), enable_pdl, stream);
+  TORCH_CHECK(status == cudaSuccess,
+              "OnlineSoftmax failed with error code " + std::string(cudaGetErrorString(status)));
+}
+
+void sampling_from_logits(at::Tensor logits, at::Tensor output,
+                          std::optional<at::Tensor> maybe_indices, bool deterministic,
+                          std::optional<at::Generator> gen_) {
+  CHECK_INPUT(logits);
+  auto device = logits.device();
+  CHECK_DIM(2, logits);  // logits: (batch_size, vocab_size)
+  unsigned int batch_size = output.size(0);
+  unsigned int vocab_size = logits.size(1);
+
+  uint64_t philox_seed, philox_offset;
+  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
+      gen_, at::cuda::detail::getDefaultCUDAGenerator());
+  std::lock_guard<std::mutex> lock(gen->mutex_);
+  at::PhiloxCudaState rng_engine_inputs = gen->philox_cuda_state(batch_size * vocab_size);
+  philox_seed = rng_engine_inputs.seed_.val;
+  philox_offset = rng_engine_inputs.offset_.val;
+
+  const c10::cuda::OptionalCUDAGuard device_guard(device);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  cudaError_t status = sampling::SamplingFromLogits(
+      static_cast<float*>(logits.data_ptr()), static_cast<int*>(output.data_ptr()),
+      maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
+      batch_size, vocab_size, deterministic, philox_seed, philox_offset, stream);
+  TORCH_CHECK(status == cudaSuccess, "SamplingFromLogits failed with error code " +
+                                         std::string(cudaGetErrorString(status)));
+}
+
 void sampling_from_probs(at::Tensor probs, at::Tensor output,
                          std::optional<at::Tensor> maybe_indices, bool deterministic,
                          std::optional<at::Generator> gen_) {

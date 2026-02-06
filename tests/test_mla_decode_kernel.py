@@ -34,7 +34,6 @@ class DeepseekV2RMSNorm(nn.Module):
 
 
 class DeepseekV2AttentionVanilla(nn.Module):
-
     def __init__(self):
         super().__init__()
 
@@ -99,7 +98,6 @@ class DeepseekV2AttentionVanilla(nn.Module):
         compressed_kv_normed_cache: torch.Tensor,
         k_pe_cache: torch.Tensor,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-
         bsz, q_len, _ = hidden_states.size()
         if q_len != 1:
             raise ValueError(
@@ -178,7 +176,6 @@ class DeepseekV2AttentionVanilla(nn.Module):
 
 
 class DeepseekV2AttentionMatAbsorbDecode(nn.Module):
-
     def __init__(self, mla_vanilla: DeepseekV2AttentionVanilla):
         super().__init__()
 
@@ -251,13 +248,13 @@ class DeepseekV2AttentionMatAbsorbDecode(nn.Module):
         use_flashinfer_kernel: bool,
         convert_float16: bool,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-
         c_Q = torch.matmul(hidden_states, self.W_DQ)
         # c_Q ~ [bsz, q_lora_rank:1536]
         c_Q = self.q_a_layernorm(c_Q)
 
         q_pe = torch.matmul(
-            c_Q, self.W_QR  # c_Q ~ [bsz, q_lora_rank~1536]
+            c_Q,
+            self.W_QR,  # c_Q ~ [bsz, q_lora_rank~1536]
         )  # W_QR ~ [1536, 128*64]
         # q_pe ~ [bsz, 128, 64]
         q_pe = q_pe.reshape(bsz, self.num_heads, self.qk_rope_head_dim)
@@ -342,7 +339,7 @@ class DeepseekV2AttentionMatAbsorbDecode(nn.Module):
                 total_num_pages, page_size, self.qk_rope_head_dim
             )
 
-            workspace_buffer = torch.empty(32 * 1024 * 1024, dtype=torch.int8).to(
+            workspace_buffer = torch.empty(64 * 1024 * 1024, dtype=torch.int8).to(
                 dev_id
             )
             wrapper = flashinfer.BatchDecodeMlaWithPagedKVCacheWrapper(
@@ -366,6 +363,17 @@ class DeepseekV2AttentionMatAbsorbDecode(nn.Module):
                 q_data_type=q_kv_dtype,
             )
 
+            attn_output = wrapper.run(q_nope, q_pe, paged_ckv_cache, paged_kpe_cache)
+
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(s):
+                for _ in range(3):
+                    o, lse = wrapper.run(
+                        q_nope, q_pe, paged_ckv_cache, paged_kpe_cache, return_lse=True
+                    )
+            torch.cuda.current_stream().wait_stream(s)
+
             g = torch.cuda.CUDAGraph()
             with torch.cuda.graph(g):
                 attn_output = wrapper.run(
@@ -385,7 +393,6 @@ class DeepseekV2AttentionMatAbsorbDecode(nn.Module):
 
 
 if __name__ == "__main__":
-
     dev_id = 0
 
     torch.manual_seed(666)

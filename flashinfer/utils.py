@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import functools
 import math
 import os
 from enum import Enum
@@ -23,6 +24,8 @@ import torch
 import torch.version
 from torch.torch_version import TorchVersion
 from torch.torch_version import __version__ as torch_version
+
+from .jit import gen_jit_spec, env as jit_env
 
 IS_BUILDING_DOCS = os.environ.get("FLASHINFER_BUILDING_DOCS") == "1"
 
@@ -37,6 +40,7 @@ class MaskMode(Enum):
     NON_CAUSAL = 0
     CAUSAL = 1
     CUSTOM = 2
+    MULTIITEMSCORING = 3
 
 
 class TensorLayout(Enum):
@@ -81,6 +85,35 @@ def _expand_4d(x: torch.Tensor, kv_layout: str) -> torch.Tensor:
         else:
             raise KeyError("Invalid kv_layout {}".format(kv_layout))
     return x
+
+
+def next_positive_power_of_2(x: int) -> int:
+    if x < 1:
+        return 1
+
+    # Following code is equivalent to 1 << (x - 1).bit_length()
+    # But this impl does not contain bit_length() so can be used by torch compile.
+    # It can correctly handle 64bit number which should be enough for now.
+    n = x - 1
+    n |= n >> 1
+    n |= n >> 2
+    n |= n >> 4
+    n |= n >> 8
+    n |= n >> 16
+    n |= n >> 32
+    return n + 1
+
+
+def calculate_tile_tokens_dim(num_tokens: int, num_experts: int, top_k: int) -> int:
+    # Guess tokens per expert assuming perfect expert distribution first.
+    num_tokens_per_expert = num_tokens * top_k // num_experts
+
+    # And pad the number to the next power of 2.
+    tile_tokens_dim = next_positive_power_of_2(num_tokens_per_expert)
+    # Cap to 8-64 tokens per CTA tile as it's the range supported by the kernel.
+    tile_tokens_dim = min(max(tile_tokens_dim, 8), 64)
+
+    return tile_tokens_dim
 
 
 def _check_pos_encoding_mode(pos_encoding_mode: str) -> None:
@@ -187,6 +220,7 @@ def canonicalize_torch_dtype(dtype: Union[torch.dtype, str]) -> torch.dtype:
         )
 
 
+@functools.cache
 def get_compute_capability(device: torch.device) -> Tuple[int, int]:
     if device.type != "cuda":
         raise ValueError("device must be a cuda device")
@@ -300,8 +334,43 @@ def is_fa3_backend_supported(
         return False
     if use_fp16_qk_reductions:
         return False
-    # NOTE: currently fp8 is not supported in our FA3 backend
-    # will add support soon
+    return True
+
+
+def is_cutlass_backend_supported(
+    pos_encoding_mode: int,
+    use_fp16_qk_reductions: bool,
+    use_custom_mask: bool,
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+) -> bool:
+    """
+    Check if the cutlass backend is supported based on the given parameters.
+
+    Parameters
+    ----------
+    pos_encoding_mode : int
+        The positional encoding mode.
+    use_fp16_qk_reductions : bool
+        Whether FP16 QK reductions are allowed.
+    use_custom_mask : bool
+        Whether a custom mask is used.
+    dtype_q : torch.dtype
+        The data type of the query tensor.
+    dtype_kv : torch.dtype
+        The data type of the key-value tensor.
+
+    Returns
+    -------
+    bool
+        True if the cutlass backend is supported, False otherwise.
+    """
+    if use_custom_mask:
+        return False
+    if pos_encoding_mode != PosEncodingMode.NONE.value:
+        return False
+    if use_fp16_qk_reductions:
+        return False
     if dtype_q in [torch.float8_e4m3fn, torch.float8_e5m2]:
         return False
     if dtype_kv in [torch.float8_e4m3fn, torch.float8_e5m2]:
@@ -354,35 +423,308 @@ def determine_attention_backend(
         return "fa2"
 
 
-def is_sm90a_supported(device: torch.device) -> bool:
+def version_at_least(version: str, base_version: str) -> bool:
+    from packaging import version as pkg_version
 
+    return pkg_version.parse(version) >= pkg_version.parse(base_version)
+
+
+def has_cuda_cudart() -> bool:
+    """
+    Check if cuda.cudart module is available (cuda-python <= 12.9).
+
+    Returns:
+        True if cuda.cudart exists, False otherwise
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("cuda.cudart") is not None
+
+
+def is_sm90a_supported(device: torch.device) -> bool:
     if torch.version.hip is not None:
         return False
 
     major, _ = get_compute_capability(device)
-    return major == 9 and torch.version.cuda >= "12.3"
+    return major == 9 and version_at_least(torch.version.cuda, "12.3")
+
+
+def is_sm100a_supported(device: torch.device) -> bool:
+    major, _ = get_compute_capability(device)
+    return major == 10 and version_at_least(torch.version.cuda, "12.8")
+
+
+def is_sm110a_supported(device: torch.device) -> bool:
+    major, _ = get_compute_capability(device)
+    return major == 11 and version_at_least(torch.version.cuda, "13.0")
+
+
+def is_sm120a_supported(device: torch.device) -> bool:
+    major, minor = get_compute_capability(device)
+    return major == 12 and minor == 0 and version_at_least(torch.version.cuda, "12.8")
+
+
+def is_sm121a_supported(device: torch.device) -> bool:
+    major, minor = get_compute_capability(device)
+    return major == 12 and minor == 1 and version_at_least(torch.version.cuda, "12.9")
 
 
 def determine_mla_backend(device: torch.device) -> str:
     return "fa3" if is_sm90a_supported(device) else "fa2"
 
 
-def _check_shape_dtype_device(
+def check_shape_dtype_device(
     x: torch.Tensor,
-    expected_shape: Sequence[int],
-    expected_dtype: torch.dtype,
-    expected_device: torch.device,
+    expected_shape: Optional[Sequence[int]],
+    expected_dtype: Optional[torch.dtype],
+    expected_device: Optional[torch.device],
     name: str,
 ) -> None:
-    if x.shape != torch.Size(expected_shape):
+    if expected_shape and x.shape != torch.Size(expected_shape):
         raise ValueError(
             f"Invalid shape of {name}: expected {expected_shape}, got {x.shape}"
         )
-    if x.dtype != expected_dtype:
+    if expected_dtype and x.dtype != expected_dtype:
         raise ValueError(
             f"Invalid dtype of {name}: expected {expected_dtype}, got {x.dtype}"
         )
-    if x.device != expected_device:
+    if expected_device and x.device != expected_device:
         raise ValueError(
             f"Invalid device of {name}: expected {expected_device}, got {x.device}"
         )
+
+
+def gen_logging_module():
+    return gen_jit_spec(
+        "logging",
+        [
+            jit_env.FLASHINFER_CSRC_DIR / "logging.cc",
+        ],
+        extra_include_paths=[
+            jit_env.SPDLOG_INCLUDE_DIR,
+            jit_env.FLASHINFER_INCLUDE_DIR,
+        ],
+    )
+
+
+@functools.cache
+def get_logging_module():
+    return gen_logging_module().build_and_load()
+
+
+class LogLevel(Enum):
+    TRACE = 0
+    DEBUG = 1
+    INFO = 2
+    WARN = 3
+    ERROR = 4
+    CRITICAL = 5
+
+
+log_level_map = {
+    "trace": LogLevel.TRACE,
+    "debug": LogLevel.DEBUG,
+    "info": LogLevel.INFO,
+    "warn": LogLevel.WARN,
+    "error": LogLevel.ERROR,
+    "critical": LogLevel.CRITICAL,
+}
+
+
+def set_log_level(lvl_str: str) -> None:
+    get_logging_module().set_log_level(log_level_map[lvl_str].value)
+
+
+def device_support_pdl(device: torch.device) -> bool:
+    if device.type != "cuda":
+        return False
+    major, _ = get_compute_capability(device)
+    return major >= 9
+
+
+def ceil_div(x: int, y: int) -> int:
+    """
+    Perform ceiling division of two integers.
+
+    Args:
+        x: the dividend.
+        y: the divisor.
+
+    Returns:
+        The result of the ceiling division.
+    """
+    return (x + y - 1) // y
+
+
+def round_up(x: int, y: int) -> int:
+    """Round up x to the nearest multiple of y"""
+    return ceil_div(x, y) * y
+
+
+def get_device_sm_count(device: torch.device) -> int:
+    return torch.cuda.get_device_properties(device).multi_processor_count
+
+
+class FP4Tensor:
+    """Wrapper class for FP4 tensors.
+
+    Since PyTorch doesn't natively support FP4, this wrapper contains:
+    - data: uint8 tensor storing the compressed FP4 data, the size of innermost dimension is ceil(original_dim / 2) since each uint8 stores 2 FP4 values
+    - scale: float8_e4m3fn tensor storing the scale factors
+    """
+
+    def __init__(
+        self,
+        data: torch.Tensor,
+        scale: torch.Tensor,
+        scale_start_index: int = 0,
+        original_shape: Optional[Tuple[int, ...]] = None,
+    ):
+        """Initialize FP4Tensor.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            uint8 tensor storing the compressed FP4 data
+        scale : torch.Tensor
+            float8_e4m3fn tensor storing the scale factors
+        scale_start_index : int
+            The start token index of the scale factors. This is needed when two kernels (like prefill and decode kernels) are reusing the same scale factor tensor with different offsets.
+        original_shape : Optional[Tuple[int, ...]]
+            The original shape before compression.
+        """
+        if data.dtype != torch.uint8:
+            raise ValueError(f"data must be uint8 tensor, got {data.dtype}")
+
+        # Validate scale factor tensor and scale start index
+        if scale.dtype != torch.float8_e4m3fn:
+            raise ValueError(f"scale must be float8_e4m3fn tensor, got {scale.dtype}")
+        if scale.shape[0] % 128 != 0:
+            raise ValueError(
+                f"scale.shape[0] must be a multiple of 128, got {scale.shape[0]}"
+            )
+        if scale_start_index < 0 or scale_start_index >= scale.shape[0]:
+            raise ValueError(
+                f"scale start index must be in the range [0, scale.shape[0]). "
+                f"scale_start_index={scale_start_index}, scale.shape[0]={scale.shape[0]}"
+            )
+        if scale_start_index + data.shape[0] > scale.shape[0]:
+            raise ValueError(
+                f"scale start index + data.shape[0] must not exceed scale.shape[0]. "
+                f"scale_start_index={scale_start_index}, data.shape[0]={data.shape[0]}, scale.shape[0]={scale.shape[0]}"
+            )
+
+        # Validate shape relationship if original_shape is provided
+        if original_shape is not None:
+            if data.shape[:-1] != original_shape[:-1]:
+                raise ValueError(
+                    f"data and original_shape must have the same dimensions except the last one. "
+                    f"data.shape={data.shape}, original_shape={original_shape}"
+                )
+
+            # Check the last dimension relationship: data_dim = ceil(original_dim / 2)
+            expected_data_dim = math.ceil(original_shape[-1] / 2)
+            if data.shape[-1] != expected_data_dim:
+                raise ValueError(
+                    f"data last dimension must be ceil(original_shape[-1] / 2). "
+                    f"data.shape[-1]={data.shape[-1]}, original_shape[-1]={original_shape[-1]}, "
+                    f"expected={expected_data_dim}"
+                )
+
+        self.data = data
+        self.scale = scale
+        self.scale_start_index = scale_start_index
+        self.original_shape = original_shape
+        self.dtype = "nvfp4"
+
+
+# yapf: disable
+srcToDstBlk16RowMap = [
+    0,  8,
+    1,  9,
+    2, 10,
+    3, 11,
+    4, 12,
+    5, 13,
+    6, 14,
+    7, 15
+]
+
+srcToDstBlk32RowMap = [
+    0,  8, 16, 24,
+    1,  9, 17, 25,
+    2, 10, 18, 26,
+    3, 11, 19, 27,
+    4, 12, 20, 28,
+    5, 13, 21, 29,
+    6, 14, 22, 30,
+    7, 15, 23, 31
+]
+# yapf: enable
+
+
+def get_shuffle_block_size(epilogue_tile_m: int) -> int:
+    shuffle_block_size = 16
+    if epilogue_tile_m % 128 == 0:
+        shuffle_block_size = 32
+    return shuffle_block_size
+
+
+def get_shuffle_matrix_a_row_indices(
+    input_tensor: torch.Tensor, epilogue_tile_m: int
+) -> torch.Tensor:
+    """
+    Higher-level PyTorch approach to reorder the rows in blocks of size 16 or 32.
+    - We do NOT try to handle custom e2m1 memory usage (i.e. no 'K/2' bytes).
+    - Instead, we purely reorder rows in a standard PyTorch shape [M, K].
+    """
+    assert input_tensor.dim() == 2, (
+        f"input_tensor should be a 2D tensor, not {input_tensor.dim()}"
+    )
+
+    # M, K from the input
+    M, K = input_tensor.shape
+
+    # Choose block size 16 or 32
+    shuffle_block_size = get_shuffle_block_size(epilogue_tile_m)
+    row_map = srcToDstBlk16RowMap if shuffle_block_size == 16 else srcToDstBlk32RowMap
+
+    assert M % shuffle_block_size == 0, (
+        f"input_tensor.shape[0] must be multiples of {shuffle_block_size}"
+    )
+
+    # row_indices[new_row] = old_row
+    # so row_indices is an array of size M telling us from which old_row
+    # the new_row should be taken.
+    row_indices = torch.empty(M, dtype=torch.long)
+
+    for old_row in range(M):
+        block_idx = old_row // shuffle_block_size
+        row_in_block = old_row % shuffle_block_size
+        mapped_row_in_block = row_map[row_in_block]
+
+        new_row = block_idx * shuffle_block_size + mapped_row_in_block
+
+        row_indices[new_row] = old_row
+
+    return row_indices
+
+
+def get_shuffle_matrix_sf_a_row_indices(
+    input_tensor: torch.Tensor, epilogue_tile_m: int, num_elts_per_sf: int = 16
+) -> torch.Tensor:
+    assert input_tensor.dtype == torch.uint8
+    assert num_elts_per_sf == 16
+
+    assert input_tensor.dim() == 2, (
+        f"input_tensor should be a 2D tensor, not {input_tensor.dim()}"
+    )
+
+    # M, K from the input
+    M, K = input_tensor.shape
+    assert M % 128 == 0
+    assert K % 4 == 0
+
+    row_indices = get_shuffle_matrix_a_row_indices(input_tensor, epilogue_tile_m)
+
+    return row_indices

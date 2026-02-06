@@ -23,21 +23,15 @@ from flashinfer.utils import get_compute_capability
 
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
-    if flashinfer.jit.has_prebuilt_ops:
-        yield
-    else:
-        try:
-            flashinfer.jit.parallel_load_modules(
-                [
-                    (flashinfer.activation.get_act_and_mul_module, ["silu"]),
-                    (flashinfer.activation.get_act_and_mul_module, ["gelu"]),
-                    (flashinfer.activation.get_act_and_mul_module, ["gelu_tanh"]),
-                ]
-            )
-        except Exception as e:
-            pytest.exit(str(e))
-        finally:
-            yield
+    flashinfer.jit.build_jit_specs(
+        [
+            flashinfer.activation.gen_act_and_mul_module("silu"),
+            flashinfer.activation.gen_act_and_mul_module("gelu"),
+            flashinfer.activation.gen_act_and_mul_module("gelu_tanh"),
+        ],
+        verbose=False,
+    )
+    yield
 
 
 @pytest.mark.parametrize("dim", [128, 256, 512, 2048, 4096, 11008, 16384])

@@ -14,43 +14,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from functools import cache
-from typing import Any, List, Optional, Tuple
+import functools
+from typing import List, Optional, Tuple, Union
 
 import torch
 
 from .decode import BatchDecodeWithPagedKVCacheWrapper
-from .jit import FLASHINFER_CSRC_DIR, has_prebuilt_ops, load_cuda_ops
+from .jit import JitSpec
+from .jit import env as jit_env
+from .jit import gen_jit_spec
 from .prefill import BatchPrefillWithPagedKVCacheWrapper, single_prefill_with_kv_cache
 from .utils import register_custom_op, register_fake_op
 
-_cascade_module = None
+
+def gen_cascade_module() -> JitSpec:
+    return gen_jit_spec(
+        "cascade",
+        [
+            jit_env.FLASHINFER_CSRC_DIR / "cascade.cu",
+            jit_env.FLASHINFER_CSRC_DIR / "flashinfer_cascade_ops.cu",
+        ],
+    )
 
 
+@functools.cache
 def get_cascade_module():
-    global _cascade_module
-    if _cascade_module is None:
-        if has_prebuilt_ops:
-            _kernels = torch.ops.flashinfer_kernels
-
-            _cascade_module = _kernels
-        else:
-            _cascade_module = load_cuda_ops(
-                "cascade",
-                [
-                    FLASHINFER_CSRC_DIR / "cascade.cu",
-                    FLASHINFER_CSRC_DIR / "flashinfer_cascade_ops.cu",
-                ],
-            )
-    return _cascade_module
-
-
-@cache
-def get_module_attr(attr: str) -> Any:
-    global _cascade_module
-    if _cascade_module is None:
-        get_cascade_module()
-    return getattr(_cascade_module, attr).default
+    return gen_cascade_module().build_and_load()
 
 
 @register_custom_op("flashinfer::merge_state", mutates_args=())
@@ -102,12 +91,11 @@ def merge_state(
     >>> s_merged.shape
     torch.Size([2048, 32])
     """
-    device = v_a.device
     s_a = s_a.to(torch.float32)
     s_b = s_b.to(torch.float32)
     v_merged = torch.empty_like(v_a)
     s_merged = torch.empty_like(s_a)
-    get_module_attr("merge_state")(v_a, s_a, v_b, s_b, v_merged, s_merged)
+    get_cascade_module().merge_state(v_a, s_a, v_b, s_b, v_merged, s_merged)
     return v_merged, s_merged
 
 
@@ -166,7 +154,7 @@ def merge_state_in_place(
     """
     s = s.to(torch.float32)
     s_other = s_other.to(torch.float32)
-    get_module_attr("merge_state_in_place")(v, s, v_other, s_other, mask)
+    get_cascade_module().merge_state_in_place(v, s, v_other, s_other, mask)
 
 
 @register_fake_op("flashinfer::merge_state_in_place")
@@ -223,7 +211,7 @@ def merge_states(v: torch.Tensor, s: torch.Tensor) -> Tuple[torch.Tensor, torch.
     seq_len, _, num_heads, head_dim = v.size()
     v_merged = torch.empty(seq_len, num_heads, head_dim, dtype=v.dtype, device=device)
     s_merged = torch.empty(seq_len, num_heads, dtype=torch.float32, device=device)
-    get_module_attr("merge_states")(v, s, v_merged, s_merged)
+    get_cascade_module().merge_states(v, s, v_merged, s_merged)
     return v_merged, s_merged
 
 
@@ -428,6 +416,7 @@ class MultiLevelCascadeAttentionWrapper:
         rope_scale: Optional[float] = None,
         rope_theta: Optional[float] = None,
         q_data_type: str = "float16",
+        kv_data_type: Optional[Union[str, torch.dtype]] = None,
     ):
         r"""Create auxiliary data structures for multi-level cascade attention for multiple
         forward calls within the same decode step. Please check
@@ -486,6 +475,8 @@ class MultiLevelCascadeAttentionWrapper:
             The theta used in RoPE, if not provided, will be set to ``1e4``.
         q_data_type : Optional[Union[str, torch.dtype]]
             The data type of the query tensor. If None, will be set to torch.float16.
+        kv_data_type : Optional[Union[str, torch.dtype]]
+            The data type of the key/value tensor. If None, will be set to :attr:`q_data_type`.
         """
         for i, (
             wrapper,
@@ -520,6 +511,7 @@ class MultiLevelCascadeAttentionWrapper:
                 rope_scale=rope_scale,
                 rope_theta=rope_theta,
                 q_data_type=q_data_type,
+                kv_data_type=kv_data_type,
             )
 
     begin_forward = plan

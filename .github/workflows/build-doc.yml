@@ -27,6 +27,11 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
     - name: Configuring build Environment
       run: |
         sudo apt-get update
@@ -40,7 +45,7 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: |
         cd docs
-        make html
+        ./build_docs.sh
 
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3

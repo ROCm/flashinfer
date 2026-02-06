@@ -16,10 +16,7 @@ limitations under the License.
 
 import pytest
 import torch
-from jit_utils import (
-    jit_decode_attention_func_args,
-    jit_prefill_attention_func_args,
-)
+from jit_utils import gen_decode_attention_modules, gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.attention.pytorch import gen_pod_module
@@ -27,55 +24,45 @@ from flashinfer.jit.attention.pytorch import gen_pod_module
 
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
-    if flashinfer.jit.has_prebuilt_ops:
-        yield
-    else:
-        try:
-            flashinfer.jit.parallel_load_modules(
-                jit_decode_attention_func_args(
-                    [torch.float16],  # q_dtypes
-                    [torch.float16],  # kv_dtypes
-                    [128],  # head_dims
-                    [0],  # pos_encoding_modes
-                    [False],  # use_sliding_windows
-                    [False],  # use_fp16_qk_reductions
-                )
-                + jit_prefill_attention_func_args(
-                    [torch.float16],  # q_dtypes
-                    [
-                        torch.float16,
-                    ],  # kv_dtypes
-                    [128],  # head_dims
-                    [0],  # pos_encoding_modes
-                    [False],  # use_sliding_windows
-                    [False],  # use_logits_soft_cap
-                    [False],  # use_fp16_qk_reductions
-                )
-                + [
-                    (
-                        gen_pod_module,
-                        [
-                            torch.float16,  # dtype_q
-                            torch.float16,  # dtype_kv
-                            torch.float16,  # dtype_o
-                            128,  # head_dim
-                            0,  # pos_encoding_mode_p
-                            False,  # use_sliding_window_p
-                            False,  # use_logits_soft_cap_p
-                            False,  # use_fp16_qk_reduction
-                            torch.int32,  # dtype_idx
-                            0,  # pos_encoding_mode_d
-                            False,  # use_sliding_window_d
-                            False,  # use_logits_soft_cap_d
-                        ],
-                    )
-                ]
+    flashinfer.jit.build_jit_specs(
+        gen_decode_attention_modules(
+            [torch.float16],  # q_dtypes
+            [torch.float16],  # kv_dtypes
+            [128],  # head_dims
+            [0],  # pos_encoding_modes
+            [False],  # use_sliding_windows
+            [False],  # use_fp16_qk_reductions
+        )
+        + gen_prefill_attention_modules(
+            [torch.float16],  # q_dtypes
+            [
+                torch.float16,
+            ],  # kv_dtypes
+            [128],  # head_dims
+            [0],  # pos_encoding_modes
+            [False],  # use_sliding_windows
+            [False],  # use_logits_soft_cap
+            [False],  # use_fp16_qk_reductions
+        )
+        + [
+            gen_pod_module(
+                torch.float16,  # dtype_q
+                torch.float16,  # dtype_kv
+                torch.float16,  # dtype_o
+                128,  # head_dim
+                0,  # pos_encoding_mode_p
+                False,  # use_sliding_window_p
+                False,  # use_logits_soft_cap_p
+                False,  # use_fp16_qk_reduction
+                torch.int32,  # dtype_idx
+                0,  # pos_encoding_mode_d
+                False,  # use_sliding_window_d
+                False,  # use_logits_soft_cap_d
             )
-        except Exception as e:
-            # abort the test session if warmup fails
-            pytest.exit(str(e))
-        finally:
-            yield
+        ],
+        verbose=False,
+    )
+    yield
 
 
 @pytest.mark.parametrize("kv_len_p", [127, 12288])
@@ -113,9 +100,7 @@ def test_pod_with_paged_kv_cache(
 ):
     if causal and qo_len_p > kv_len_p:
         pytest.skip("Causal prefill with qo_len_p > kv_len_p is not supported")
-    return_lse = False
     # Prefill inputs
-    kv_layout_p = "NHD"
     q_p = torch.randn(
         qo_len_p, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
     )
