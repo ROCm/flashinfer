@@ -11,48 +11,109 @@ from torch.torch_version import __version__ as torch_version
 
 import flashinfer
 
+# Build TORCH_COMPILE_FNS list conditionally based on available modules
 TORCH_COMPILE_FNS = [
     flashinfer.activation.silu_and_mul,
     flashinfer.activation.gelu_and_mul,
     flashinfer.activation.gelu_tanh_and_mul,
-    flashinfer.cascade.merge_state,
-    flashinfer.cascade.merge_state_in_place,
-    flashinfer.cascade.merge_states,
-    flashinfer.cascade.MultiLevelCascadeAttentionWrapper.run,
-    flashinfer.cascade.BatchDecodeWithSharedPrefixPagedKVCacheWrapper.forward,
-    flashinfer.cascade.BatchPrefillWithSharedPrefixPagedKVCacheWrapper.forward,
-    flashinfer.decode.single_decode_with_kv_cache,
-    flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper.run,
-    flashinfer.gemm.bmm_fp8,
-    flashinfer.gemm.SegmentGEMMWrapper.run,
-    flashinfer.norm.rmsnorm,
-    flashinfer.norm.fused_add_rmsnorm,
-    flashinfer.norm.gemma_rmsnorm,
-    flashinfer.norm.gemma_fused_add_rmsnorm,
-    flashinfer.page.append_paged_kv_cache,
-    flashinfer.prefill.single_prefill_with_kv_cache,
-    flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper.run,
-    flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper.run,
-    flashinfer.quantization.packbits,
-    flashinfer.rope.apply_rope,
-    flashinfer.rope.apply_rope_inplace,
-    flashinfer.rope.apply_rope_pos_ids,
-    flashinfer.rope.apply_rope_pos_ids_inplace,
-    flashinfer.rope.apply_llama31_rope,
-    flashinfer.rope.apply_llama31_rope_inplace,
-    flashinfer.rope.apply_llama31_rope_pos_ids,
-    flashinfer.rope.apply_llama31_rope_pos_ids_inplace,
-    flashinfer.sampling.sampling_from_probs,
-    flashinfer.sampling.sampling_from_logits,
-    flashinfer.sampling.top_p_sampling_from_probs,
-    flashinfer.sampling.top_k_sampling_from_probs,
-    flashinfer.sampling.min_p_sampling_from_probs,
-    flashinfer.sampling.top_k_top_p_sampling_from_probs,
-    flashinfer.sampling.top_p_renorm_probs,
-    flashinfer.sampling.top_k_renorm_probs,
-    flashinfer.sampling.top_k_mask_logits,
-    flashinfer.sampling.chain_speculative_sampling,
 ]
+
+# Add cascade functions if available (CUDA only)
+if hasattr(flashinfer, "cascade"):
+    TORCH_COMPILE_FNS.extend(
+        [
+            flashinfer.cascade.merge_state,
+            flashinfer.cascade.merge_state_in_place,
+            flashinfer.cascade.merge_states,
+            flashinfer.cascade.MultiLevelCascadeAttentionWrapper.run,
+            flashinfer.cascade.BatchDecodeWithSharedPrefixPagedKVCacheWrapper.forward,
+            flashinfer.cascade.BatchPrefillWithSharedPrefixPagedKVCacheWrapper.forward,
+        ]
+    )
+
+# Add decode functions (use decode_rocm for HIP, decode for CUDA)
+if hasattr(flashinfer, "decode_rocm"):
+    # HIP version
+    TORCH_COMPILE_FNS.extend(
+        [
+            flashinfer.single_decode_with_kv_cache,
+            flashinfer.BatchDecodeWithPagedKVCacheWrapper.run,
+        ]
+    )
+elif hasattr(flashinfer, "decode"):
+    # CUDA version
+    TORCH_COMPILE_FNS.extend(
+        [
+            flashinfer.decode.single_decode_with_kv_cache,
+            flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper.run,
+        ]
+    )
+
+# Add gemm functions if available (CUDA only)
+if hasattr(flashinfer, "gemm"):
+    TORCH_COMPILE_FNS.extend(
+        [
+            flashinfer.gemm.bmm_fp8,
+            flashinfer.gemm.SegmentGEMMWrapper.run,
+        ]
+    )
+
+# Add norm functions
+TORCH_COMPILE_FNS.extend(
+    [
+        flashinfer.norm.rmsnorm,
+        flashinfer.norm.fused_add_rmsnorm,
+        flashinfer.norm.gemma_rmsnorm,
+        flashinfer.norm.gemma_fused_add_rmsnorm,
+        flashinfer.page.append_paged_kv_cache,
+    ]
+)
+
+# Add prefill functions (use prefill_rocm for HIP, prefill for CUDA)
+if hasattr(flashinfer, "prefill_rocm"):
+    # HIP version
+    TORCH_COMPILE_FNS.extend(
+        [
+            flashinfer.single_prefill_with_kv_cache,
+            flashinfer.BatchPrefillWithPagedKVCacheWrapper.run,
+            flashinfer.BatchPrefillWithRaggedKVCacheWrapper.run,
+        ]
+    )
+elif hasattr(flashinfer, "prefill"):
+    # CUDA version
+    TORCH_COMPILE_FNS.extend(
+        [
+            flashinfer.prefill.single_prefill_with_kv_cache,
+            flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper.run,
+            flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper.run,
+        ]
+    )
+
+# Add quantization, rope, and sampling functions
+TORCH_COMPILE_FNS.extend(
+    [
+        flashinfer.quantization.packbits,
+        flashinfer.rope.apply_rope,
+        flashinfer.rope.apply_rope_inplace,
+        flashinfer.rope.apply_rope_pos_ids,
+        flashinfer.rope.apply_rope_pos_ids_inplace,
+        flashinfer.rope.apply_llama31_rope,
+        flashinfer.rope.apply_llama31_rope_inplace,
+        flashinfer.rope.apply_llama31_rope_pos_ids,
+        flashinfer.rope.apply_llama31_rope_pos_ids_inplace,
+        flashinfer.sampling.sampling_from_probs,
+        flashinfer.sampling.sampling_from_logits,
+        flashinfer.sampling.top_p_sampling_from_probs,
+        flashinfer.sampling.top_k_sampling_from_probs,
+        flashinfer.sampling.min_p_sampling_from_probs,
+        flashinfer.sampling.top_k_top_p_sampling_from_probs,
+        flashinfer.sampling.top_k_top_p_sampling_from_logits,
+        flashinfer.sampling.top_p_renorm_probs,
+        flashinfer.sampling.top_k_renorm_probs,
+        flashinfer.sampling.top_k_mask_logits,
+        flashinfer.sampling.chain_speculative_sampling,
+    ]
+)
 
 _TORCH_COMPILE_CACHE: Dict[str, Any] = dict()
 

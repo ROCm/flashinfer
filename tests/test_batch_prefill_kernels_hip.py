@@ -4,36 +4,32 @@
 
 import pytest
 import torch
-from jit_utils import jit_prefill_attention_func_args
+from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
+from flashinfer.jit.core import logger
+import logging
+
+logger.setLevel(logging.ERROR)
 
 
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
-    if flashinfer.jit.has_prebuilt_ops:
-        yield
-    else:
-        try:
-            flashinfer.jit.parallel_load_modules(
-                jit_prefill_attention_func_args(
-                    [torch.float16],  # q_dtypes
-                    [
-                        torch.float16,
-                        torch.float16,
-                    ],  # kv_dtypes
-                    [128, 256],  # head_dims
-                    [0],  # pos_encoding_modes
-                    [False],  # use_sliding_windows
-                    [False],  # use_logits_soft_caps
-                    [False],  # use_fp16_qk_reductions
-                )
-            )
-        except Exception as e:
-            # abort the test session if warmup fails
-            pytest.exit(str(e))
-        finally:
-            yield
+    flashinfer.jit.build_jit_specs(
+        gen_prefill_attention_modules(
+            [torch.float16],  # q_dtypes
+            [
+                torch.float16,
+            ],  # kv_dtypes
+            [128, 256],  # head_dims
+            [0],  # pos_encoding_modes
+            [False],  # use_sliding_windows
+            [False],  # use_logits_soft_caps
+            [False],  # use_fp16_qk_reductions
+        ),
+        verbose=False,
+    )
+    yield
 
 
 @pytest.mark.parametrize("batch_size", [12, 17, 30])
@@ -273,6 +269,7 @@ def test_batch_prefill_with_paged_kv_cache(
             causal=causal,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa2",
         )
         o_i = o[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
@@ -510,6 +507,7 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
             causal=causal,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa2",
         )
         o_i = o[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
@@ -596,6 +594,7 @@ def test_batch_prefill_with_ragged_kv_cache(
             causal=causal,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa2",
         )
         o_i = o[q_indptr[i] : q_indptr[i + 1]]
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
