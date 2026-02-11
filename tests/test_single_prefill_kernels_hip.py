@@ -5,39 +5,31 @@
 import pytest
 import torch
 from attention_reference import naive_attention
-from jit_utils import jit_prefill_attention_func_args
+from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
+
+from flashinfer.jit.core import logger
+import logging
+
+logger.setLevel(logging.ERROR)
 
 
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
-    """
-    Warmup JIT modules for single prefill kernels.
-    - Pre-compiles all necessary kernel variants
-    - Prevents compilation during tests for faster execution
-    - Aborts test session if warmup fails to avoid unnecessary test failures
-    """
-    if flashinfer.jit.has_prebuilt_ops:
-        yield
-    else:
-        try:
-            flashinfer.jit.parallel_load_modules(
-                jit_prefill_attention_func_args(
-                    [torch.float16],  # q_dtypes
-                    [torch.float16],  # kv_dtypes
-                    [64],  # head_dims
-                    [0],  # pos_encoding_modes (NONE)
-                    [False],  # use_sliding_windows
-                    [False, True],  # use_logits_soft_caps
-                    [False],  # use_fp16_qk_reduction_options
-                )
-            )
-        except Exception as e:
-            # abort the test session if warmup fails
-            pytest.exit(str(e))
-        finally:
-            yield
+    flashinfer.jit.build_jit_specs(
+        gen_prefill_attention_modules(
+            [torch.float16],  # q_dtypes
+            [torch.float16],  # kv_dtypes
+            [64, 128, 256],  # head_dims
+            [0],  # pos_encoding_modes (NONE)
+            [False],  # use_sliding_windows
+            [False, True],  # use_logits_soft_caps
+            [False],  # use_fp16_qk_reduction_options
+        ),
+        verbose=False,
+    )
+    yield
 
 
 @pytest.mark.parametrize("qo_len", [37, 17, 127, 577])
@@ -97,6 +89,7 @@ def test_single_prefill_with_kv_cache(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa2",
         )
         assert lse.shape == (qo_len, num_qo_heads)
     else:
@@ -108,6 +101,7 @@ def test_single_prefill_with_kv_cache(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa2",
         )
 
     assert o.shape == (qo_len, num_qo_heads, head_dim)
@@ -168,6 +162,7 @@ def test_single_prefill_threadblock_sync_mdo_states(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa2",
         )
         assert lse.shape == (qo_len, num_qo_heads)
     else:
@@ -179,6 +174,7 @@ def test_single_prefill_threadblock_sync_mdo_states(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa2",
         )
 
     assert o.shape == (qo_len, num_qo_heads, head_dim)

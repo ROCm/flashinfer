@@ -14,83 +14,115 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-# NOTE(upstream): Do not "from .jit.env import xxx".
+# NOTE(lequn): Do not "from .jit.env import xxx".
 # Do "from .jit import env as jit_env" and use "jit_env.xxx" instead.
-# This allows AOT scripts to override paths via direct module variable reassignment.
+# This helps AOT script to override envs.
+
 import os
 import pathlib
 import re
 import warnings
+from ..device_utils import IS_CUDA, IS_HIP
 
-try:
-    import torch
 
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
+FLASHINFER_BASE_DIR = pathlib.Path(
+    os.getenv("FLASHINFER_WORKSPACE_BASE", pathlib.Path.home().as_posix())
+)
 
-from ..get_include_paths import get_csrc_dir, get_include
+FLASHINFER_CACHE_DIR = FLASHINFER_BASE_DIR / ".cache" / "flashinfer"
 
 
 def _get_workspace_dir_name() -> pathlib.Path:
-    """Get workspace directory name based on GPU architecture.
+    if IS_CUDA:
+        from torch.utils.cpp_extension import _get_cuda_arch_flags
 
-    For CUDA: Uses compute capability (e.g., 75_80_89_90)
-    For ROCm: Uses gfx architecture (e.g., gfx942)
-    Falls back to 'noarch' if detection fails.
-    """
-    arch = "noarch"
-
-    if HAS_TORCH and torch.cuda.is_available():
-        if hasattr(torch.version, "hip") and torch.version.hip is not None:
-            # ROCm path: extract gfx architecture
-            try:
-                # Get from environment variable first (set by CompilationContext)
-                env_arch_list = os.getenv("FLASHINFER_ROCM_ARCH_LIST")
-                if env_arch_list:
-                    # Use the first architecture from the list
-                    archs = [a.strip() for a in env_arch_list.split(",") if a.strip()]
-                    if archs:
-                        arch = archs[0].replace("gfx", "gfx")  # Keep gfx prefix
-                else:
-                    # Auto-detect from current device
-                    props = torch.cuda.get_device_properties(
-                        torch.cuda.current_device()
-                    )
-                    gcn_arch = props.gcnArchName
-                    # Extract gfx arch (e.g., "gfx942:sramecc+:xnack-" -> "gfx942")
-                    match = re.match(r"(gfx\d+)", gcn_arch)
-                    if match:
-                        arch = match.group(1)
-            except Exception:
-                pass
-        else:
-            # CUDA path: extract compute capability
-            try:
-                from torch.utils.cpp_extension import _get_cuda_arch_flags
-
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore", r".*TORCH_CUDA_ARCH_LIST.*", module="torch"
-                    )
-                    flags = _get_cuda_arch_flags()
-                arch = "_".join(
-                    sorted(set(re.findall(r"compute_(\d+)", "".join(flags))))
+        try:
+            with warnings.catch_warnings():
+                # Ignore the warning for TORCH_CUDA_ARCH_LIST not set
+                warnings.filterwarnings(
+                    "ignore", r".*TORCH_CUDA_ARCH_LIST.*", module="torch"
                 )
-            except Exception:
-                pass
+                flags = _get_cuda_arch_flags()
+            arch = "_".join(sorted(set(re.findall(r"compute_(\d+)", "".join(flags)))))
+        except Exception:
+            arch = "noarch"
+        # e.g.: $HOME/.cache/flashinfer/75_80_89_90/
+    elif IS_HIP:
+        try:
+            # Prioritize actual device architecture over PyTorch's build list
+            import torch
 
-    flashinfer_base = os.getenv(
-        "FLASHINFER_WORKSPACE_BASE", pathlib.Path.home().as_posix()
-    )
-    # e.g.: $HOME/.cache/flashinfer/gfx942/ (ROCm)
-    # or:   $HOME/.cache/flashinfer/75_80_89_90/ (CUDA)
-    return pathlib.Path(flashinfer_base) / ".cache" / "flashinfer" / arch
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            gcn_arch = props.gcnArchName
+            # Extract gfx arch (e.g., "gfx942:sramecc+:xnack-" -> "gfx942")
+            match = re.match(r"(gfx\d+)", gcn_arch)
+            if match:
+                arch = match.group(1)
+            else:
+                # Fallback to PyTorch's arch list if device detection fails
+                from torch.utils.cpp_extension import _get_rocm_arch_flags
+
+                flags = _get_rocm_arch_flags()
+                archs = [
+                    flag.replace("--offload-arch=", "")
+                    for flag in flags
+                    if flag.startswith("--offload-arch=")
+                ]
+                arch = archs[0] if archs else "noarch"
+        except Exception:
+            arch = "noarch"
+        # e.g.: $HOME/.cache/flashinfer/gfx942/
+    return FLASHINFER_CACHE_DIR / arch
 
 
 # use pathlib
 FLASHINFER_WORKSPACE_DIR = _get_workspace_dir_name()
 FLASHINFER_JIT_DIR = FLASHINFER_WORKSPACE_DIR / "cached_ops"
 FLASHINFER_GEN_SRC_DIR = FLASHINFER_WORKSPACE_DIR / "generated"
-FLASHINFER_INCLUDE_DIR = pathlib.Path(get_include())
-FLASHINFER_CSRC_DIR = pathlib.Path(get_csrc_dir())
+
+if IS_CUDA:
+    FLASHINFER_CUBIN_DIR = pathlib.Path(
+        os.getenv("FLASHINFER_CUBIN_DIR", (FLASHINFER_CACHE_DIR / "cubins").as_posix())
+    )
+    _package_root = pathlib.Path(__file__).resolve().parents[1]
+    FLASHINFER_DATA = _package_root / "data"
+    FLASHINFER_INCLUDE_DIR = _package_root / "data" / "include"
+    FLASHINFER_CSRC_DIR = _package_root / "data" / "csrc"
+    # FLASHINFER_SRC_DIR = _package_root / "data" / "src"
+    FLASHINFER_TVM_BINDING_DIR = _package_root / "data" / "tvm_binding"
+    FLASHINFER_AOT_DIR = _package_root / "data" / "aot"
+    CUTLASS_INCLUDE_DIRS = [
+        _package_root / "data" / "cutlass" / "include",
+        _package_root / "data" / "cutlass" / "tools" / "util" / "include",
+    ]
+    SPDLOG_INCLUDE_DIR = _package_root / "data" / "spdlog" / "include"
+
+    def get_nvshmem_include_dirs():
+        paths = os.environ.get("NVSHMEM_INCLUDE_PATH")
+        if paths is not None:
+            return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
+
+        import nvidia.nvshmem
+
+        path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "include"
+        return [path]
+
+    def get_nvshmem_lib_dirs():
+        paths = os.environ.get("NVSHMEM_LIBRARY_PATH")
+        if paths is not None:
+            return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
+
+        import nvidia.nvshmem
+
+        path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "lib"
+        return [path]
+elif IS_HIP:
+    from ..get_include_paths import _get_package_root_dir, get_csrc_dir, get_include
+
+    # FIXME: Remove once upgrade to v0.4.1 is completed and we move to using
+    # amd-flashinfer-jit-cache package.
+    _package_root = _get_package_root_dir()
+    aot_dir = str(os.path.join(_get_package_root_dir(), "data", "aot"))
+    FLASHINFER_AOT_DIR = pathlib.Path(aot_dir)
+    FLASHINFER_INCLUDE_DIR = pathlib.Path(get_include())
+    FLASHINFER_CSRC_DIR = pathlib.Path(get_csrc_dir())

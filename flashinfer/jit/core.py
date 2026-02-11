@@ -1,23 +1,29 @@
 import dataclasses
 import logging
 import os
-import re
 import warnings
+from contextlib import nullcontext
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Sequence, Union
 
 import torch
-import torch.utils.cpp_extension as torch_cpp_ext
 from filelock import FileLock
 
-from ..compilation_context_hip import CompilationContext
+from ..device_utils import IS_HIP, IS_CUDA
+
 from . import env as jit_env
-from .cpp_ext import (
-    check_hip_availability,
-    generate_ninja_build_for_op,
-    run_ninja,
-)
+
+if IS_CUDA:
+    from .cpp_ext import generate_ninja_build_for_op, run_ninja
+elif IS_HIP:
+    from .cpp_ext_hip import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
 from .utils import write_if_different
+
+
+if IS_CUDA:
+    from ..compilation_context import CompilationContext
+elif IS_HIP:
+    from ..compilation_context_hip import CompilationContext
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
 os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
@@ -26,7 +32,8 @@ os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
 class FlashInferJITLogger(logging.Logger):
     def __init__(self, name):
         super().__init__(name)
-        self.setLevel(logging.INFO)
+        logging_level = os.getenv("FLASHINFER_LOGGING_LEVEL", "info")
+        self.setLevel(logging_level.upper())
         self.addHandler(logging.StreamHandler())
         log_path = jit_env.FLASHINFER_WORKSPACE_DIR / "flashinfer_jit.log"
         if not os.path.exists(log_path):
@@ -36,39 +43,70 @@ class FlashInferJITLogger(logging.Logger):
         self.addHandler(logging.FileHandler(log_path))
         # set the format of the log
         self.handlers[0].setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            logging.Formatter(
+                "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - flashinfer.jit: %(message)s"
+            )
         )
         self.handlers[1].setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            logging.Formatter(
+                "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - flashinfer.jit: %(message)s"
+            )
         )
-
-    def info(self, msg):
-        super().info("flashinfer.jit: " + msg)
 
 
 logger = FlashInferJITLogger("flashinfer.jit")
 
+if IS_CUDA:
 
-# Global compilation context singleton - created once at module import
-current_compilation_context = CompilationContext()
+    def check_cuda_arch():
+        # Collect all detected CUDA architectures
+        eligible = False
+        for major, minor in current_compilation_context.TARGET_CUDA_ARCHS:
+            if major >= 8:
+                eligible = True
+            elif major == 7 and minor.isdigit():
+                if int(minor) >= 5:
+                    eligible = True
 
+        # Raise error only if all detected architectures are lower than sm75
+        if not eligible:
+            raise RuntimeError("FlashInfer requires GPUs with sm75 or higher")
 
-def check_cuda_arch():
-    # cuda arch check for fp8 at the moment.
-    for cuda_arch_flags in torch_cpp_ext._get_cuda_arch_flags():
-        arch = int(re.search(r"compute_(\d+)", cuda_arch_flags).group(1))
-        if arch < 75:
-            raise RuntimeError("FlashInfer requires sm75+")
-
-
-def check_rocm_arch():
-    allowed_arch = [
-        "--offload-arch=gfx942",
+    common_nvcc_flags = [
+        "-DFLASHINFER_ENABLE_FP8_E8M0",
+        "-DFLASHINFER_ENABLE_FP4_E2M1",
     ]
-    hip_arch_flags = torch_cpp_ext._get_rocm_arch_flags()
-    for arch in allowed_arch:
-        if arch not in hip_arch_flags:
-            raise RuntimeError(f"FlashInfer requires {', '.join(arch)}")
+    sm90a_nvcc_flags = ["-gencode=arch=compute_90a,code=sm_90a"] + common_nvcc_flags
+    sm100a_nvcc_flags = ["-gencode=arch=compute_100a,code=sm_100a"] + common_nvcc_flags
+    sm103a_nvcc_flags = ["-gencode=arch=compute_103a,code=sm_103a"] + common_nvcc_flags
+    sm110a_nvcc_flags = ["-gencode=arch=compute_110a,code=sm_110a"] + common_nvcc_flags
+    sm120a_nvcc_flags = ["-gencode=arch=compute_120a,code=sm_120a"] + common_nvcc_flags
+    sm121a_nvcc_flags = ["-gencode=arch=compute_121a,code=sm_121a"] + common_nvcc_flags
+elif IS_HIP:
+
+    def check_rocm_arch():
+        """
+        Validate ROCm architecture compatibility for FlashInfer.
+
+        Uses centralized validation from hip_utils to ensure:
+        1. System ROCm version supports the architectures
+        2. FlashInfer has AMD ports for the architectures
+        3. PyTorch was compiled with the architectures
+        """
+        import torch.utils.cpp_extension as torch_cpp_ext
+        from ..hip_utils import validate_flashinfer_rocm_arch
+
+        try:
+            # Let validate_flashinfer_rocm_arch handle all validation
+            # It will raise RuntimeError with detailed messages if validation fails
+            validate_flashinfer_rocm_arch(
+                arch_list=None,  # Uses FLASHINFER_ROCM_ARCH_LIST env or defaults to gfx942
+                torch_cpp_ext_module=torch_cpp_ext,
+                verbose=False,
+            )
+        except RuntimeError as e:
+            # Re-raise with context about where the error occurred
+            raise RuntimeError(f"ROCm architecture validation failed: {e}") from e
 
 
 def clear_cache_dir():
@@ -76,6 +114,9 @@ def clear_cache_dir():
         import shutil
 
         shutil.rmtree(jit_env.FLASHINFER_JIT_DIR)
+
+
+current_compilation_context = CompilationContext()
 
 
 @dataclasses.dataclass
@@ -87,6 +128,7 @@ class JitSpec:
     extra_ldflags: Optional[List[str]]
     extra_include_dirs: Optional[List[Path]]
     is_class: bool = False
+    needs_device_linking: bool = False
 
     @property
     def ninja_path(self) -> Path:
@@ -97,7 +139,21 @@ class JitSpec:
         return jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}.so"
 
     def get_library_path(self) -> Path:
+        if self.is_aot:
+            return self.aot_path
         return self.jit_library_path
+
+    @property
+    def aot_path(self) -> Path:
+        return jit_env.FLASHINFER_AOT_DIR / self.name / f"{self.name}.so"
+
+    @property
+    def is_aot(self) -> bool:
+        return self.aot_path.exists()
+
+    @property
+    def lock_path(self) -> Path:
+        return get_tmpdir() / f"{self.name}.lock"
 
     def write_ninja(self) -> None:
         ninja_path = self.ninja_path
@@ -109,18 +165,18 @@ class JitSpec:
             extra_cuda_cflags=self.extra_cuda_cflags,
             extra_ldflags=self.extra_ldflags,
             extra_include_dirs=self.extra_include_dirs,
+            needs_device_linking=self.needs_device_linking,
         )
         write_if_different(ninja_path, content)
 
-    def build(self, verbose: bool) -> None:
-        tmpdir = get_tmpdir()
-        with FileLock(tmpdir / f"{self.name}.lock", thread_local=False):
+    def build(self, verbose: bool, need_lock: bool = True) -> None:
+        lock = (
+            FileLock(self.lock_path, thread_local=False) if need_lock else nullcontext()
+        )
+        with lock:
             run_ninja(jit_env.FLASHINFER_JIT_DIR, self.ninja_path, verbose)
 
-    def build_and_load(self, class_name: str = None):
-        so_path = self.jit_library_path
-        verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
-        self.build(verbose)
+    def load(self, so_path: Path, class_name: str = None):
         load_class = class_name is not None
         loader = torch.classes if load_class else torch.ops
         loader.load_library(so_path)
@@ -129,37 +185,58 @@ class JitSpec:
             return cls
         return getattr(loader, self.name)
 
+    def build_and_load(self, class_name: str = None):
+        if self.is_aot:
+            return self.load(self.aot_path, class_name)
 
-sm90a_nvcc_flags = ["-gencode", "arch=compute_90a,code=sm_90a"]
+        # Guard both build and load with the same lock to avoid race condition
+        # where another process is building the library and removes the .so file.
+        with FileLock(self.lock_path, thread_local=False):
+            so_path = self.jit_library_path
+            verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
+            self.build(verbose, need_lock=False)
+            result = self.load(so_path, class_name)
+
+        return result
 
 
 def gen_jit_spec(
     name: str,
-    sources: List[Union[str, Path]],
+    sources: Sequence[Union[str, Path]],
     extra_cflags: Optional[List[str]] = None,
     extra_cuda_cflags: Optional[List[str]] = None,
     extra_ldflags: Optional[List[str]] = None,
     extra_include_paths: Optional[List[Union[str, Path]]] = None,
+    needs_device_linking: bool = False,
 ) -> JitSpec:
-    check_rocm_arch() if check_hip_availability() else check_cuda_arch()
+    check_rocm_arch() if IS_HIP else check_cuda_arch()
     verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
 
-    cflags = ["-O3", "-std=c++20", "-Wno-switch-bool"]
-    if check_hip_availability():
+    cflags = ["-O3", "-std=c++17", "-Wno-switch-bool"]
+    if IS_HIP:
         # Use dynamically-generated flags from CompilationContext (includes arch flags)
         cflags += current_compilation_context.get_hipcc_flags_list()
     cuda_cflags = [
         "-O3",
-        "-std=c++20",
-        "-use_fast_math",
+        "-std=c++17",
         "-DFLASHINFER_ENABLE_F16",
         "-DFLASHINFER_ENABLE_BF16",
-        "-DFLASHINFER_ENABLE_FP8",
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",
     ]
+    # Add CUDA-specific nvcc flags
+    if IS_CUDA:
+        cuda_cflags += [
+            f"--threads={os.environ.get('FLASHINFER_NVCC_THREADS', '1')}",
+            "-use_fast_math",
+        ]
+    elif IS_HIP:
+        cuda_cflags += [
+            "-ffast-math",  # HIP equivalent of -use_fast_math
+        ]
+
     if verbose:
-        if not check_hip_availability():
+        if not IS_HIP:
             cuda_cflags += [
                 "-g",
                 "-lineinfo",
@@ -181,11 +258,16 @@ def gen_jit_spec(
 
     spec = JitSpec(
         name=name,
-        sources=sources,
+        sources=[Path(x) for x in sources],
         extra_cflags=cflags,
         extra_cuda_cflags=cuda_cflags,
         extra_ldflags=extra_ldflags,
-        extra_include_dirs=extra_include_paths,
+        extra_include_dirs=(
+            [Path(x) for x in extra_include_paths]
+            if extra_include_paths is not None
+            else None
+        ),
+        needs_device_linking=needs_device_linking,
     )
     spec.write_ninja()
     return spec
@@ -206,6 +288,8 @@ def build_jit_specs(
 ) -> None:
     lines: List[str] = []
     for spec in specs:
+        if skip_prebuilt and spec.aot_path.exists():
+            continue
         lines.append(f"subninja {spec.ninja_path}")
     if not lines:
         return

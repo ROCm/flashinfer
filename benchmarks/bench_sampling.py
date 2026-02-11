@@ -1,7 +1,8 @@
+import numpy as np
 import torch
-from triton.testing import do_bench
 
 import flashinfer
+from flashinfer.testing.utils import bench_gpu_time
 
 
 def normal_distribution(std):
@@ -25,6 +26,18 @@ def gumbel_distribution(beta):
 def init_seed_sampling(*args, **kwargs):
     torch.manual_seed(42)
     return flashinfer.sampling.sampling_from_probs(*args, **kwargs)
+
+
+def init_seed_sampling_from_logits(*args, **kwargs):
+    torch.manual_seed(42)
+    return flashinfer.sampling.sampling_from_logits(*args, **kwargs)
+
+
+def init_seed_sampling_from_softmax_logits(logits, *args, **kwargs):
+    torch.manual_seed(42)
+    return flashinfer.sampling.sampling_from_probs(
+        torch.softmax(logits, dim=-1), *args, **kwargs
+    )
 
 
 def init_seed_top_k_sampling(*args, **kwargs):
@@ -55,11 +68,12 @@ def main():
                     samples = torch.zeros(
                         batch_size, dtype=torch.int32, device=probs.device
                     )
-                    ms = do_bench(
+                    measurements = bench_gpu_time(
                         lambda: init_seed_sampling(probs, deterministic=deterministic),
-                        warmup=100,
-                        rep=1000,
+                        dry_run_time_ms=100,
+                        repeat_time_ms=1000,
                     )
+                    ms = np.median(measurements)
 
                     io = (
                         probs.numel() * probs.element_size()
@@ -67,7 +81,7 @@ def main():
                     )
                     bandwidth = io * 1e-6 / ms
                     print(
-                        f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, duration: {ms*1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
+                        f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, duration: {ms * 1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
                     )
 
     print("---")
@@ -87,13 +101,14 @@ def main():
                         samples = torch.zeros(
                             batch_size, dtype=torch.int32, device=probs.device
                         )
-                        ms = do_bench(
+                        measurements = bench_gpu_time(
                             lambda: init_seed_top_k_sampling(
                                 probs, k, deterministic=deterministic
                             ),
-                            warmup=100,
-                            rep=1000,
+                            dry_run_time_ms=100,
+                            repeat_time_ms=1000,
                         )
+                        ms = np.median(measurements)
 
                         io = (
                             probs.numel() * probs.element_size()
@@ -101,7 +116,7 @@ def main():
                         )
                         bandwidth = io * 1e-6 / ms
                         print(
-                            f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, k: {k}, duration: {ms*1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
+                            f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, k: {k}, duration: {ms * 1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
                         )
 
     print("---")
@@ -122,13 +137,14 @@ def main():
                         samples = torch.zeros(
                             batch_size, dtype=torch.int32, device=probs.device
                         )
-                        ms = do_bench(
+                        measurements = bench_gpu_time(
                             lambda: init_seed_top_p_sampling(
                                 probs, p, deterministic=deterministic
                             ),
-                            warmup=100,
-                            rep=1000,
+                            dry_run_time_ms=100,
+                            repeat_time_ms=1000,
                         )
+                        ms = np.median(measurements)
 
                         io = (
                             probs.numel() * probs.element_size()
@@ -136,8 +152,73 @@ def main():
                         )
                         bandwidth = io * 1e-6 / ms
                         print(
-                            f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, p: {p}, duration: {ms*1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
+                            f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, p: {p}, duration: {ms * 1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
                         )
+
+    print("---")
+    print("sampling from softmax(logits)")
+    for vocab_size in [128512]:
+        for batch_size in [1, 16, 32, 64, 128, 256, 512]:
+            for distrib in [
+                normal_distribution(1),
+                normal_distribution(5),
+                gumbel_distribution(0.1),
+                gumbel_distribution(1),
+            ]:
+                for deterministic in [True, False]:
+                    logits = distrib((batch_size, vocab_size), device="cuda")
+                    samples = torch.zeros(
+                        batch_size, dtype=torch.int32, device=logits.device
+                    )
+                    measurements = bench_gpu_time(
+                        lambda: init_seed_sampling_from_softmax_logits(
+                            logits, samples, deterministic=deterministic
+                        ),
+                        dry_run_time_ms=100,
+                        repeat_time_ms=1000,
+                    )
+                    ms = np.median(measurements)
+                    io = (
+                        logits.numel() * logits.element_size()
+                        + samples.numel() * samples.element_size()
+                    )
+                    bandwidth = io * 1e-6 / ms
+                    print(
+                        f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, duration: {ms * 1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
+                    )
+
+    print("---")
+    print("sampling from logits")
+    for vocab_size in [128512]:
+        for batch_size in [1, 16, 32, 64, 128, 256, 512]:
+            for distrib in [
+                normal_distribution(1),
+                normal_distribution(5),
+                gumbel_distribution(0.1),
+                gumbel_distribution(1),
+            ]:
+                for deterministic in [True, False]:
+                    logits = distrib((batch_size, vocab_size), device="cuda")
+                    samples = torch.zeros(
+                        batch_size, dtype=torch.int32, device=logits.device
+                    )
+                    measurements = bench_gpu_time(
+                        lambda: init_seed_sampling_from_logits(
+                            logits, samples, deterministic=deterministic
+                        ),
+                        dry_run_time_ms=100,
+                        repeat_time_ms=1000,
+                    )
+                    ms = np.median(measurements)
+
+                    io = (
+                        logits.numel() * logits.element_size()
+                        + samples.numel() * samples.element_size()
+                    )
+                    bandwidth = io * 1e-6 / ms
+                    print(
+                        f"vocab_size: {vocab_size}, batch_size: {batch_size}, distrib: {distrib.__name__}, deterministic: {deterministic}, duration: {ms * 1e3:.2f} us, effective bandwidth: {bandwidth:.2f} GB/s"
+                    )
 
 
 if __name__ == "__main__":

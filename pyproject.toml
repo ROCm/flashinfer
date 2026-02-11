@@ -97,7 +97,7 @@ include = [
 
 [tool.setuptools_scm]
 write_to = "flashinfer/_version.py"
-tag_regex = "^v?(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)(?:[+](?P<local>[a-zA-Z0-9.]+))?$"
+tag_regex = "^v?(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.post[0-9]+|(?:a|b|rc)[0-9]+|\\.dev[0-9]+)?)(?:[+](?P<local>[a-zA-Z0-9.]+))?$"
 version_scheme = "no-guess-dev"
 local_scheme = "dirty-tag"
 scm.git.describe_command = ["python", "scripts/git_describe_rocm.py"]
@@ -111,15 +111,6 @@ skip = [
     "dist",
     ".venv"
 ]
-
-[tool.isort]
-ensure_newline_before_comments = true
-force_grid_wrap = 0
-include_trailing_comma = true
-line_length = 80
-multi_line_output = 3
-skip = ["flashinfer/_version.py", "flashinfer/cascade.py"]
-use_parentheses = true
 
 
 [tool.mypy]
@@ -171,7 +162,11 @@ ignore = [
     "B020",
     # Return te negated condition directly
     "SIM103",
+    # Function definition does not bind loop variable
+    "B023",
 ]
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
 
 
 [tool.pytest.ini_options]
@@ -190,13 +185,13 @@ testpaths = [
     "tests/test_batch_prefill_kernels_hip.py",
     "tests/test_block_sparse_indices_to_vector_sparse_offsets.py",
     "tests/test_decode_prefill_lse.py",
-    "tests/test_logits_cap_hip.py",
+    "tests/test_logits_cap.py",
     "tests/test_quantization.py",
     "tests/test_non_contiguous_decode.py",
     "tests/test_non_contiguous_prefill.py",
     "tests/test_norm_hip.py",
     "tests/test_page.py",
-    "tests/test_rope.py",
+    "tests/test_rope_hip.py",
     "tests/test_sampling_hip.py",
     "tests/test_single_prefill_kernels_hip.py",
     "tests/test_sliding_window_hip.py",

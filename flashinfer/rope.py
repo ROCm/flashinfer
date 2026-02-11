@@ -14,41 +14,30 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from functools import cache
-from typing import Any, Optional, Tuple
+import functools
+from typing import Optional, Tuple
 
 import torch
 
-from .jit import FLASHINFER_CSRC_DIR, has_prebuilt_ops, load_cuda_ops
+from .jit import JitSpec
+from .jit import env as jit_env
+from .jit import gen_jit_spec
 from .utils import register_custom_op, register_fake_op
 
-_rope_module = None
+
+def gen_rope_module() -> JitSpec:
+    return gen_jit_spec(
+        "rope",
+        [
+            jit_env.FLASHINFER_CSRC_DIR / "rope.cu",
+            jit_env.FLASHINFER_CSRC_DIR / "flashinfer_rope_ops.cu",
+        ],
+    )
 
 
+@functools.cache
 def get_rope_module():
-    global _rope_module
-    if _rope_module is None:
-        if has_prebuilt_ops:
-            _kernels = torch.ops.flashinfer_kernels
-
-            _rope_module = _kernels
-        else:
-            _rope_module = load_cuda_ops(
-                "rope",
-                [
-                    FLASHINFER_CSRC_DIR / "rope.cu",
-                    FLASHINFER_CSRC_DIR / "flashinfer_rope_ops.cu",
-                ],
-            )
-    return _rope_module
-
-
-@cache
-def get_module_attr(attr: str) -> Any:
-    global _rope_module
-    if _rope_module is None:
-        get_rope_module()
-    return getattr(_rope_module, attr).default
+    return gen_rope_module().build_and_load()
 
 
 @register_custom_op("flashinfer::apply_rope", mutates_args=("q_rope", "k_rope"))
@@ -64,9 +53,7 @@ def _apply_rope(
     rope_scale: float,
     rope_theta: float,
 ) -> None:
-    indptr = indptr.int()
-    offsets = offsets.int()
-    get_module_attr("apply_rope")(
+    get_rope_module().apply_rope(
         q,
         k,
         q_rope,
@@ -112,9 +99,7 @@ def _apply_llama31_rope(
     high_freq_factor: float,
     old_context_len: float,
 ) -> None:
-    indptr = indptr.int()
-    offsets = offsets.int()
-    get_module_attr("apply_llama31_rope")(
+    get_rope_module().apply_llama31_rope(
         q,
         k,
         q_rope,
@@ -162,8 +147,7 @@ def _apply_rope_pos_ids(
     rope_scale: float,
     rope_theta: float,
 ) -> None:
-    pos_ids = pos_ids.int()
-    get_module_attr("apply_rope_pos_ids")(
+    get_rope_module().apply_rope_pos_ids(
         q,
         k,
         q_rope,
@@ -192,6 +176,61 @@ def _fake_apply_rope_pos_ids(
 
 
 @register_custom_op(
+    "flashinfer::mla_rope_quantize",
+    mutates_args=("q_rope_out", "k_rope_out", "q_nope_out", "k_nope_out"),
+)
+def _mla_rope_quantize(
+    q_rope_in: torch.Tensor,
+    k_rope_in: torch.Tensor,
+    q_nope_in: torch.Tensor,
+    k_nope_in: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    pos_ids: torch.Tensor,
+    q_rope_out: torch.Tensor,
+    k_rope_out: torch.Tensor,
+    q_nope_out: torch.Tensor,
+    k_nope_out: torch.Tensor,
+    quant_scale_q: float,
+    quant_scale_kv: float,
+    interleave: bool,
+) -> None:
+    get_rope_module().mla_rope_quantize(
+        q_rope_in,
+        k_rope_in,
+        q_nope_in,
+        k_nope_in,
+        q_rope_out,
+        k_rope_out,
+        q_nope_out,
+        k_nope_out,
+        cos_sin_cache,
+        pos_ids,
+        quant_scale_q,
+        quant_scale_kv,
+        interleave,
+    )
+
+
+@register_fake_op("flashinfer::mla_rope_quantize")
+def _fake_mla_rope_quantize(
+    q_rope_in: torch.Tensor,
+    k_rope_in: torch.Tensor,
+    q_nope_in: torch.Tensor,
+    k_nope_in: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    pos_ids: torch.Tensor,
+    q_rope_out: torch.Tensor,
+    k_rope_out: torch.Tensor,
+    q_nope_out: torch.Tensor,
+    k_nope_out: torch.Tensor,
+    quant_scale_q: float,
+    quant_scale_kv: float,
+    interleave: bool,
+) -> None:
+    pass
+
+
+@register_custom_op(
     "flashinfer::apply_rope_pos_ids_cos_sin_cache", mutates_args=("q_rope", "k_rope")
 )
 def _apply_rope_pos_ids_cos_sin_cache(
@@ -203,8 +242,7 @@ def _apply_rope_pos_ids_cos_sin_cache(
     pos_ids: torch.Tensor,
     interleave: bool,
 ) -> None:
-    pos_ids = pos_ids.int()
-    get_module_attr("apply_rope_pos_ids_cos_sin_cache")(
+    get_rope_module().apply_rope_pos_ids_cos_sin_cache(
         q,
         k,
         q_rope,
@@ -246,8 +284,7 @@ def _apply_llama31_rope_pos_ids(
     high_freq_factor: float,
     old_context_len: float,
 ) -> None:
-    pos_ids = pos_ids.int()
-    get_module_attr("apply_llama31_rope_pos_ids")(
+    get_rope_module().apply_llama31_rope_pos_ids(
         q,
         k,
         q_rope,
@@ -1112,3 +1149,72 @@ def apply_rope_with_cos_sin_cache_inplace(
         pos_ids=positions,
         interleave=(not is_neox),
     )
+
+
+def mla_rope_quantize_fp8(
+    q_rope: torch.Tensor,
+    k_rope: torch.Tensor,
+    q_nope: torch.Tensor,
+    k_nope: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    pos_ids: torch.Tensor,
+    is_neox: bool = True,
+    quantize_dtype: Optional[torch.dtype] = None,
+    quant_scale_q: float = 1.0,
+    quant_scale_kv: float = 1.0,
+    q_rope_out: Optional[torch.Tensor] = None,
+    k_rope_out: Optional[torch.Tensor] = None,
+    q_nope_out: Optional[torch.Tensor] = None,
+    k_nope_out: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if cos_sin_cache.dtype != torch.float32:
+        raise ValueError("cos_sin_cache should be float32")
+
+    # Infer quantize_dtype from output tensors or default to float8_e4m3fn
+    if quantize_dtype is None:
+        for out in (q_rope_out, k_rope_out, q_nope_out, k_nope_out):
+            if out is not None:
+                quantize_dtype = out.dtype
+                break
+        else:
+            quantize_dtype = torch.float8_e4m3fn
+
+    # Allocate output tensors if not provided
+    q_rope_out = (
+        q_rope_out
+        if q_rope_out is not None
+        else torch.empty_like(q_rope, dtype=quantize_dtype)
+    )
+    k_rope_out = (
+        k_rope_out
+        if k_rope_out is not None
+        else torch.empty_like(k_rope, dtype=quantize_dtype)
+    )
+    q_nope_out = (
+        q_nope_out
+        if q_nope_out is not None
+        else torch.empty_like(q_nope, dtype=quantize_dtype)
+    )
+    k_nope_out = (
+        k_nope_out
+        if k_nope_out is not None
+        else torch.empty_like(k_nope, dtype=quantize_dtype)
+    )
+
+    _mla_rope_quantize(
+        q_rope,
+        k_rope,
+        q_nope,
+        k_nope,
+        cos_sin_cache,
+        pos_ids,
+        q_rope_out,
+        k_rope_out,
+        q_nope_out,
+        k_nope_out,
+        quant_scale_q,
+        quant_scale_kv,
+        not is_neox,  # interleave
+    )
+
+    return q_rope_out, k_rope_out, q_nope_out, k_nope_out

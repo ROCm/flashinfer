@@ -16,6 +16,8 @@
 #ifndef FLASHINFER_CUTLASS_UTILS_CUH_
 #define FLASHINFER_CUTLASS_UTILS_CUH_
 
+#include <cuda_fp8.h>
+
 #include "cute/tensor.hpp"
 #include "cutlass/cutlass.h"
 #include "cutlass/epilogue/collective/collective_builder.hpp"
@@ -39,6 +41,11 @@
 #include "cutlass/util/reference/device/tensor_compare.h"
 #include "cutlass/util/reference/device/tensor_fill.h"
 #include "cutlass/util/tensor_view_io.h"
+#if defined(FLASHINFER_ENABLE_FP4_E2M1)
+#if (__CUDACC_VER_MAJOR__ * 1000 + __CUDACC_VER_MINOR__ * 10 >= 12080)
+#include <cuda_fp4.h>
+#endif
+#endif
 
 namespace flashinfer {
 
@@ -67,6 +74,20 @@ struct cutlass_dtype<__nv_fp8_e5m2> {
   using type = cutlass::float_e5m2_t;
 };
 
+#if (__CUDACC_VER_MAJOR__ * 10000 + __CUDACC_VER_MINOR__ * 100 >= 120800)
+template <>
+struct cutlass_dtype<__nv_fp8_e8m0> {
+  using type = cutlass::float_ue8m0_t;
+};
+
+#if defined(FLASHINFER_ENABLE_FP4_E2M1)
+template <>
+struct cutlass_dtype<__nv_fp4_e2m1> {
+  using type = cutlass::float_e2m1_t;
+};
+#endif
+#endif
+
 template <typename T>
 using cutlass_dtype_t = typename cutlass_dtype<T>::type;
 
@@ -74,6 +95,16 @@ template <typename T>
 void compileTimeDebug(T&&) {
   static_assert(sizeof(T) == 0, "Compile time debug");
 }
+
+#define CUTLASS_CHECK(cmd)                                                            \
+  do {                                                                                \
+    auto status = cmd;                                                                \
+    if (status != cutlass::Status::kSuccess) {                                        \
+      std::ostringstream err_msg;                                                     \
+      err_msg << "cutlass " << #cmd << " failed: " << cutlassGetStatusString(status); \
+      FLASHINFER_ERROR(err_msg.str());                                                \
+    }                                                                                 \
+  } while (0)
 
 }  // namespace flashinfer
 

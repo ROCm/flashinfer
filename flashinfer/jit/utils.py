@@ -15,8 +15,6 @@ limitations under the License.
 """
 
 import pathlib
-import threading
-from typing import Any, Callable, List, Tuple
 
 import torch
 
@@ -32,32 +30,6 @@ def write_if_different(path: pathlib.Path, content: str) -> None:
         f.write(content)
 
 
-def parallel_load_modules(
-    load_module_func_args: List[Tuple[Callable, List[Any]]],
-):
-    threads = []
-    exceptions = []
-
-    def wrapper(func, args):
-        try:
-            func(*args)
-        except Exception as e:
-            exceptions.append((func, e))
-
-    for func, args in load_module_func_args:
-        thread = threading.Thread(target=wrapper, args=(func, args))
-        thread.start()
-        threads.append(thread)
-
-    for thread in threads:
-        thread.join()
-
-    if exceptions:
-        for func, e in exceptions:
-            print(f"Exception occurred in {func.__name__}: {e}")
-        raise RuntimeError("One or more exceptions occurred during module loading")
-
-
 dtype_map = {
     torch.float16: "half",
     torch.bfloat16: "nv_bfloat16",
@@ -71,30 +43,45 @@ dtype_map = {
     torch.uint64: "uint64_t",
 }
 
-dtype_map_hip = {
-    torch.float16: "__half",
-    torch.bfloat16: "__hip_bfloat16",
-    torch.float8_e4m3fnuz: "__hip_fp8_e4m3_fnuz",
-    torch.float8_e5m2fnuz: "__hip_fp8_e5m2_fnuz",
-    torch.int8: "int8_t",
-    torch.uint8: "uint8_t",
-    torch.int32: "int32_t",
-    torch.uint32: "uint32_t",
-    torch.int64: "int64_t",
-    torch.uint64: "uint64_t",
+dtype_cutlass_map = {
+    torch.float16: "cutlass::half_t",
+    torch.bfloat16: "cutlass::bfloat16_t",
+    torch.float8_e4m3fn: "cutlass::float_e4m3_t",
+    torch.float8_e5m2: "cutlass::float_e5m2_t",
+    torch.int8: "cutlass::int8_t",
+    torch.uint8: "cutlass::uint8_t",
+    torch.int32: "cutlass::int32_t",
+    torch.uint32: "cutlass::uint32_t",
+    torch.int64: "cutlass::int64_t",
+    torch.uint64: "cutlass::uint64_t",
 }
 
 filename_safe_dtype_map = {
     torch.float16: "f16",
     torch.bfloat16: "bf16",
+    torch.float8_e4m3fn: "e4m3",
     torch.float8_e4m3fnuz: "e4m3fnuz",
-    torch.float8_e5m2fnuz: "e5m2fnuz",
+    torch.float8_e5m2: "e5m2",
     torch.int8: "i8",
     torch.uint8: "u8",
     torch.int32: "i32",
     torch.uint32: "u32",
     torch.int64: "i64",
     torch.uint64: "u64",
+}
+
+dtype_map_hip = {
+    torch.float16: "__half",
+    torch.bfloat16: "__hip_bfloat16",
+    torch.float8_e4m3fn: "__hip_fp8_e4m3_fnuz",
+    torch.float8_e4m3fnuz: "__hip_fp8_e4m3_fnuz",
+    torch.float8_e5m2: "__hip_fp8_e5m2_fnuz",
+    torch.int8: "int8_t",
+    torch.uint8: "uint8_t",
+    torch.int32: "int32_t",
+    torch.uint32: "uint32_t",
+    torch.int64: "int64_t",
+    torch.uint64: "uint64_t",
 }
 
 pos_encoding_mode_literal = {
@@ -107,4 +94,5 @@ mask_mode_literal = {
     0: "MaskMode::kNone",
     1: "MaskMode::kCausal",
     2: "MaskMode::kCustom",
+    3: "MaskMode::kMultiItemScoring",
 }

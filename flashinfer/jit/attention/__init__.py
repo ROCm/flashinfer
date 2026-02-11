@@ -14,37 +14,65 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-# HIP backend - import available functions from pytorch_hip
-from .pytorch_hip import gen_batch_decode_module as gen_batch_decode_module
-from .pytorch_hip import gen_batch_prefill_module as gen_batch_prefill_module
-from .pytorch_hip import (
-    gen_customize_batch_decode_module as gen_customize_batch_decode_module,
-)
-from .pytorch_hip import (
-    gen_customize_batch_prefill_module as gen_customize_batch_prefill_module,
-)
-from .pytorch_hip import (
-    gen_customize_single_decode_module as gen_customize_single_decode_module,
-)
-from .pytorch_hip import (
-    gen_customize_single_prefill_module as gen_customize_single_prefill_module,
-)
-from .pytorch_hip import gen_single_decode_module as gen_single_decode_module
-from .pytorch_hip import gen_single_prefill_module as gen_single_prefill_module
-from .pytorch_hip import get_batch_decode_uri as get_batch_decode_uri
-from .pytorch_hip import get_batch_prefill_uri as get_batch_prefill_uri
-from .pytorch_hip import get_single_decode_uri as get_single_decode_uri
-from .pytorch_hip import get_single_prefill_uri as get_single_prefill_uri
+from ...device_utils import IS_CUDA, IS_HIP
 
-
-# Stubs for functions not available in HIP backend
-def _not_implemented(*args, **kwargs):
-    raise NotImplementedError("This function is not supported on HIP/ROCm backend")
-
-
-gen_batch_decode_mla_module = _not_implemented
-gen_batch_mla_module = _not_implemented
-gen_pod_module = _not_implemented
-get_batch_decode_mla_uri = _not_implemented
-get_batch_mla_uri = _not_implemented
-get_pod_uri = _not_implemented
+if IS_CUDA:
+    from . import pytorch
+    from .pytorch import gen_cudnn_fmha_module as gen_cudnn_fmha_module
+    from .pytorch import gen_batch_attention_module as gen_batch_attention_module
+    from .pytorch import gen_batch_decode_mla_module as gen_batch_decode_mla_module
+    from .pytorch import gen_batch_decode_module as gen_batch_decode_module
+    from .pytorch import gen_batch_mla_module as gen_batch_mla_module
+    from .pytorch import gen_batch_prefill_module as gen_batch_prefill_module
+    from .pytorch import (
+        gen_customize_batch_decode_module as gen_customize_batch_decode_module,
+    )
+    from .pytorch import (
+        gen_customize_batch_prefill_module as gen_customize_batch_prefill_module,
+    )
+    from .pytorch import (
+        gen_customize_single_decode_module as gen_customize_single_decode_module,
+    )
+    from .pytorch import (
+        gen_customize_single_prefill_module as gen_customize_single_prefill_module,
+    )
+    from .pytorch import (
+        gen_fmha_cutlass_sm100a_module as gen_fmha_cutlass_sm100a_module,
+    )
+    from .pytorch import gen_pod_module as gen_pod_module
+    from .pytorch import gen_single_decode_module as gen_single_decode_module
+    from .pytorch import gen_single_prefill_module as gen_single_prefill_module
+    from .pytorch import get_batch_attention_uri as get_batch_attention_uri
+    from .pytorch import get_batch_decode_mla_uri as get_batch_decode_mla_uri
+    from .pytorch import get_batch_decode_uri as get_batch_decode_uri
+    from .pytorch import get_batch_mla_uri as get_batch_mla_uri
+    from .pytorch import get_batch_prefill_uri as get_batch_prefill_uri
+    from .pytorch import get_pod_uri as get_pod_uri
+    from .pytorch import get_single_decode_uri as get_single_decode_uri
+    from .pytorch import get_single_prefill_uri as get_single_prefill_uri
+    from .pytorch import gen_trtllm_gen_fmha_module as gen_trtllm_gen_fmha_module
+    from .pytorch import (
+        gen_batch_prefill_attention_sink_module as gen_batch_prefill_attention_sink_module,
+        get_batch_prefill_attention_sink_uri as get_batch_prefill_attention_sink_uri,
+    )
+elif IS_HIP:
+    from .pytorch_hip import gen_batch_decode_module as gen_batch_decode_module
+    from .pytorch_hip import gen_batch_prefill_module as gen_batch_prefill_module
+    from .pytorch_hip import (
+        gen_customize_batch_decode_module as gen_customize_batch_decode_module,
+    )
+    from .pytorch_hip import (
+        gen_customize_batch_prefill_module as gen_customize_batch_prefill_module,
+    )
+    from .pytorch_hip import (
+        gen_customize_single_decode_module as gen_customize_single_decode_module,
+    )
+    from .pytorch_hip import (
+        gen_customize_single_prefill_module as gen_customize_single_prefill_module,
+    )
+    from .pytorch_hip import gen_single_decode_module as gen_single_decode_module
+    from .pytorch_hip import gen_single_prefill_module as gen_single_prefill_module
+    from .pytorch_hip import get_batch_decode_uri as get_batch_decode_uri
+    from .pytorch_hip import get_batch_prefill_uri as get_batch_prefill_uri
+    from .pytorch_hip import get_single_decode_uri as get_single_decode_uri
+    from .pytorch_hip import get_single_prefill_uri as get_single_prefill_uri
