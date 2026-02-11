@@ -44,12 +44,12 @@ enum class BitOrder { kBig = 0U, kLittle = 1U };
   }
 
 template <BitOrder BITORDER>
-__global__ void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
+FI_GLOBAL_QUAL void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
   int64_t start_offset = static_cast<int64_t>(blockIdx.x) * blockDim.x * 8, tx = threadIdx.x;
   uint8_t ret = 0;
   bool input_vec[8];
-  typedef cub::BlockLoad<bool, 256, 8, cub::BLOCK_LOAD_VECTORIZE> BlockLoad;
-  __shared__ typename BlockLoad::TempStorage temp_storage;
+  typedef block_ops::BlockLoad<bool, 256, 8, block_ops::BLOCK_LOAD_VECTORIZE> BlockLoad;
+  FI_SHARED_QUAL typename BlockLoad::TempStorage temp_storage;
 
   // This fix the INT32_T overflow issue, which is possible in DiT video models
   // where the kv_len could be 128K.
