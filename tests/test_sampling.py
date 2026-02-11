@@ -38,6 +38,43 @@ def gumbel_distribution(beta):
     return gumbel_noise
 
 
+@pytest.mark.parametrize("batch_size", [1, 99, 989])
+@pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        normal_distribution(1),
+        normal_distribution(5),
+        gumbel_distribution(0.1),
+    ],
+)
+@pytest.mark.parametrize("temperature", [1.0, 0.5, 0.1])
+@pytest.mark.parametrize("temperature_arr", [True, False])
+@pytest.mark.parametrize("neg_inf_input", [True, False])
+def test_softmax(
+    batch_size, vocab_size, distribution, temperature, temperature_arr, neg_inf_input
+):
+    torch.manual_seed(42)
+    logits = distribution((batch_size, vocab_size), "cuda:0")
+    if neg_inf_input:
+        # assign random logits to -inf
+        num_inf = torch.randint(0, logits.numel() - 1, (), device=logits.device).item()
+        inf_idx = torch.randperm(logits.numel(), device=logits.device)[:num_inf]
+        logits.view(-1).index_fill_(0, inf_idx, float("-inf"))
+
+    if temperature_arr:
+        temperature_arr = torch.full((batch_size,), temperature, device="cuda:0")
+        probs = flashinfer.sampling.softmax(logits, temperature=temperature_arr)
+        logits_scaled = logits / temperature_arr.unsqueeze(-1)
+    else:
+        probs = flashinfer.sampling.softmax(logits, temperature=temperature)
+        logits_scaled = logits / temperature
+
+    probs_ref = torch.softmax(logits_scaled, dim=-1)
+
+    assert torch.allclose(probs, probs_ref, atol=1e-5)
+
+
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
 @pytest.mark.parametrize(
     "distribution",
@@ -153,6 +190,41 @@ def test_sampling(batch_size, vocab_size):
 
 @pytest.mark.parametrize("batch_size", [1, 99, 989])
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
+def test_sampling_from_logits(batch_size, vocab_size):
+    torch.manual_seed(42)
+    logits = torch.randn(batch_size, vocab_size, device="cuda:0")
+    num_trails = 5000
+    for _ in range(num_trails):
+        samples = flashinfer.sampling.sampling_from_logits(logits)
+        assert torch.all(samples < vocab_size) and torch.all(samples >= 0)
+
+
+@pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
+@pytest.mark.parametrize(
+    "distribution",
+    [
+        normal_distribution(1),
+        normal_distribution(5),
+        gumbel_distribution(0.1),
+    ],
+)
+def test_sampling_from_logits_freq(vocab_size, distribution):
+    torch.manual_seed(42)
+    num_trials = 5000000
+    logits = distribution((1, vocab_size), "cuda:0")
+    probs = torch.softmax(logits, dim=-1)
+    counter = torch.zeros(vocab_size, dtype=torch.int32, device=logits.device)
+    samples = flashinfer.sampling.sampling_from_logits(
+        logits, indices=torch.zeros(num_trials, dtype=torch.int32, device=logits.device)
+    )
+    counter.scatter_add_(0, samples.long(), torch.ones_like(samples))
+    freq = counter.float() / num_trials
+    similarity = torch.cosine_similarity(freq, probs)
+    assert similarity > 0.99, f"similarity: {similarity}"
+
+
+@pytest.mark.parametrize("batch_size", [1, 99, 989])
+@pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
 @pytest.mark.parametrize("p", [0.1, 0.5, 0.9])
 def test_top_p_sampling(batch_size, vocab_size, p):
     torch.manual_seed(42)
@@ -182,6 +254,29 @@ def test_top_k_sampling(batch_size, vocab_size, k):
     normalized_prob = pre_norm_prob / pre_norm_prob.sum(dim=-1, keepdim=True)
     sorted_prob, _ = torch.sort(normalized_prob, descending=True)
     pivot = sorted_prob[:, k - 1]
+    mask = (normalized_prob >= pivot.unsqueeze(-1)).int()
+
+    num_trails = 1000
+    for _ in range(num_trails):
+        samples = flashinfer.sampling.top_k_sampling_from_probs(normalized_prob, k)
+        assert torch.all(samples < vocab_size) and torch.all(samples >= 0)
+        assert torch.all(mask[torch.arange(batch_size), samples] == 1), normalized_prob[
+            torch.arange(batch_size), samples
+        ]
+
+
+@pytest.mark.parametrize("batch_size", [1, 99, 989])
+@pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
+@pytest.mark.parametrize("k", [10, 100, 500])
+def test_top_k_sampling_with_variable_k(batch_size, vocab_size, k):
+    if k > vocab_size:
+        pytest.skip("k should be less than vocab_size")
+    torch.manual_seed(42)
+    pre_norm_prob = torch.rand(batch_size, vocab_size, device="cuda:0")
+    normalized_prob = pre_norm_prob / pre_norm_prob.sum(dim=-1, keepdim=True)
+    sorted_prob, _ = torch.sort(normalized_prob, descending=True)
+    k = torch.randint(1, k + 1, (batch_size,), device="cuda:0")
+    pivot = sorted_prob[torch.arange(batch_size), k - 1]
     mask = (normalized_prob >= pivot.unsqueeze(-1)).int()
 
     num_trails = 1000
@@ -316,7 +411,7 @@ def test_top_k_top_p_joint_sampling_from_logits(batch_size, vocab_size, p):
 
 @pytest.mark.parametrize("batch_size", [1, 99, 989])
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
-@pytest.mark.parametrize("p", [0.1, 0.5, 0.9])
+@pytest.mark.parametrize("p", [0.1, 0.5, 0.9, 1.0])
 def test_top_p_renorm_probs(batch_size, vocab_size, p):
     torch.manual_seed(42)
     pre_norm_prob = torch.rand(batch_size, vocab_size, device="cuda:0")
@@ -371,11 +466,16 @@ def test_top_k_renorm_probs(batch_size, vocab_size, k):
 @pytest.mark.parametrize("batch_size", [1, 99, 989])
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
 @pytest.mark.parametrize("k", [10, 100, 500])
-def test_top_k_mask_logits(batch_size, vocab_size, k):
+@pytest.mark.parametrize("neginf_input", [False, True])
+def test_top_k_mask_logits(batch_size, vocab_size, k, neginf_input):
     if k > vocab_size:
         pytest.skip("k should be less than vocab_size")
     torch.manual_seed(42)
     logits = torch.randn(batch_size, vocab_size, device="cuda:0") * 5
+    if neginf_input:
+        num_neginf = torch.randint(1, vocab_size * batch_size, (1,)).item()
+        idxs = torch.randperm(batch_size * vocab_size, device="cuda:0")[:num_neginf]
+        logits[idxs // vocab_size, idxs % vocab_size] = -float("inf")
     probs = torch.softmax(logits, dim=-1)
     masked_logits = flashinfer.sampling.top_k_mask_logits(logits, k)
     renormed_probs = torch.softmax(masked_logits, dim=-1)
@@ -455,23 +555,12 @@ def test_chain_speculative_sampling(
                     assert torch.all(output_token_ids[row, mismatch_idx[0] + 1 :] == -1)
 
         assert torch.all(emitted_num + 1 == (output_token_ids != -1).sum(dim=1))
-        batch_indices = torch.arange(batch_size, device=normalized_draft_prob.device)[
-            :, None
-        ]
-        probs_indicies = torch.arange(
-            num_speculate_tokens, device=normalized_draft_prob.device
-        )
-        selected_draft_probs = normalized_draft_prob[
-            batch_indices, probs_indicies, draft_token_ids
-        ]
-        selected_target_probs = target_onehot_prob[
-            batch_indices, probs_indicies, draft_token_ids
-        ]
 
 
 if __name__ == "__main__":
     # test_sampling_freq(128256, gumbel_distribution(0.1), 0.5)
-    test_top_p_sampling_freq(128256, gumbel_distribution(0.1), 0.5)
+    test_sampling_from_logits_freq(128256, gumbel_distribution(0.1))
+    # test_top_p_sampling_freq(128256, gumbel_distribution(0.1), 0.5)
     # test_top_k_sampling_freq(1, 128256, 10)
     # test_sampling(19, 500)
     # test_sampling(1, 111)

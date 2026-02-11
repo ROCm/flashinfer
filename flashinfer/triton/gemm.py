@@ -36,7 +36,6 @@ def compute_sm80_group_gemm_args(
     d_out,
     w_column_major,
 ):
-
     pid = tl.program_id(0)
 
     m = tl.load(xy_indptr + pid + 1) - tl.load(xy_indptr + pid)
@@ -79,7 +78,6 @@ def compute_sm90_group_gemm_args(
     d_out,
     w_column_major,
 ):
-
     pid = tl.program_id(0)
 
     m = tl.load(xy_indptr + pid + 1) - tl.load(xy_indptr + pid)
@@ -102,3 +100,19 @@ def compute_sm90_group_gemm_args(
     tl.store(x_stride_ptr + pid, k)
     tl.store(w_stride_ptr + pid, k if w_column_major else n)
     tl.store(y_stride_ptr + pid, n)
+
+
+@triton.jit
+def compute_padding_mapping(
+    m_indptr,
+    padded_m_indptr,
+    m_rank,
+    padded_m_rank,
+):
+    pid = tl.program_id(0)
+    m_start = tl.load(m_indptr + pid)
+    m_end = tl.load(m_indptr + pid + 1)
+    padded_m_start = tl.load(padded_m_indptr + pid)
+    for i in range(m_end - m_start):
+        tl.store(m_rank + m_start + i, m_start + i)
+        tl.store(padded_m_rank + m_start + i, padded_m_start + i)
