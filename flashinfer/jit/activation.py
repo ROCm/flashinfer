@@ -1,7 +1,18 @@
-# SPDX - FileCopyrightText : 2023 - 2025 Flashinfer team
-# SPDX - FileCopyrightText : 2025 Advanced Micro Devices, Inc.
-#
-# SPDX - License - Identifier : Apache 2.0
+"""
+Copyright (c) 2024 by FlashInfer team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import os
 
@@ -11,98 +22,53 @@ from . import env as jit_env
 from .core import JitSpec, gen_jit_spec
 from .utils import write_if_different
 
-if check_hip_availability():
-    activation_templ = r"""
-  #include <gpu_iface/platform.hpp>
-  #include <flashinfer/attention/generic/activation.cuh>
-  #include "pytorch_extension_utils.h"
-  #include <hip/hip_runtime.h>
+activation_templ = r"""
+#include <flashinfer/activation.cuh>
+#include "pytorch_extension_utils.h"
+#include <cuda_runtime.h>
 
-  {% set func_name = act_func_name ~ '_and_mul' %}
+{% set func_name = act_func_name ~ '_and_mul' %}
 
-  using namespace flashinfer;
+using namespace flashinfer;
 
-  {{ act_func_def }}
+{{ act_func_def }}
 
-  void {{ func_name }}(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
-    int d = input.size(-1) / 2;
-    int64_t num_tokens = input.numel() / input.size(-1);
-    dim3 grid(num_tokens);
+void {{ func_name }}(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
+  int d = input.size(-1) / 2;
+  int64_t num_tokens = input.numel() / input.size(-1);
+  dim3 grid(num_tokens);
 
-    const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
-    auto stream = at::hip::getCurrentHIPStream();
-    DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
-      uint32_t vec_size = 16 / sizeof(c_type);
-      uint32_t block_size = std::min(d / vec_size, 1024U);
-      dim3 gridDim(num_tokens);
-      dim3 blockDim(block_size);
+  const c10::cuda::OptionalCUDAGuard device_guard(out.device());
+  auto stream = at::cuda::getCurrentCUDAStream();
+  DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
+    uint32_t vec_size = 16 / sizeof(c_type);
+    cudaLaunchConfig_t config;
+    config.gridDim = num_tokens;
+    config.blockDim = std::min(d / vec_size, 1024U);
+    config.dynamicSmemBytes = 0;
+    config.stream = stream;
+    cudaLaunchAttribute attrs[1];
+    attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+    attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
+    config.numAttrs = 1;
+    config.attrs = attrs;
 
-      auto kernel = flashinfer::activation::act_and_mul_kernel<c_type, {{ act_func_name }}>;
+    auto kernel = flashinfer::activation::act_and_mul_kernel<c_type, {{ act_func_name }}>;
 
-      hipLaunchKernelGGL(kernel, gridDim, blockDim, 0, stream,
-                         static_cast<c_type*>(out.data_ptr()),
-                         static_cast<c_type*>(input.data_ptr()), d);
+    cudaLaunchKernelEx(&config, kernel, static_cast<c_type*>(out.data_ptr()),
+                       static_cast<c_type*>(input.data_ptr()), d);
 
-      hipError_t err = hipGetLastError();
-      TORCH_CHECK(err == hipSuccess, "Failed to launch kernel: ", hipGetErrorString(err));
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "Failed to launch kernel: ", cudaGetErrorString(err));
 
-      return true;
-    });
-  }
+    return true;
+  });
+}
 
-  TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
-    m.def("{{ func_name }}", {{ func_name }});
-  }
-  """
-
-else:
-    activation_templ = r"""
-  #include <flashinfer/activation.cuh>
-  #include "pytorch_extension_utils.h"
-  #include <cuda_runtime.h>
-
-  {% set func_name = act_func_name ~ '_and_mul' %}
-
-  using namespace flashinfer;
-
-  {{ act_func_def }}
-
-  void {{ func_name }}(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
-    int d = input.size(-1) / 2;
-    int64_t num_tokens = input.numel() / input.size(-1);
-    dim3 grid(num_tokens);
-
-    const c10::cuda::OptionalCUDAGuard device_guard(out.device());
-    auto stream = at::cuda::getCurrentCUDAStream();
-    DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
-      uint32_t vec_size = 16 / sizeof(c_type);
-      cudaLaunchConfig_t config;
-      config.gridDim = num_tokens;
-      config.blockDim = std::min(d / vec_size, 1024U);
-      config.dynamicSmemBytes = 0;
-      config.stream = stream;
-      cudaLaunchAttribute attrs[1];
-      attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-      attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-      config.numAttrs = 1;
-      config.attrs = attrs;
-
-      auto kernel = flashinfer::activation::act_and_mul_kernel<c_type, {{ act_func_name }}>;
-
-      cudaLaunchKernelEx(&config, kernel, static_cast<c_type*>(out.data_ptr()),
-                        static_cast<c_type*>(input.data_ptr()), d);
-
-      cudaError_t err = cudaGetLastError();
-      TORCH_CHECK(err == cudaSuccess, "Failed to launch kernel: ", cudaGetErrorString(err));
-
-      return true;
-    });
-  }
-
-  TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
-    m.def("{{ func_name }}", {{ func_name }});
-  }
-  """
+TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
+  m.def("{{ func_name }}", {{ func_name }});
+}
+"""
 
 
 def get_act_and_mul_cu_str(act_func_name: str, act_func_def: str) -> str:
@@ -121,6 +87,4 @@ def gen_act_and_mul_module(act_func_name: str, act_func_def: str) -> JitSpec:
     return gen_jit_spec(
         f"{act_func_name}_and_mul",
         sources,
-        extra_include_paths=[FLASHINFER_INCLUDE_DIR, FLASHINFER_CSRC_DIR],
     )
-    return spec.build_and_load()
