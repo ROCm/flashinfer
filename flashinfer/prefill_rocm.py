@@ -279,6 +279,7 @@ def _get_aiter_batch_prefill_module():
         cum_seq_lens_kv: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> None:
+        logger.info(f"#################### AITER backend is used for batch prefill ####################")
         # Derive causal flag from mask_mode
         causal = mask_mode == MaskMode.CAUSAL.value
 

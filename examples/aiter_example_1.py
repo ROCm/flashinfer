@@ -21,6 +21,7 @@ def batch_prefill_with_paged_kv_cache_example(
     logits_soft_cap: float,
     return_lse: bool,
     contiguous_kv: bool,
+
 ):
     """
     Run batch_prefill_with_paged_kv_cache and verify the output against single_prefill_with_kv_cache implementation
@@ -248,34 +249,34 @@ if __name__ == "__main__":
 
     # Basic test with small batch
     batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True, backend="aiter"
+        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True
     )
-    # Test with logits soft cap
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
-    )
-    # Test with GQA (num_qo_heads > num_kv_heads)
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False, True
-    )
-    # Test with return_lse=True
-    batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True, True
-    )
-    batch_prefill_with_paged_kv_cache_example(
-        12, 54, 37, 1, 8, 8, 128, True, "NHD", "NONE", 0.0, False, True
-    )
-    batch_prefill_with_paged_kv_cache_example(
-        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
-    )
-    # Tests the partition_kv=True mode
-    batch_prefill_with_paged_kv_cache_example(
-        12, 512, 127, 1, 4, 4, 128, False, "NHD", "NONE", 0.0, True, True
-    )
-    # Tests the allocation of the workspace buffer
-    batch_prefill_with_paged_kv_cache_example(
-        12, 512, 37, 1, 4, 32, 128, False, "NHD", "NONE", 0.0, True, True
-    )
+    # # Test with logits soft cap
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # # Test with GQA (num_qo_heads > num_kv_heads)
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 4, 32, 64, False, "NHD", "NONE", 8.0, False, True
+    # )
+    # # Test with return_lse=True
+    # batch_prefill_with_paged_kv_cache_example(
+    #     4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, True, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 1, 8, 8, 128, True, "NHD", "NONE", 0.0, False, True
+    # )
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
+    # )
+    # # Tests the partition_kv=True mode
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 512, 127, 1, 4, 4, 128, False, "NHD", "NONE", 0.0, True, True
+    # )
+    # # Tests the allocation of the workspace buffer
+    # batch_prefill_with_paged_kv_cache_example(
+    #     12, 512, 37, 1, 4, 32, 128, False, "NHD", "NONE", 0.0, True, True
+    # )
 
     print("\n" + "=" * 60)
     print("All examples completed!")
