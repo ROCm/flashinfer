@@ -52,6 +52,16 @@ from .utils import (
 )
 
 
+try:
+    import aiter
+    from aiter.ops import mha as aiter_mha_module
+
+    _aiter_available = True
+except ImportError:
+    aiter_mha_module = None
+    _aiter_available = False
+
+
 def make_hashable_cache(func):
     """
     Decorator that converts unhashable arguments (like lists) to hashable ones (tuples)
@@ -206,8 +216,154 @@ def get_single_prefill_module(backend, *args):
     return SimpleNamespace(run=run_single_prefill)
 
 
+def _aiter_noop_plan(*args, **kwargs):
+    """No-op plan function for the AITER backend.
+
+    AITER does not require a separate planning / workspace-preparation step,
+    so we simply return an empty list that is accepted as ``plan_info_vec``
+    by the wrapper.
+    """
+    return []
+
+
+def _get_aiter_batch_prefill_module():
+    """Return a module-like namespace for the AITER backend.
+
+    The returned object exposes the same ``plan`` / ``ragged_run`` /
+    ``paged_run`` interface that the FA2 module does so that
+    :class:`BatchPrefillWithPagedKVCacheWrapper` can treat every backend
+    uniformly.
+    """
+
+    def aiter_paged_run(
+        float_workspace_buffer: torch.Tensor,
+        int_workspace_buffer: torch.Tensor,
+        plan_info_vec: List[int],
+        q: torch.Tensor,
+        paged_k_cache: torch.Tensor,
+        paged_v_cache: torch.Tensor,
+        qo_indptr: torch.Tensor,
+        paged_kv_indptr: torch.Tensor,
+        paged_kv_indices: torch.Tensor,
+        paged_kv_last_page_len: torch.Tensor,
+        o: torch.Tensor,
+        maybe_lse: Optional[torch.Tensor],
+        mask_mode: int,
+        layout: int,
+        window_left: int,
+        enable_pdl: bool,
+        maybe_custom_mask: Optional[torch.Tensor],
+        maybe_mask_indptr: Optional[torch.Tensor],
+        maybe_alibi_slopes: Optional[torch.Tensor],
+        maybe_prefix_len_ptr: Optional[torch.Tensor],
+        maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
+        maybe_max_item_len_ptr: Optional[torch.Tensor],
+        logits_soft_cap: float,
+        sm_scale: float,
+        scale_q: Optional[torch.Tensor],
+        scale_k: Optional[torch.Tensor],
+        scale_v: Optional[torch.Tensor],
+        rope_scale: float,
+        rope_theta: float,
+        token_pos_in_items_len: int,
+        workspace_size: int,
+        num_qo_heads: Optional[int] = None,
+        num_kv_heads: Optional[int] = None,
+        block_tables: Optional[torch.Tensor] = None,
+        kv_lens_buffer: Optional[torch.Tensor] = None,
+        page_size: Optional[int] = None,
+        max_q_len: Optional[int] = None,
+        max_kv_len: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        cum_seq_lens_q: Optional[torch.Tensor] = None,
+        cum_seq_lens_kv: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
+    ) -> None:
+        # Derive causal flag from mask_mode
+        causal = mask_mode == MaskMode.CAUSAL.value
+
+        # Compute actual max per-sequence query length from qo_indptr
+        qo_indptr_cpu = qo_indptr.cpu()
+        qo_lens = qo_indptr_cpu[1:] - qo_indptr_cpu[:-1]
+        max_seqlen_q = int(qo_lens.max().item())
+
+        k_cache_contiguous = paged_k_cache.contiguous()
+        v_cache_contiguous = paged_v_cache.contiguous()
+
+        aiter_result = aiter_mha_module.mha_batch_prefill_func(
+            q=q,
+            k=k_cache_contiguous,
+            v=v_cache_contiguous,
+            cu_seqlens_q=qo_indptr,
+            kv_indptr=paged_kv_indptr,
+            kv_page_indices=paged_kv_indices,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_kv_len,
+            dropout_p=0.0,
+            softmax_scale=sm_scale,
+            causal=causal,
+            window_size=(window_left, -1),
+            return_lse=maybe_lse is not None,
+            return_attn_probs=False,
+            kv_last_page_lens=paged_kv_last_page_len,
+        )
+
+        if maybe_lse is not None:
+            aiter_out, aiter_lse = aiter_result[0], aiter_result[1]
+            o.copy_(aiter_out)
+            maybe_lse.copy_(aiter_lse)
+        else:
+            if isinstance(aiter_result, tuple):
+                o.copy_(aiter_result[0])
+            else:
+                o.copy_(aiter_result)
+
+        return o
+
+    def aiter_ragged_run(
+        float_workspace_buffer: torch.Tensor,
+        int_workspace_buffer: torch.Tensor,
+        plan_info_vec: List[int],
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        qo_indptr: torch.Tensor,
+        kv_indptr: torch.Tensor,
+        o: torch.Tensor,
+        maybe_lse: Optional[torch.Tensor],
+        mask_mode: int,
+        layout: int,
+        window_left: int,
+        enable_pdl: bool,
+        maybe_custom_mask: Optional[torch.Tensor],
+        maybe_mask_indptr: Optional[torch.Tensor],
+        maybe_alibi_slopes: Optional[torch.Tensor],
+        maybe_prefix_len_ptr: Optional[torch.Tensor],
+        maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
+        maybe_max_item_len_ptr: Optional[torch.Tensor],
+        logits_soft_cap: float,
+        sm_scale: float,
+        rope_scale: float,
+        rope_theta: float,
+        token_pos_in_items_len: int,
+    ) -> None:
+        raise NotImplementedError(
+            "AITER backend does not yet support ragged (non-paged) KV cache. "
+            "Please use BatchPrefillWithPagedKVCacheWrapper instead."
+        )
+
+    return SimpleNamespace(
+        plan=_aiter_noop_plan,
+        ragged_run=aiter_ragged_run,
+        paged_run=aiter_paged_run,
+    )
+
+
 @functools.cache
 def get_batch_prefill_module(backend, *args):
+    if backend == "aiter":
+        return _get_aiter_batch_prefill_module()
+
     uri = get_batch_prefill_uri(backend, *args)
     module = gen_batch_prefill_module(backend, *args).build_and_load()
     plan_func = module.plan.default
@@ -1155,11 +1311,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._jit_module = None
 
         self._kv_layout = kv_layout
-        if backend != "fa2":
+        if backend not in ("fa2", "aiter"):
             logger.warning(
                 f"{backend} backend not supported on ROCm. Selecting FA2 as the backend."
             )
             backend = "fa2"
+        elif backend == "aiter":
+            if not _aiter_available:
+                raise ImportError(
+                    "The 'aiter' package is required for the 'aiter' backend. "
+                    "Please install it first."
+                )
 
         self._float_workspace_buffer = float_workspace_buffer
         self._workspace_size = (
