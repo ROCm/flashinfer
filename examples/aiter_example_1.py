@@ -248,7 +248,7 @@ if __name__ == "__main__":
 
     # Basic test with small batch
     batch_prefill_with_paged_kv_cache_example(
-        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True
+        4, 128, 128, 16, 8, 8, 64, False, "NHD", "NONE", 0.0, False, True, backend="aiter"
     )
     # Test with logits soft cap
     batch_prefill_with_paged_kv_cache_example(
