@@ -269,7 +269,7 @@ def _get_aiter_batch_prefill_module():
         cum_seq_lens_kv: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> None:
-        logger.info(f"#################### AITER backend is used for batch prefill ####################")
+        logger.info(f"###### AITER backend is used for batch prefill ######")
         # Derive causal flag from mask_mode
         causal = mask_mode == MaskMode.CAUSAL.value
 
@@ -292,6 +292,7 @@ def _get_aiter_batch_prefill_module():
             max_seqlen_k=max_kv_len,
             dropout_p=0.0,
             softmax_scale=sm_scale,
+            logits_soft_cap=logits_soft_cap,
             causal=causal,
             window_size=(window_left, -1),
             return_lse=maybe_lse is not None,
@@ -302,7 +303,11 @@ def _get_aiter_batch_prefill_module():
         if maybe_lse is not None:
             aiter_out, aiter_lse = aiter_result[0], aiter_result[1]
             o.copy_(aiter_out)
-            maybe_lse.copy_(aiter_lse)
+            # aiter (CK kernels) returns LSE in log2 scale with shape
+            # (num_heads, total_q), but FlashInfer expects natural log (ln)
+            # with shape (total_q, num_heads), so we transpose and convert.
+            # Convert log2 to ln by dividing by ln(2), i.e., multiply by 1/ln(2).
+            maybe_lse.copy_(aiter_lse.t() / math.log(2))
         else:
             if isinstance(aiter_result, tuple):
                 o.copy_(aiter_result[0])
