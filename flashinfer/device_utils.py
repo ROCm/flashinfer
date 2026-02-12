@@ -38,7 +38,7 @@ def is_cuda_available() -> bool:
 # Use these throughout the codebase for device-specific logic
 IS_HIP = is_hip_available()
 IS_CUDA = is_cuda_available()
-
+IS_AITER_AVAILABLE = False
 
 def get_device_backend() -> str:
     """

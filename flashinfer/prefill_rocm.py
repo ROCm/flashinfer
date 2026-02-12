@@ -51,17 +51,6 @@ from .utils import (
     register_fake_op,
 )
 
-
-try:
-    import aiter
-    from aiter.ops import mha as aiter_mha_module
-
-    _aiter_available = True
-except ImportError:
-    aiter_mha_module = None
-    _aiter_available = False
-
-
 def make_hashable_cache(func):
     """
     Decorator that converts unhashable arguments (like lists) to hashable ones (tuples)
@@ -1318,7 +1307,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             )
             backend = "fa2"
         elif backend == "aiter":
-            if not _aiter_available:
+            if not IS_AITER_AVAILABLE:
                 raise ImportError(
                     "The 'aiter' package is required for the 'aiter' backend. "
                     "Please install it first."
