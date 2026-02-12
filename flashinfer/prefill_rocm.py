@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
+from .device_utils import IS_AITER_AVAILABLE, aiter_mha_module
 from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,

@@ -39,6 +39,15 @@ def is_cuda_available() -> bool:
 IS_HIP = is_hip_available()
 IS_CUDA = is_cuda_available()
 IS_AITER_AVAILABLE = False
+aiter_mha_module = None
+
+if IS_HIP:
+    try:
+        import aiter
+        from aiter.ops import mha as aiter_mha_module
+        IS_AITER_AVAILABLE = True
+    except ImportError:
+        print("AITER is not available on ROCm. Using FA2 as the backend.")
 
 def get_device_backend() -> str:
     """

@@ -19,7 +19,7 @@ limitations under the License.
 FlashInfer: Fast Attention Algorithms for LLM Inference
 """
 
-from .device_utils import IS_CUDA, IS_HIP, IS_AITER_AVAILABLE
+from .device_utils import IS_CUDA, IS_HIP, IS_AITER_AVAILABLE, aiter_mha_module
 
 # ========================================
 # Version and Backend Setup
@@ -155,12 +155,6 @@ elif IS_HIP:
 
     # Checks compatibility with installed torch
     check_torch_rocm_compatibility()
-    try:
-        import aiter
-        from aiter.ops import mha as aiter_mha_module
-        IS_AITER_AVAILABLE = True
-    except ImportError:
-        print("AITER is not available on ROCm. Using FA2 as the backend.")
     # ========================================
     # HIP/ROCm Imports (AMD-ported modules)
     # ========================================
