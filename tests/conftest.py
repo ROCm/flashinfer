@@ -12,11 +12,7 @@ from torch.torch_version import __version__ as torch_version
 import flashinfer
 
 # Build TORCH_COMPILE_FNS list conditionally based on available modules
-TORCH_COMPILE_FNS = [
-    flashinfer.activation.silu_and_mul,
-    flashinfer.activation.gelu_and_mul,
-    flashinfer.activation.gelu_tanh_and_mul,
-]
+TORCH_COMPILE_FNS = []
 
 # Add cascade functions if available (CUDA only)
 if hasattr(flashinfer, "cascade"):

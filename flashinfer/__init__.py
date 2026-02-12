@@ -19,7 +19,7 @@ limitations under the License.
 FlashInfer: Fast Attention Algorithms for LLM Inference
 """
 
-from .device_utils import IS_CUDA, IS_HIP
+from .device_utils import IS_CUDA, IS_HIP, IS_AITER_AVAILABLE, aiter_mha_module
 
 # ========================================
 # Version and Backend Setup
@@ -155,7 +155,6 @@ elif IS_HIP:
 
     # Checks compatibility with installed torch
     check_torch_rocm_compatibility()
-
     # ========================================
     # HIP/ROCm Imports (AMD-ported modules)
     # ========================================
