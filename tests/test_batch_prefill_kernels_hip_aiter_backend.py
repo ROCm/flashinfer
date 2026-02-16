@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
 import pytest
 import torch
 from jit_utils import gen_prefill_attention_modules
@@ -11,6 +13,75 @@ from flashinfer.jit.core import logger
 import logging
 
 logger.setLevel(logging.ERROR)
+
+
+def _manual_attention_reference(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    causal: bool = False,
+    sm_scale: float | None = None,
+) -> torch.Tensor:
+    """Compute multi-head attention with an optional bottom-right causal mask.
+
+    Supports GQA: when ``q`` has more heads than ``k``/``v`` the KV heads are
+    repeated to match.
+
+    Parameters
+    ----------
+    q : torch.Tensor
+        Query tensor, shape ``[qo_len, num_qo_heads, head_dim]``.
+    k : torch.Tensor
+        Key tensor, shape ``[kv_len, num_kv_heads, head_dim]``.
+    v : torch.Tensor
+        Value tensor, shape ``[kv_len, num_kv_heads, head_dim]``.
+    causal : bool
+        If ``True``, apply a bottom-right aligned causal mask so that
+        ``q[i]`` (mapped to position ``kv_len - qo_len + i``) may only attend
+        to ``k[j]`` with ``j <= kv_len - qo_len + i``.
+    sm_scale : float, optional
+        Softmax scale; defaults to ``1 / sqrt(head_dim)``.
+
+    Returns
+    -------
+    torch.Tensor
+        Output tensor, shape ``[qo_len, num_qo_heads, head_dim]`` in the same
+        dtype as *q*.
+    """
+    qo_len = q.size(0)
+    kv_len = k.size(0)
+    num_qo_heads = q.size(1)
+    num_kv_heads = k.size(1)
+    head_dim = q.size(-1)
+    if sm_scale is None:
+        sm_scale = 1.0 / math.sqrt(head_dim)
+
+    # GQA: repeat KV heads to match query heads.
+    if num_qo_heads != num_kv_heads:
+        assert num_qo_heads % num_kv_heads == 0
+        reps = num_qo_heads // num_kv_heads
+        k = k.repeat_interleave(reps, dim=1)
+        v = v.repeat_interleave(reps, dim=1)
+
+    # [num_heads, seq_len, head_dim]
+    q_t = q.float().permute(1, 0, 2)
+    k_t = k.float().permute(1, 0, 2)
+    v_t = v.float().permute(1, 0, 2)
+
+    scores = torch.matmul(q_t, k_t.transpose(-2, -1)) * sm_scale  # [H, qo, kv]
+
+    if causal:
+        # Bottom-right aligned: q[i] at position (kv_len - qo_len + i) can
+        # attend to k[j] where j <= kv_len - qo_len + i.
+        offset = kv_len - qo_len
+        mask = torch.zeros(qo_len, kv_len, device=q.device, dtype=torch.bool)
+        for i in range(qo_len):
+            mask[i, i + offset + 1 :] = True
+        scores.masked_fill_(mask.unsqueeze(0), float("-inf"))
+
+    attn = torch.softmax(scores, dim=-1)
+    out = torch.matmul(attn, v_t)  # [H, qo, head_dim]
+    return out.permute(1, 0, 2).to(q.dtype)  # [qo, H, head_dim]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -263,15 +334,7 @@ def test_batch_prefill_with_paged_kv_cache(
             ],
             dim=0,
         ).half()
-        o_ref_i = flashinfer.prefill.single_prefill_with_kv_cache(
-            qi,
-            ki,
-            vi,
-            causal=causal,
-            pos_encoding_mode=pos_encoding_mode,
-            logits_soft_cap=logits_soft_cap,
-            backend="fa2",
-        )
+        o_ref_i = _manual_attention_reference(qi, ki, vi, causal=causal)
         o_i = o[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
 
@@ -502,15 +565,7 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
             ],
             dim=0,
         ).half()
-        o_ref_i = flashinfer.prefill.single_prefill_with_kv_cache(
-            qi,
-            ki,
-            vi,
-            causal=causal,
-            pos_encoding_mode=pos_encoding_mode,
-            logits_soft_cap=logits_soft_cap,
-            backend="fa2",
-        )
+        o_ref_i = _manual_attention_reference(qi, ki, vi, causal=causal)
         o_i = o[q_indptr_cpu[i] : q_indptr_cpu[i + 1]]
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
 
