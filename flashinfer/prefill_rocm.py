@@ -2115,13 +2115,16 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 self._qo_indptr_buf,
                 self._vector_sparse_indptr_buffer,
                 sinks,
-                # Pre-computed flat-KV gather info for AITER (None for
-                # other backends or natively-supported page sizes).
-                self._aiter_flat_gather_idx,
-                self._aiter_flat_kv_indptr,
-                self._aiter_flat_kv_lpl,
-                self._aiter_flat_kv_indices,
             ]
+            if self._backend == "aiter":
+                # Pre-computed flat-KV gather info for AITER (None for
+                # natively-supported page sizes).
+                run_args += [
+                    self._aiter_flat_gather_idx,
+                    self._aiter_flat_kv_indptr,
+                    self._aiter_flat_kv_lpl,
+                    self._aiter_flat_kv_indices,
+                ]
 
         assert self._cached_module is not None, "cached module is not initialized"
         self._cached_module.paged_run(*run_args)
