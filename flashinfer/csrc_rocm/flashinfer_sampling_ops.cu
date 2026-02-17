@@ -15,6 +15,14 @@
  */
 #include "pytorch_extension_utils.h"
 
+void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
+             std::optional<at::Tensor> maybe_temperature_arr, double temperature_val,
+             bool enable_pdl);
+
+void sampling_from_logits(at::Tensor logits, at::Tensor output,
+                          std::optional<at::Tensor> maybe_indices, bool deterministic,
+                          std::optional<at::Generator> gen);
+
 void sampling_from_probs(at::Tensor probs, at::Tensor output,
                          std::optional<at::Tensor> maybe_indices, bool deterministic,
                          std::optional<at::Generator> gen);
@@ -56,6 +64,10 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
                                 std::optional<at::Generator> gen);
 
 TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
+  // Online safe softmax with temperature scaling
+  m.def("softmax", softmax);
+  // Sample from logits (equivalent to softmax + sampling_from_probs)
+  m.def("sampling_from_logits", sampling_from_logits);
   // Sample from probabilities
   m.def("sampling_from_probs", sampling_from_probs);
   // Top-k sampling from probabilities

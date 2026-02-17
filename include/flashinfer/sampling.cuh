@@ -17,6 +17,26 @@
 #ifndef FLASHINFER_SAMPLING_CUH_
 #define FLASHINFER_SAMPLING_CUH_
 
+// gpu_iface portability layer provides FI_GPU_CALL, gpuError_t, gpuStream_t,
+// gpuLaunchKernel, gpuFuncSetAttribute, etc. on both CUDA and HIP.
+// macros.hpp must be first: it defines PLATFORM_HIP_DEVICE / PLATFORM_CUDA_DEVICE.
+#include <gpu_iface/macros.hpp>
+#include <gpu_iface/gpu_runtime_compat.hpp>
+#include <gpu_iface/dispatch.cuh>
+
+#ifdef PLATFORM_HIP_DEVICE
+// --- HIP-specific: hiprand, hipcub, and gpu_iface math/utils/vec_dtypes ---
+#include <hiprand/hiprand.h>
+#include <hiprand/hiprand_kernel.h>
+
+#include <hipcub/hipcub.hpp>
+namespace cub = hipcub;
+
+#include <gpu_iface/math_ops.hpp>
+#include <gpu_iface/utils.cuh>
+#include <gpu_iface/vec_dtypes.hpp>
+#else
+// --- CUDA-specific ---
 #include <cuda.h>
 #include <curand.h>
 #include <curand_kernel.h>
@@ -26,18 +46,26 @@
 #include <cuda/functional>
 #include <cuda/std/functional>
 #include <cuda/std/limits>
+
+#include "math.cuh"
+#include "utils.cuh"
+#include "vec_dtypes.cuh"
+#endif  // PLATFORM_HIP_DEVICE
+
+// allocator.h is a pure-C++ header; include it on both CUDA and HIP.
+#include "allocator.h"
+
 #include <limits>
 #include <numeric>
 #include <tuple>
 
-#include "allocator.h"
-#include "math.cuh"
-#include "utils.cuh"
-#include "vec_dtypes.cuh"
-
-// Define reduction operators based on CUDA version
-// CUDA 13 (12.9+) deprecated cub::Max/Min in favor of cuda::maximum/minimum
-#if CUDA_VERSION >= 12090
+// Define reduction operators based on CUDA/HIP version
+#ifdef PLATFORM_HIP_DEVICE
+// On HIP, hipcub is aliased as cub above; use hipcub::Max/Min
+using MaxReduceOp = cub::Max;
+using MinReduceOp = cub::Min;
+#elif CUDA_VERSION >= 12090
+// CUDA 13 (12.9+) deprecated cub::Max/Min in favour of cuda::maximum/minimum
 using MaxReduceOp = cuda::maximum<>;
 using MinReduceOp = cuda::minimum<>;
 #else
@@ -50,7 +78,9 @@ namespace flashinfer {
 namespace sampling {
 
 using namespace cub;
+#ifdef PLATFORM_HIP_DEVICE
 using namespace gpu_iface::vec_dtypes;
+#endif
 
 // Warp/wavefront size: 32 for NVIDIA, 64 for AMD
 #ifdef PLATFORM_HIP_DEVICE
@@ -359,7 +389,7 @@ __global__ void OnlineSoftmaxFusedKernel(DType* logits, DType* output, DType* te
 
   vec_t<DType, VEC_SIZE> logits_vec;
 
-  float running_max = -cuda::std::numeric_limits<float>::infinity();
+  float running_max = -std::numeric_limits<float>::infinity();
   float running_denominator = 0.0f;
 
 #if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
@@ -369,7 +399,7 @@ __global__ void OnlineSoftmaxFusedKernel(DType* logits, DType* output, DType* te
   // Pass 1: Compute running max and denominator
 #pragma unroll 2
   for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
-    logits_vec.fill(-cuda::std::numeric_limits<DType>::infinity());
+    logits_vec.fill(-std::numeric_limits<DType>::infinity());
     if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
       logits_vec.cast_load(logits + bx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
 
@@ -383,7 +413,7 @@ __global__ void OnlineSoftmaxFusedKernel(DType* logits, DType* output, DType* te
       }
     }
 
-    float thread_max = -cuda::std::numeric_limits<float>::infinity();
+    float thread_max = -std::numeric_limits<float>::infinity();
 #pragma unroll
     for (uint32_t j = 0; j < VEC_SIZE; ++j) {
       thread_max = max(thread_max, logits_vec[j]);
@@ -484,7 +514,7 @@ __global__ void OnlineSoftmaxMapKernel(DType* logits, PartialSoftmaxResult* part
   auto& temp_storage = reinterpret_cast<TempStorage&>(smem);
 
   vec_t<DType, VEC_SIZE> logits_vec;
-  float running_max = -cuda::std::numeric_limits<float>::infinity();
+  float running_max = -std::numeric_limits<float>::infinity();
   float running_denominator = 0.0f;
 
 #if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
@@ -493,13 +523,13 @@ __global__ void OnlineSoftmaxMapKernel(DType* logits, PartialSoftmaxResult* part
 
 #pragma unroll 2
   for (uint32_t i = 0; i < ceil_div(slice_size, BLOCK_THREADS * VEC_SIZE); ++i) {
-    logits_vec.fill(-cuda::std::numeric_limits<DType>::infinity());
+    logits_vec.fill(-std::numeric_limits<DType>::infinity());
 
     if ((i * BLOCK_THREADS + tx) * VEC_SIZE < slice_size) {
       logits_vec.cast_load(logits + bx * d + slice_start + (i * BLOCK_THREADS + tx) * VEC_SIZE);
     }
 
-    float thread_max = -cuda::std::numeric_limits<float>::infinity();
+    float thread_max = -std::numeric_limits<float>::infinity();
 #pragma unroll
     for (uint32_t j = 0; j < VEC_SIZE; ++j) {
       logits_vec[j] *= inv_temp;
@@ -567,7 +597,7 @@ __global__ void OnlineSoftmaxReduceKernel(DType* logits, DType* output,
 
   const Float2SoftmaxReduceOp reduce_op;
 
-  float2 thread_aggregate = make_float2(-cuda::std::numeric_limits<float>::infinity(), 0.0f);
+  float2 thread_aggregate = make_float2(-std::numeric_limits<float>::infinity(), 0.0f);
 
 #if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
   asm volatile("griddepcontrol.wait;");
@@ -599,7 +629,7 @@ __global__ void OnlineSoftmaxReduceKernel(DType* logits, DType* output,
   vec_t<DType, VEC_SIZE> prob_vec;
 
   for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
-    logits_vec.fill(-cuda::std::numeric_limits<DType>::infinity());
+    logits_vec.fill(-std::numeric_limits<DType>::infinity());
 
     if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
       logits_vec.cast_load(logits + bx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
@@ -727,12 +757,38 @@ template <typename DType, uint32_t VEC_SIZE>
 __device__ __forceinline__ vec_t<DType, VEC_SIZE> GenerateGumbelNoise(uint64_t philox_seed,
                                                                       uint64_t philox_offset,
                                                                       uint64_t subsequence) {
-  curandStatePhilox4_32_10_t state;
   vec_t<float, VEC_SIZE> noise;
   constexpr float kEPSILON = 1e-20f;
   constexpr float kLOG2 = 0.6931471806f;
   auto uniform2gumbel = [](float x) { return -kLOG2 * log2f(-log2f(x + kEPSILON) + kEPSILON); };
 // TODO: compare the speed of log2 and log
+#ifdef PLATFORM_HIP_DEVICE
+  // HIP: hiprand_uniform4 is not available; generate 4 samples using hiprand_uniform
+#pragma unroll
+  for (uint32_t i = 0; i + 4 <= VEC_SIZE; i += 4) {
+    hiprandStatePhilox4_32_10_t state;
+    hiprand_init(philox_seed, subsequence + i, philox_offset, &state);
+    noise[i] = uniform2gumbel(hiprand_uniform(&state));
+    noise[i + 1] = uniform2gumbel(hiprand_uniform(&state));
+    noise[i + 2] = uniform2gumbel(hiprand_uniform(&state));
+    noise[i + 3] = uniform2gumbel(hiprand_uniform(&state));
+  }
+  if constexpr (VEC_SIZE % 4 != 0) {
+    hiprandStatePhilox4_32_10_t state;
+    hiprand_init(philox_seed, subsequence + VEC_SIZE / 4 * 4, philox_offset, &state);
+    if constexpr (VEC_SIZE % 4 == 1) {
+      noise[VEC_SIZE - 1] = uniform2gumbel(hiprand_uniform(&state));
+    } else if constexpr (VEC_SIZE % 4 == 2) {
+      noise[VEC_SIZE - 2] = uniform2gumbel(hiprand_uniform(&state));
+      noise[VEC_SIZE - 1] = uniform2gumbel(hiprand_uniform(&state));
+    } else if constexpr (VEC_SIZE % 4 == 3) {
+      noise[VEC_SIZE - 3] = uniform2gumbel(hiprand_uniform(&state));
+      noise[VEC_SIZE - 2] = uniform2gumbel(hiprand_uniform(&state));
+      noise[VEC_SIZE - 1] = uniform2gumbel(hiprand_uniform(&state));
+    }
+  }
+#else
+  curandStatePhilox4_32_10_t state;
 #pragma unroll
   for (uint32_t i = 0; i + 4 <= VEC_SIZE; i += 4) {
     curand_init(philox_seed, subsequence + i, philox_offset, &state);
@@ -756,6 +812,7 @@ __device__ __forceinline__ vec_t<DType, VEC_SIZE> GenerateGumbelNoise(uint64_t p
       noise[VEC_SIZE - 1] = uniform2gumbel(noise_vec.z);
     }
   }
+#endif  // PLATFORM_HIP_DEVICE
 
   if constexpr (std::is_same_v<DType, float>) {
     return noise;
@@ -782,9 +839,9 @@ __global__ void SamplingFromLogitsKernel(DType* logits, IdType* output, IdType* 
   auto& temp_storage = reinterpret_cast<SharedMem&>(smem_sampling_logit);
 
   vec_t<DType, VEC_SIZE> logits_vec;
-  DataAndIndex<DType, IdType> max_data = {-cuda::std::numeric_limits<DType>::infinity(), 0};
+  DataAndIndex<DType, IdType> max_data = {-std::numeric_limits<DType>::infinity(), 0};
   for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
-    logits_vec.fill(-cuda::std::numeric_limits<DType>::infinity());
+    logits_vec.fill(-std::numeric_limits<DType>::infinity());
     if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
       logits_vec.cast_load(logits + row_idx * d + i * BLOCK_THREADS * VEC_SIZE + tx * VEC_SIZE);
     }
@@ -797,7 +854,7 @@ __global__ void SamplingFromLogitsKernel(DType* logits, IdType* output, IdType* 
     for (uint32_t j = 0; j < VEC_SIZE; ++j) {
       cur_data[j].data = (i * BLOCK_THREADS + tx) * VEC_SIZE + j < d
                              ? logits_vec[j] + gumbel_noise[j]
-                             : -cuda::std::numeric_limits<DType>::infinity();
+                             : -std::numeric_limits<DType>::infinity();
       cur_data[j].index = (i * BLOCK_THREADS + tx) * VEC_SIZE + j;
     }
 
@@ -1278,10 +1335,10 @@ __global__ void TopKTopPSamplingFromProbKernel(DType* probs, IdType* top_k_arr, 
 }
 
 template <typename DType>
-cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uint32_t d,
-                          DType* temperature_arr, DType temperature_val, void* workspace_buffer,
-                          size_t workspace_buffer_size_in_bytes, bool enable_pdl,
-                          cudaStream_t stream = 0) {
+gpuError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uint32_t d,
+                         DType* temperature_arr, DType temperature_val, void* workspace_buffer,
+                         size_t workspace_buffer_size_in_bytes, bool enable_pdl,
+                         gpuStream_t stream = 0) {
   constexpr uint32_t SMALL_BATCH_THRESHOLD = 128;
   constexpr uint32_t LARGE_VOCAB_THRESHOLD = 24576;
   constexpr uint32_t DEFAULT_SLICE_SIZE = 8192;
@@ -1297,7 +1354,11 @@ cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uin
 
           const size_t partial_buffer_size = batch_size * num_slices * sizeof(PartialSoftmaxResult);
           if (workspace_buffer_size_in_bytes < partial_buffer_size) {
+#ifdef PLATFORM_HIP_DEVICE
+            return hipErrorInvalidValue;
+#else
             return cudaErrorInvalidValue;
+#endif
           }
 
           AlignedAllocator allocator(workspace_buffer, workspace_buffer_size_in_bytes);
@@ -1313,9 +1374,11 @@ cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uin
           void* phase1_args[] = {&logits, &partial_results, &temperature_arr, &temperature_val,
                                  &d,      &num_slices};
 
-          FLASHINFER_CUDA_CALL(cudaFuncSetAttribute(
-              phase1_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+          FI_GPU_CALL(gpuFuncSetAttribute((const void*)phase1_kernel,
+                                          gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
+#ifndef PLATFORM_HIP_DEVICE
+          // PDL (Programmatic Dependent Launch) is a CUDA-only feature
           if (enable_pdl) {
             cudaLaunchAttribute attribute[1];
             attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
@@ -1333,9 +1396,12 @@ cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uin
                                                     temperature_arr, temperature_val, d,
                                                     num_slices));
           } else {
-            FLASHINFER_CUDA_CALL(cudaLaunchKernel((void*)phase1_kernel, phase1_nblks, phase1_nthrs,
-                                                  phase1_args, smem_size, stream));
+#endif
+            FI_GPU_CALL(gpuLaunchKernel((const void*)phase1_kernel, phase1_nblks, phase1_nthrs,
+                                        phase1_args, smem_size, stream));
+#ifndef PLATFORM_HIP_DEVICE
           }
+#endif
 
           // Phase 2: Final reduction and apply normalization
           dim3 phase2_nblks(batch_size);
@@ -1345,9 +1411,10 @@ cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uin
           void* phase2_args[] = {&logits,          &output, &partial_results, &temperature_arr,
                                  &temperature_val, &d,      &num_slices};
 
-          FLASHINFER_CUDA_CALL(cudaFuncSetAttribute(
-              phase2_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+          FI_GPU_CALL(gpuFuncSetAttribute((const void*)phase2_kernel,
+                                          gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
+#ifndef PLATFORM_HIP_DEVICE
           if (enable_pdl) {
             cudaLaunchAttribute attribute[1];
             attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
@@ -1365,9 +1432,12 @@ cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uin
                                                     partial_results, temperature_arr,
                                                     temperature_val, d, num_slices));
           } else {
-            FLASHINFER_CUDA_CALL(cudaLaunchKernel((void*)phase2_kernel, phase2_nblks, phase2_nthrs,
-                                                  phase2_args, smem_size, stream));
+#endif
+            FI_GPU_CALL(gpuLaunchKernel((const void*)phase2_kernel, phase2_nblks, phase2_nthrs,
+                                        phase2_args, smem_size, stream));
+#ifndef PLATFORM_HIP_DEVICE
           }
+#endif
         } else {
           // Path B: Single-Block Strategy
           // Switch input cache
@@ -1392,9 +1462,10 @@ cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uin
 
           DISPATCH_SOFTMAX_CACHE_INPUT(cache_input, CACHE_INPUT, {
             auto kernel = OnlineSoftmaxFusedKernel<BLOCK_THREADS, VEC_SIZE, DType, CACHE_INPUT>;
-            FLASHINFER_CUDA_CALL(cudaFuncSetAttribute(
-                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+            FI_GPU_CALL(gpuFuncSetAttribute((const void*)kernel,
+                                            gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
+#ifndef PLATFORM_HIP_DEVICE
             if (enable_pdl) {
               cudaLaunchAttribute attribute[1];
               attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
@@ -1411,19 +1482,22 @@ cudaError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uin
               FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(&config, kernel, logits, output,
                                                       temperature_arr, temperature_val, d));
             } else {
-              FLASHINFER_CUDA_CALL(
-                  cudaLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+#endif
+              FI_GPU_CALL(gpuLaunchKernel((const void*)kernel, nblks, nthrs, args, smem_size,
+                                          stream));
+#ifndef PLATFORM_HIP_DEVICE
             }
+#endif
           });
         }
       })});
-  return cudaSuccess;
+  return gpuSuccess;
 }
 
 template <typename T, typename IdType>
-cudaError_t SamplingFromLogits(T* logits, IdType* output, IdType* indices, uint32_t batch_size,
-                               uint32_t d, bool deterministic, uint64_t philox_seed,
-                               uint64_t philox_offset, cudaStream_t stream = 0) {
+gpuError_t SamplingFromLogits(T* logits, IdType* output, IdType* indices, uint32_t batch_size,
+                              uint32_t d, bool deterministic, uint64_t philox_seed,
+                              uint64_t philox_offset, gpuStream_t stream = 0) {
   constexpr uint32_t BLOCK_THREADS = 1024;
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
   dim3 nblks(batch_size);
@@ -1436,10 +1510,9 @@ cudaError_t SamplingFromLogits(T* logits, IdType* output, IdType* indices, uint3
       vec_size, VEC_SIZE, {DISPATCH_DETERMINISTIC(deterministic, DETERMINISTIC, {
         auto kernel = SamplingFromLogitsKernel<BLOCK_THREADS, SCAN_ALGO, REDUCE_ALGO, VEC_SIZE,
                                                DETERMINISTIC, T, IdType>;
-        FLASHINFER_CUDA_CALL(
-            cudaLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        FI_GPU_CALL(gpuLaunchKernel((const void*)kernel, nblks, nthrs, args, smem_size, stream));
       })});
-  return cudaSuccess;
+  return gpuSuccess;
 }
 
 template <typename T, typename IdType>
@@ -1784,8 +1857,8 @@ __global__ void TopKMaskLogitsKernel(DType* logits, DType* masked_logits, IdType
                                              RenormTempStorage<BLOCK_THREADS, REDUCE_ALGORITHM>>(
         logits, row_idx, d, temp_storage);
 
-    double low = (min_val == -cuda::std::numeric_limits<float>::infinity())
-                     ? cuda::std::numeric_limits<float>::lowest()
+    double low = (min_val == -std::numeric_limits<float>::infinity())
+                     ? std::numeric_limits<float>::lowest()
                      : min_val - 1,
            high = max_val;
     float min_gt_low, max_le_high;
