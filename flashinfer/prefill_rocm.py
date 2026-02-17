@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
+from .aiter_utils import HAS_AITER
 from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
@@ -51,6 +52,16 @@ from .utils import (
     register_fake_op,
 )
 
+aiter_mha_module = None
+
+if HAS_AITER:
+    from .aiter_utils import get_aiter_mha_module
+    aiter_mha_module = get_aiter_mha_module()
+
+# Page sizes natively supported by the AITER CK kernel in linear
+# (non-vectorized) paged KV layout.  For any other page size the AITER
+# backend flattens pages into a token-level (page_size=1) buffer first.
+_AITER_NATIVE_PAGE_SIZES = frozenset({1, 16})
 
 def make_hashable_cache(func):
     """
@@ -206,8 +217,182 @@ def get_single_prefill_module(backend, *args):
     return SimpleNamespace(run=run_single_prefill)
 
 
+def _aiter_noop_plan(*args, **kwargs):
+    """No-op plan function for the AITER backend.
+
+    AITER does not require a separate planning / workspace-preparation step,
+    so we simply return an empty list that is accepted as ``plan_info_vec``
+    by the wrapper.
+    """
+    return []
+
+
+def _get_aiter_batch_prefill_module():
+    """Return a module-like namespace for the AITER backend.
+
+    The returned object exposes the same ``plan`` / ``ragged_run`` /
+    ``paged_run`` interface that the FA2 module does so that
+    :class:`BatchPrefillWithPagedKVCacheWrapper` can treat every backend
+    uniformly.
+    """
+
+    def aiter_paged_run(
+        float_workspace_buffer: torch.Tensor,
+        int_workspace_buffer: torch.Tensor,
+        plan_info_vec: List[int],
+        q: torch.Tensor,
+        paged_k_cache: torch.Tensor,
+        paged_v_cache: torch.Tensor,
+        qo_indptr: torch.Tensor,
+        paged_kv_indptr: torch.Tensor,
+        paged_kv_indices: torch.Tensor,
+        paged_kv_last_page_len: torch.Tensor,
+        o: torch.Tensor,
+        maybe_lse: Optional[torch.Tensor],
+        mask_mode: int,
+        layout: int,
+        window_left: int,
+        enable_pdl: bool,
+        maybe_custom_mask: Optional[torch.Tensor],
+        maybe_mask_indptr: Optional[torch.Tensor],
+        maybe_alibi_slopes: Optional[torch.Tensor],
+        maybe_prefix_len_ptr: Optional[torch.Tensor],
+        maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
+        maybe_max_item_len_ptr: Optional[torch.Tensor],
+        logits_soft_cap: float,
+        sm_scale: float,
+        scale_q: Optional[torch.Tensor],
+        scale_k: Optional[torch.Tensor],
+        scale_v: Optional[torch.Tensor],
+        rope_scale: float,
+        rope_theta: float,
+        token_pos_in_items_len: int,
+        workspace_size: int,
+        num_qo_heads: Optional[int] = None,
+        num_kv_heads: Optional[int] = None,
+        block_tables: Optional[torch.Tensor] = None,
+        kv_lens_buffer: Optional[torch.Tensor] = None,
+        page_size: Optional[int] = None,
+        max_q_len: Optional[int] = None,
+        max_kv_len: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        cum_seq_lens_q: Optional[torch.Tensor] = None,
+        cum_seq_lens_kv: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
+        # Pre-computed flat-KV gather info (populated by plan() for
+        # unsupported page sizes).
+        aiter_flat_gather_idx: Optional[torch.Tensor] = None,
+        aiter_flat_kv_indptr: Optional[torch.Tensor] = None,
+        aiter_flat_kv_lpl: Optional[torch.Tensor] = None,
+        aiter_flat_kv_indices: Optional[torch.Tensor] = None,
+    ) -> None:
+        logger.info(f"###### AITER backend is used for batch prefill ######")
+        # Derive causal flag from mask_mode
+        causal = mask_mode == MaskMode.CAUSAL.value
+
+        # Use the pre-computed max query length from plan() – this avoids a
+        # device-to-host copy that would be illegal inside CUDA-graph capture.
+        max_seqlen_q = max_q_len
+
+        # If plan() pre-computed flat-KV gather indices (unsupported page
+        # size), use a single GPU gather to flatten pages into tokens.
+        # This path is safe inside CUDA-graph capture.
+        if aiter_flat_gather_idx is not None:
+            num_heads = paged_k_cache.size(-2)
+            head_dim = paged_k_cache.size(-1)
+            k_2d = paged_k_cache.reshape(-1, num_heads, head_dim)
+            v_2d = paged_v_cache.reshape(-1, num_heads, head_dim)
+            k_for_aiter = k_2d[aiter_flat_gather_idx].contiguous()
+            v_for_aiter = v_2d[aiter_flat_gather_idx].contiguous()
+            indptr_for_aiter = aiter_flat_kv_indptr
+            indices_for_aiter = aiter_flat_kv_indices
+            lpl_for_aiter = aiter_flat_kv_lpl
+        else:
+            k_for_aiter = paged_k_cache.contiguous()
+            v_for_aiter = paged_v_cache.contiguous()
+            indptr_for_aiter = paged_kv_indptr
+            indices_for_aiter = paged_kv_indices
+            lpl_for_aiter = paged_kv_last_page_len
+
+        aiter_result = aiter_mha_module.mha_batch_prefill_func(
+            q=q,
+            k=k_for_aiter,
+            v=v_for_aiter,
+            cu_seqlens_q=qo_indptr,
+            kv_indptr=indptr_for_aiter,
+            kv_page_indices=indices_for_aiter,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_kv_len,
+            dropout_p=0.0,
+            softmax_scale=sm_scale,
+            logits_soft_cap=logits_soft_cap,
+            causal=causal,
+            window_size=(window_left, -1),
+            return_lse=maybe_lse is not None,
+            return_attn_probs=False,
+            kv_last_page_lens=lpl_for_aiter,
+        )
+
+        if maybe_lse is not None:
+            aiter_out, aiter_lse = aiter_result[0], aiter_result[1]
+            o.copy_(aiter_out)
+            # aiter (CK kernels) returns LSE in log2 scale with shape
+            # (num_heads, total_q), but FlashInfer expects natural log (ln)
+            # with shape (total_q, num_heads), so we transpose and convert.
+            # Convert log2 → ln: lse_ln = lse_log2 * ln(2).
+            maybe_lse.copy_(aiter_lse.t() / math.log(2))
+        else:
+            if isinstance(aiter_result, tuple):
+                o.copy_(aiter_result[0])
+            else:
+                o.copy_(aiter_result)
+
+        return o
+
+    def aiter_ragged_run(
+        float_workspace_buffer: torch.Tensor,
+        int_workspace_buffer: torch.Tensor,
+        plan_info_vec: List[int],
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        qo_indptr: torch.Tensor,
+        kv_indptr: torch.Tensor,
+        o: torch.Tensor,
+        maybe_lse: Optional[torch.Tensor],
+        mask_mode: int,
+        layout: int,
+        window_left: int,
+        enable_pdl: bool,
+        maybe_custom_mask: Optional[torch.Tensor],
+        maybe_mask_indptr: Optional[torch.Tensor],
+        maybe_alibi_slopes: Optional[torch.Tensor],
+        maybe_prefix_len_ptr: Optional[torch.Tensor],
+        maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
+        maybe_max_item_len_ptr: Optional[torch.Tensor],
+        logits_soft_cap: float,
+        sm_scale: float,
+        rope_scale: float,
+        rope_theta: float,
+        token_pos_in_items_len: int,
+    ) -> None:
+        raise NotImplementedError(
+            "AITER backend does not yet support ragged (non-paged) KV cache. "
+            "Please use BatchPrefillWithPagedKVCacheWrapper instead."
+        )
+
+    return SimpleNamespace(
+        plan=_aiter_noop_plan,
+        ragged_run=aiter_ragged_run,
+        paged_run=aiter_paged_run,
+    )
+
+
 @functools.cache
 def get_batch_prefill_module(backend, *args):
+    if backend == "aiter":
+        return _get_aiter_batch_prefill_module()
+
     uri = get_batch_prefill_uri(backend, *args)
     module = gen_batch_prefill_module(backend, *args).build_and_load()
     plan_func = module.plan.default
@@ -1155,11 +1340,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._jit_module = None
 
         self._kv_layout = kv_layout
-        if backend != "fa2":
+        if backend not in ("fa2", "aiter"):
             logger.warning(
                 f"{backend} backend not supported on ROCm. Selecting FA2 as the backend."
             )
             backend = "fa2"
+        elif backend == "aiter":
+            if not HAS_AITER:
+                raise ImportError(
+                    "The 'aiter' package is required for the 'aiter' backend. "
+                    "Please install it first."
+                )
 
         self._float_workspace_buffer = float_workspace_buffer
         self._workspace_size = (
@@ -1224,6 +1415,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._seq_lens_kv = None
         self._seq_lens_q = None
         self._block_tables = None
+        # Pre-computed flat-KV buffers for the AITER backend when the page
+        # size is not natively supported (see _AITER_NATIVE_PAGE_SIZES).
+        self._aiter_flat_gather_idx: Optional[torch.Tensor] = None
+        self._aiter_flat_kv_indptr: Optional[torch.Tensor] = None
+        self._aiter_flat_kv_lpl: Optional[torch.Tensor] = None
+        self._aiter_flat_kv_indices: Optional[torch.Tensor] = None
 
     @property
     def is_cuda_graph_enabled(self) -> bool:
@@ -1436,8 +1633,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._max_q_len = max_token_per_sequence
         else:
             qo_indptr_host = qo_indptr.to("cpu")
-            self._max_q_len = max(qo_indptr_host).item()
             total_num_rows = qo_indptr_host[-1]
+            self._max_q_len = int(
+                (qo_indptr_host[1:] - qo_indptr_host[:-1]).max().item()
+            )
 
         if max_sequence_kv is not None:
             self._max_kv_len = max_sequence_kv
@@ -1591,6 +1790,94 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._rope_theta = rope_theta
         self._seq_lens_kv = seq_lens
         self._seq_lens_q = seq_lens_q if seq_lens_q is not None else seq_lens
+
+        # Pre-compute flat-KV gather indices for the AITER backend when the
+        # page size is not natively supported.  These are stored as GPU
+        # tensors so that the ``run()`` path (which may be inside a CUDA graph
+        # capture) can use them without any host-side operations.
+        if (
+            self._backend == "aiter"
+            and page_size not in _AITER_NATIVE_PAGE_SIZES
+        ):
+            kv_indptr_h = paged_kv_indptr.cpu()
+            kv_indices_h = paged_kv_indices.cpu()
+            kv_lpl_h = paged_kv_last_page_len.cpu()
+            bs = kv_indptr_h.size(0) - 1
+
+            gather_indices: list[int] = []
+            token_counts: list[int] = []
+            for i in range(bs):
+                start = int(kv_indptr_h[i].item())
+                end = int(kv_indptr_h[i + 1].item())
+                lpl = int(kv_lpl_h[i].item())
+                # Full pages
+                for p_local in range(start, end - 1):
+                    page_global = int(kv_indices_h[p_local].item())
+                    for t in range(page_size):
+                        gather_indices.append(page_global * page_size + t)
+                # Last page (trimmed)
+                last_page = int(kv_indices_h[end - 1].item())
+                for t in range(lpl):
+                    gather_indices.append(last_page * page_size + t)
+                token_counts.append((end - start - 1) * page_size + lpl)
+
+            total_tokens = len(gather_indices)
+            gather_t = torch.tensor(
+                gather_indices, dtype=torch.long, device=self.device
+            )
+            flat_indptr = torch.zeros(
+                bs + 1, dtype=torch.int32, device=self.device
+            )
+            flat_indptr[1:] = torch.tensor(
+                token_counts, dtype=torch.int32, device=self.device
+            ).cumsum(0)
+            flat_lpl = torch.ones(bs, dtype=torch.int32, device=self.device)
+            flat_indices = torch.arange(
+                total_tokens, dtype=torch.int32, device=self.device
+            )
+
+            if self.is_cuda_graph_enabled:
+                # In CUDA-graph mode the tensors used inside the captured
+                # graph must keep the **same addresses and sizes** across
+                # plan() calls.  We therefore allocate with the *maximum*
+                # possible size on the first call and pad unused positions
+                # with safe values (index 0).  Subsequent plan() calls
+                # overwrite the used portion via copy_().
+                max_flat_tokens = (
+                    self._paged_kv_indices_buf.numel() * page_size
+                )
+                if self._aiter_flat_gather_idx is None:
+                    # First plan() – allocate max-size buffers.
+                    self._aiter_flat_gather_idx = torch.zeros(
+                        max_flat_tokens, dtype=torch.long, device=self.device
+                    )
+                    self._aiter_flat_kv_indices = torch.arange(
+                        max_flat_tokens,
+                        dtype=torch.int32,
+                        device=self.device,
+                    )
+                    self._aiter_flat_kv_indptr = torch.zeros(
+                        bs + 1, dtype=torch.int32, device=self.device
+                    )
+                    self._aiter_flat_kv_lpl = torch.ones(
+                        bs, dtype=torch.int32, device=self.device
+                    )
+                # Fill the used portion, leave the rest as zero-padding.
+                self._aiter_flat_gather_idx[:total_tokens].copy_(gather_t)
+                self._aiter_flat_kv_indptr.copy_(flat_indptr)
+                self._aiter_flat_kv_lpl.copy_(flat_lpl)
+                # _aiter_flat_kv_indices is constant (arange) – no update
+                # needed.
+            else:
+                self._aiter_flat_gather_idx = gather_t
+                self._aiter_flat_kv_indptr = flat_indptr
+                self._aiter_flat_kv_lpl = flat_lpl
+                self._aiter_flat_kv_indices = flat_indices
+        else:
+            self._aiter_flat_gather_idx = None
+            self._aiter_flat_kv_indptr = None
+            self._aiter_flat_kv_lpl = None
+            self._aiter_flat_kv_indices = None
 
     begin_forward = plan
 
@@ -1834,6 +2121,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 self._vector_sparse_indptr_buffer,
                 sinks,
             ]
+            if self._backend == "aiter":
+                # Pre-computed flat-KV gather info for AITER (None for
+                # natively-supported page sizes).
+                run_args += [
+                    self._aiter_flat_gather_idx,
+                    self._aiter_flat_kv_indptr,
+                    self._aiter_flat_kv_lpl,
+                    self._aiter_flat_kv_indices,
+                ]
 
         assert self._cached_module is not None, "cached module is not initialized"
         self._cached_module.paged_run(*run_args)

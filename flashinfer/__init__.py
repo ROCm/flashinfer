@@ -236,3 +236,4 @@ else:
         "FlashInfer requires either CUDA or ROCm/HIP backend. "
         "Detected CPU-only PyTorch installation."
     )
+    

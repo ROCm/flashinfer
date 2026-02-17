@@ -8,6 +8,7 @@ from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.core import logger
+from flashinfer.aiter_utils import HAS_AITER
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -46,6 +47,7 @@ def warmup_jit():
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
 @pytest.mark.parametrize("contiguous_kv", [True])
+@pytest.mark.parametrize("backend", ["fa2", "aiter"])
 def test_batch_prefill_with_paged_kv_cache(
     batch_size,
     kv_len,
@@ -61,9 +63,16 @@ def test_batch_prefill_with_paged_kv_cache(
     logits_soft_cap,
     return_lse,
     contiguous_kv,
+    backend,
 ):
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
+
+    if backend == "aiter" and not HAS_AITER:
+        pytest.skip("AITER is not available")
+
+    if backend == "aiter" and (causal or kv_layout != "NHD"):
+        pytest.skip("Not testing for aiter backend with causal or kv_layout != NHD")
 
     max_num_batched_tokens = 4096
 
@@ -119,7 +128,7 @@ def test_batch_prefill_with_paged_kv_cache(
         kv_indices_gpu = kv_indices_cpu.to(0)
         kv_last_page_len_gpu = kv_last_page_len_cpu.to(0)
         wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
-            workspace_buffer, kv_layout
+            workspace_buffer, kv_layout, backend=backend
         )
         wrapper.plan(
             q_indptr_gpu,
@@ -164,6 +173,7 @@ def test_batch_prefill_with_paged_kv_cache(
             paged_kv_indptr_buf=kv_indptr_buffer,
             paged_kv_indices_buf=kv_indices_buffer,
             paged_kv_last_page_len_buf=kv_last_page_len_buffer,
+            backend=backend,
         )
         q_indptr_warmup = torch.arange(0, batch_size + 1).int() * qo_len
         kv_indptr_warmup = torch.arange(0, batch_size + 1).int()
@@ -289,6 +299,7 @@ def test_batch_prefill_with_paged_kv_cache(
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
 @pytest.mark.parametrize("contiguous_kv", [True])
+@pytest.mark.parametrize("backend", ["fa2", "aiter"])
 def test_batch_prefill_with_tuple_paged_kv_cache(
     batch_size,
     kv_len,
@@ -304,9 +315,16 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
     logits_soft_cap,
     return_lse,
     contiguous_kv,
+    backend,
 ):
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
+
+    if backend == "aiter" and not HAS_AITER:
+        pytest.skip("AITER is not available")
+        
+    if backend == "aiter" and (causal or kv_layout != "NHD"):
+        pytest.skip("Not testing for aiter backend with causal")
 
     max_num_batched_tokens = 4096
 
@@ -370,7 +388,7 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         kv_indices_gpu = kv_indices_cpu.to(0)
         kv_last_page_len_gpu = kv_last_page_len_cpu.to(0)
         wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
-            workspace_buffer, kv_layout
+            workspace_buffer, kv_layout, backend=backend
         )
         wrapper.plan(
             q_indptr_gpu,
@@ -410,6 +428,7 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
             paged_kv_indptr_buf=kv_indptr_buffer,
             paged_kv_indices_buf=kv_indices_buffer,
             paged_kv_last_page_len_buf=kv_last_page_len_buffer,
+            backend=backend,
         )
         q_indptr_warmup = torch.arange(0, batch_size + 1).int() * qo_len
         kv_indptr_warmup = torch.arange(0, batch_size + 1).int()
@@ -602,14 +621,25 @@ def test_batch_prefill_with_ragged_kv_cache(
 
 if __name__ == "__main__":
     test_batch_prefill_with_paged_kv_cache(
-        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True
+        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True, "fa2"
     )
     test_batch_prefill_with_tuple_paged_kv_cache(
-        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True
+        12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True, "fa2"
     )
     test_batch_prefill_with_paged_kv_cache(
-        12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", False, 0.0, False, True
+        12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", False, 0.0, False, True, "fa2"
     )
+
+    test_batch_prefill_with_paged_kv_cache(
+        12, 54, 37, 16, 8, 8, 128, True, "NHD", "NONE", True, 0.0, False, True, "aiter"
+    )
+    test_batch_prefill_with_tuple_paged_kv_cache(
+        12, 54, 37, 16, 8, 8, 128, True, "NHD", "NONE", True, 0.0, False, True, "aiter"
+    )
+    test_batch_prefill_with_paged_kv_cache(
+        12, 54, 37, 1, 8, 8, 128, True, "NHD", "NONE", False, 0.0, False, True, "aiter"
+    )
+
     test_batch_prefill_with_ragged_kv_cache(
         12, 54, 37, 8, 8, 128, True, "NONE", 0.0, False
     )
