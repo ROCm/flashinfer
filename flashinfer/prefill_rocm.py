@@ -179,11 +179,13 @@ def _get_aiter_single_prefill_module():
         device = q.device
 
         # Normalise k/v to NHD flat layout: [kv_len, num_kv_heads, head_dim].
-        # We use flash_attn_varlen_func (mha_varlen_fwd) directly instead of
-        # mha_batch_prefill_func because the batch_prefill CK kernel crashes
-        # when qo_len > kv_len (e.g. 577 > 512).  The varlen kernel handles
-        # arbitrary qo/kv length ratios and takes flat non-paged k/v tensors,
-        # so no paged-KV bookkeeping is needed here.
+        # We use mha_batch_prefill_func with page_size=1 (flat 3D KV layout)
+        # rather than flash_attn_varlen_func.  The varlen CK kernel has a
+        # device-side abort when kv_len is large (e.g. 512) and qo_len > kv_len
+        # with return_lse=True.  The batch_prefill kernel with page_size=1 is
+        # the same "buffer allocation" approach used by aiter_paged_run for
+        # non-native page sizes and correctly handles qo_len > kv_len
+        # (verified by AITER's own test_batch_prefill with (1024, 1023) etc.).
         if layout == TensorLayout["NHD"].value:
             # k shape: [kv_len, num_kv_heads, head_dim]
             kv_len = k.shape[0]
@@ -195,18 +197,23 @@ def _get_aiter_single_prefill_module():
             k_flat = k.permute(1, 0, 2).contiguous()
             v_flat = v.permute(1, 0, 2).contiguous()
 
-        # cu_seqlens for batch_size=1: one query seq of qo_len, one kv seq of
-        # kv_len.
+        # Paged-KV metadata for batch_size=1, page_size=1:
+        #   - kv_indptr: one sequence spanning all kv_len "pages"
+        #   - kv_page_indices: identity mapping (page i holds token i)
+        #   - kv_last_page_len: last page holds exactly 1 token (page_size=1)
         cu_seqlens_q = torch.tensor([0, qo_len], dtype=torch.int32, device=device)
-        cu_seqlens_k = torch.tensor([0, kv_len], dtype=torch.int32, device=device)
+        kv_indptr = torch.tensor([0, kv_len], dtype=torch.int32, device=device)
+        kv_page_indices = torch.arange(kv_len, dtype=torch.int32, device=device)
+        kv_last_page_len = torch.ones(1, dtype=torch.int32, device=device)
 
         return_lse = maybe_lse is not None
-        aiter_result = aiter_mha_module.flash_attn_varlen_func(
+        aiter_result = aiter_mha_module.mha_batch_prefill_func(
             q=q,
             k=k_flat,
             v=v_flat,
             cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
+            kv_indptr=kv_indptr,
+            kv_page_indices=kv_page_indices,
             max_seqlen_q=qo_len,
             max_seqlen_k=kv_len,
             dropout_p=0.0,
@@ -216,13 +223,15 @@ def _get_aiter_single_prefill_module():
             window_size=(window_left, -1),
             return_lse=return_lse,
             return_attn_probs=False,
+            kv_last_page_lens=kv_last_page_len,
         )
 
         if return_lse:
             aiter_out, aiter_lse = aiter_result[0], aiter_result[1]
             o.copy_(aiter_out)
-            # aiter (CK kernels) returns LSE with shape (num_heads, total_q);
-            # FlashInfer expects shape (total_q, num_heads), so transpose.
+            # aiter (CK kernels) returns LSE in log2 scale with shape
+            # (num_heads, total_q); FlashInfer expects natural-log scale
+            # with shape (total_q, num_heads), so transpose and convert.
             maybe_lse.copy_(aiter_lse.t() / math.log(2))
         else:
             if isinstance(aiter_result, tuple):
