@@ -10,6 +10,7 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 
 from flashinfer.jit.core import logger
+from flashinfer.aiter_utils import HAS_AITER
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -42,6 +43,7 @@ def warmup_jit():
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
 @pytest.mark.parametrize("logits_soft_cap", [0.0, 8.0])
 @pytest.mark.parametrize("return_lse", [False, True])
+@pytest.mark.parametrize("backend", ["fa2", "aiter"])
 def test_single_prefill_with_kv_cache(
     qo_len: int,
     kv_len: int,
@@ -53,10 +55,17 @@ def test_single_prefill_with_kv_cache(
     pos_encoding_mode: str,
     logits_soft_cap: float,
     return_lse: bool,
+    backend: str,
 ):
     q = torch.randn(
         qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
     )
+
+    if backend == "aiter" and not HAS_AITER:
+        pytest.skip("AITER is not available")
+
+    if backend == "aiter" and kv_layout == "HND":
+        pytest.skip("AITER does not support HND layout")
 
     if kv_layout == "HND":
         k = torch.randn(
@@ -89,7 +98,7 @@ def test_single_prefill_with_kv_cache(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend="fa2",
+            backend=backend,
         )
         assert lse.shape == (qo_len, num_qo_heads)
     else:
@@ -101,7 +110,7 @@ def test_single_prefill_with_kv_cache(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend="fa2",
+            backend=backend,
         )
 
     assert o.shape == (qo_len, num_qo_heads, head_dim)

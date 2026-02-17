@@ -139,9 +139,104 @@ def get_customize_batch_prefill_module(
         fp8_enabled,
     ).build_and_load()
 
+def _get_aiter_single_prefill_module():
+    """Return a module-like namespace for AITER single prefill.
+
+    Since AITER does not support single prefill calls directly, this wraps
+    the AITER batch prefill with batch_size=1 to mimic single prefill
+    behaviour.
+    """
+
+    def aiter_single_prefill_run(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        tmp: torch.Tensor,
+        o: torch.Tensor,
+        maybe_lse: Optional[torch.Tensor],
+        mask_mode: int,
+        layout: int,
+        window_left: int,
+        maybe_packed_custom_mask: Optional[torch.Tensor],
+        maybe_alibi_slopes: Optional[torch.Tensor],
+        logits_soft_cap: float,
+        sm_scale: float,
+        scale_q: Optional[torch.Tensor],
+        scale_k: Optional[torch.Tensor],
+        scale_v: Optional[torch.Tensor],
+        rope_scale: float,
+        rope_theta: float,
+    ) -> None:
+        logger.info(
+            "AITER backend: wrapping single prefill as batch prefill with batch_size=1"
+        )
+
+        # Derive causal flag from mask_mode
+        causal = mask_mode == MaskMode.CAUSAL.value
+
+        # q shape: [qo_len, num_qo_heads, head_dim_qk]
+        qo_len = q.shape[0]
+        device = q.device
+
+        # Normalise k/v to NHD flat layout: [kv_len, num_kv_heads, head_dim].
+        # We use flash_attn_varlen_func (mha_varlen_fwd) directly instead of
+        # mha_batch_prefill_func because the batch_prefill CK kernel crashes
+        # when qo_len > kv_len (e.g. 577 > 512).  The varlen kernel handles
+        # arbitrary qo/kv length ratios and takes flat non-paged k/v tensors,
+        # so no paged-KV bookkeeping is needed here.
+        if layout == TensorLayout["NHD"].value:
+            # k shape: [kv_len, num_kv_heads, head_dim]
+            kv_len = k.shape[0]
+            k_flat = k.contiguous()
+            v_flat = v.contiguous()
+        else:
+            # HND: k shape: [num_kv_heads, kv_len, head_dim]
+            kv_len = k.shape[1]
+            k_flat = k.permute(1, 0, 2).contiguous()
+            v_flat = v.permute(1, 0, 2).contiguous()
+
+        # cu_seqlens for batch_size=1: one query seq of qo_len, one kv seq of
+        # kv_len.
+        cu_seqlens_q = torch.tensor([0, qo_len], dtype=torch.int32, device=device)
+        cu_seqlens_k = torch.tensor([0, kv_len], dtype=torch.int32, device=device)
+
+        return_lse = maybe_lse is not None
+        aiter_result = aiter_mha_module.flash_attn_varlen_func(
+            q=q,
+            k=k_flat,
+            v=v_flat,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=qo_len,
+            max_seqlen_k=kv_len,
+            dropout_p=0.0,
+            softmax_scale=sm_scale,
+            logits_soft_cap=logits_soft_cap,
+            causal=causal,
+            window_size=(window_left, -1),
+            return_lse=return_lse,
+            return_attn_probs=False,
+        )
+
+        if return_lse:
+            aiter_out, aiter_lse = aiter_result[0], aiter_result[1]
+            o.copy_(aiter_out)
+            # aiter (CK kernels) returns LSE with shape (num_heads, total_q);
+            # FlashInfer expects shape (total_q, num_heads), so transpose.
+            maybe_lse.copy_(aiter_lse.t() / math.log(2))
+        else:
+            if isinstance(aiter_result, tuple):
+                o.copy_(aiter_result[0])
+            else:
+                o.copy_(aiter_result)
+
+    return SimpleNamespace(run=aiter_single_prefill_run)
 
 @functools.cache
 def get_single_prefill_module(backend, *args):
+    if backend == "aiter":
+        return _get_aiter_single_prefill_module()
+
     uri = get_single_prefill_uri(backend, *args)
     module = gen_single_prefill_module(backend, *args).build_and_load()
     run_func = module.run.default
@@ -1077,6 +1172,11 @@ def single_prefill_with_kv_cache(
             q.dtype,
             k.dtype,
         )
+    elif backend == "aiter":
+        if not HAS_AITER:
+            raise ImportError(
+                "AITER is not available. Please install it first."
+            )
 
     # o_dtype should be provided for FP8 attention
     if o_dtype is None:
@@ -1123,7 +1223,6 @@ def single_prefill_with_kv_cache(
 single_prefill_with_kv_cache_return_lse = functools.partial(
     single_prefill_with_kv_cache, return_lse=True
 )
-
 
 def _compute_page_mask_indptr(
     qo_indptr: torch.Tensor,
