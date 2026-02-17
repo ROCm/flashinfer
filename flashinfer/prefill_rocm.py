@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
-from .device_utils import IS_AITER_AVAILABLE, aiter_mha_module
+from .aiter_utils import HAS_AITER
 from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
@@ -52,11 +52,16 @@ from .utils import (
     register_fake_op,
 )
 
+aiter_mha_module = None
+
+if HAS_AITER:
+    from .aiter_utils import get_aiter_mha_module
+    aiter_mha_module = get_aiter_mha_module()
+
 # Page sizes natively supported by the AITER CK kernel in linear
 # (non-vectorized) paged KV layout.  For any other page size the AITER
 # backend flattens pages into a token-level (page_size=1) buffer first.
 _AITER_NATIVE_PAGE_SIZES = frozenset({1, 16})
-
 
 def make_hashable_cache(func):
     """
@@ -1341,7 +1346,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             )
             backend = "fa2"
         elif backend == "aiter":
-            if not IS_AITER_AVAILABLE:
+            if not HAS_AITER:
                 raise ImportError(
                     "The 'aiter' package is required for the 'aiter' backend. "
                     "Please install it first."

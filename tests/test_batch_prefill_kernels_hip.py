@@ -8,6 +8,7 @@ from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.core import logger
+from flashinfer.aiter_utils import HAS_AITER
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -66,6 +67,9 @@ def test_batch_prefill_with_paged_kv_cache(
 ):
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
+
+    if backend == "aiter" and not HAS_AITER:
+        pytest.skip("AITER is not available")
 
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal or kv_layout != NHD")
@@ -316,6 +320,9 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
 
+    if backend == "aiter" and not HAS_AITER:
+        pytest.skip("AITER is not available")
+        
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal")
 
@@ -620,7 +627,7 @@ if __name__ == "__main__":
         12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True, "fa2"
     )
     test_batch_prefill_with_paged_kv_cache(
-        12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", False, 0.0, False, True
+        12, 54, 37, 1, 8, 8, 128, True, "HND", "NONE", False, 0.0, False, True, "fa2"
     )
 
     test_batch_prefill_with_paged_kv_cache(
