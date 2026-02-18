@@ -24,16 +24,17 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 
 ## Feature Support Matrix
 
-| Kernel Type | FP16 / BF16 | FP8 (E4M3, E5M2) | Notes |
-| :--- | :---: | :---: | :--- |
-| **Decode Attention** | ✅ | ✅ | Supports MHA, GQA, and MQA |
-| **Prefill Attention** | ✅ | WIP | Supports MHA, GQA, and MQA |
-| **Cascade Attention** | WIP | WIP | Not Yet Ported |
-| **MLA** | TBD | TBD | Not Yet Ported |
-| **POD** | TBD | TBD | Not Yet Ported |
-| **Positional Encoding** | TBD | TBD | Not Yet Ported |
-| **Sampling** | ✅ | WIP | Supports Top-K/Top-P Sampling |
-| **Normalization** | ✅ | WIP | Supports RMS-Norm/Layer-Norm |
+| Kernel Type | FP16 / BF16 | FP8 (E4M3, E5M2) | Has AITER backend | Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| **Decode Attention** | ✅ | ✅ | No | Supports MHA, GQA, and MQA |
+| **Prefill Attention** | ✅ | WIP | ✅ | Supports MHA, GQA, and MQA |
+| **Cascade Attention** | TBD | TBD | No |  Not Yet Ported |
+| **MLA** | TBD | TBD | No | Not Yet Ported |
+| **POD** | TBD | TBD | No | Not Yet Ported |
+| **Positional Encoding** | TBD | TBD | No | Not Yet Ported |
+| **Sampling** | ✅ | TBD | No | Supports Top-K/Top-P Sampling/OnlineSoftmax/SamplingFromLogits |
+| **Logits Processor** | ✅ | TBD | No |  |
+| **Normalization** | ✅ | TBD | No | Supports RMS-Norm/Layer-Norm |
 
 ## GPU and ROCm Support
 
@@ -232,29 +233,34 @@ The default test configuration is specified in [pyproject.toml](pyproject.toml) 
 
 ## AITER Support
 
-FlashInfer+ROCm now supports the AITER backend for Prefill Operations. To enable AITER for Single and Batch Prefill, follow these steps.
+FlashInfer+ROCm has experimental support to use [AITER](https://github.com/ROCm/aiter) as a
+backeend. The `aiter` backend currently is enabled for the `single_prefill` and `batch_prefill`
+kernels. To use AITER as the backend for these kernels, please set `backend=aiter` keyword
+argument when invoking the kernels. Additionally, AITER should also be installed on your system and
+you may follow one of the below ways to do so.
 
-*Install AITER either by building from source*
+**Install AITER by building from source**
 
 ```bash
 git clone --recursive https://github.com/ROCm/aiter.git
 cd aiter
 python3 setup.py develop
 ```
-*or, by installing a wheel package from https://pypi.amd.com/simple/*
+**Install AITER wheel package from https://pypi.amd.com/simple/**
 
 ```bash
 pip install amd-aiter --index-url https://pypi.amd.com/simple/
 ```
 
-Flashinfer will automatically detect the AITER backend once it is installed. As of now, only the `NHD` kv_layout is supported by AITER
+### Known Limitations:
+
+The AITER backed only supports `NHD` kv_layout.
 
 ### Single Prefill Example
 
 This section provides an example on how to use Single Prefill with AITER
 
 ```python
-
 import torch
 import flashinfer
 
@@ -273,7 +279,7 @@ def single_prefill_with_kv_cache_aiter_example():
   q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16)
 
   # NHD Layout
-  k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0",dtype=torch.float16)  
+  k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0",dtype=torch.float16)
   v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
 
 
@@ -291,7 +297,7 @@ def single_prefill_with_kv_cache_aiter_example():
         backend="aiter" # Pass the backend = aiter flag to enable # AITER computation
     )
     print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
-          
+
   else:
     o = flashinfer.single_prefill_with_kv_cache(
         q,
@@ -309,4 +315,3 @@ if __name__ == "__main__":
   single_prefill_with_kv_cache_aiter_example()
 
 ```
-
