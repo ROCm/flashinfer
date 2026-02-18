@@ -1,5 +1,6 @@
 """
 Copyright (c) 2024 by FlashInfer team.
+Copyright (c) 2025-2026 Advanced Micro Devices, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,8 +21,9 @@ limitations under the License.
 
 import os
 import pathlib
-from ..compilation_context import CompilationContext
-from ..version import __version__ as flashinfer_version
+import re
+
+from ..device_utils import IS_CUDA, IS_HIP
 
 
 def has_flashinfer_jit_cache() -> bool:
@@ -48,6 +50,18 @@ def has_flashinfer_cubin() -> bool:
     return importlib.util.find_spec("flashinfer_cubin") is not None
 
 
+def has_amd_flashinfer_jit_cache() -> bool:
+    """
+    Check if amd_flashinfer_jit_cache module is available.
+
+    Returns:
+        True if amd_flashinfer_jit_cache exists, False otherwise
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("amd_flashinfer_jit_cache") is not None
+
+
 FLASHINFER_BASE_DIR: pathlib.Path = pathlib.Path(
     os.getenv("FLASHINFER_WORKSPACE_BASE", pathlib.Path.home().as_posix())
 )
@@ -55,122 +69,169 @@ FLASHINFER_BASE_DIR: pathlib.Path = pathlib.Path(
 FLASHINFER_CACHE_DIR: pathlib.Path = FLASHINFER_BASE_DIR / ".cache" / "flashinfer"
 _package_root: pathlib.Path = pathlib.Path(__file__).resolve().parents[1]
 
+if IS_CUDA:
+    from ..compilation_context import CompilationContext
+    from ..version import __version__ as flashinfer_version
 
-def _get_cubin_dir():
-    """
-    Get the cubin directory path with the following priority:
-    1. flashinfer-cubin package if installed
-    2. Environment variable FLASHINFER_CUBIN_DIR
-    3. Default cache directory
-    """
-    # First check if flashinfer-cubin package is installed
-    if has_flashinfer_cubin():
-        import flashinfer_cubin
+    def _get_cubin_dir():
+        """
+        Get the cubin directory path with the following priority:
+        1. flashinfer-cubin package if installed
+        2. Environment variable FLASHINFER_CUBIN_DIR
+        3. Default cache directory
+        """
+        if has_flashinfer_cubin():
+            import flashinfer_cubin
 
-        flashinfer_cubin_version = flashinfer_cubin.__version__
-        # Allow bypassing version check with environment variable
-        if (
-            not os.getenv("FLASHINFER_DISABLE_VERSION_CHECK")
-            and flashinfer_version != flashinfer_cubin_version
-        ):
-            raise RuntimeError(
-                f"flashinfer-cubin version ({flashinfer_cubin_version}) does not match "
-                f"flashinfer version ({flashinfer_version}). "
-                "Please install the same version of both packages. "
-                "Set FLASHINFER_DISABLE_VERSION_CHECK=1 to bypass this check."
-            )
+            flashinfer_cubin_version = flashinfer_cubin.__version__
+            if (
+                not os.getenv("FLASHINFER_DISABLE_VERSION_CHECK")
+                and flashinfer_version != flashinfer_cubin_version
+            ):
+                raise RuntimeError(
+                    f"flashinfer-cubin version ({flashinfer_cubin_version}) does not match "
+                    f"flashinfer version ({flashinfer_version}). "
+                    "Please install the same version of both packages. "
+                    "Set FLASHINFER_DISABLE_VERSION_CHECK=1 to bypass this check."
+                )
 
-        return pathlib.Path(flashinfer_cubin.get_cubin_dir())
+            return pathlib.Path(flashinfer_cubin.get_cubin_dir())
 
-    # Then check environment variable
-    env_dir = os.getenv("FLASHINFER_CUBIN_DIR")
-    if env_dir:
-        return pathlib.Path(env_dir)
+        env_dir = os.getenv("FLASHINFER_CUBIN_DIR")
+        if env_dir:
+            return pathlib.Path(env_dir)
 
-    # Fall back to default cache directory
-    return FLASHINFER_CACHE_DIR / "cubins"
+        return FLASHINFER_CACHE_DIR / "cubins"
 
+    def _get_aot_dir():
+        """
+        Get the AOT directory path with the following priority:
+        1. flashinfer-jit-cache package if installed
+        2. Default fallback to _package_root / "data" / "aot"
+        """
+        if has_flashinfer_jit_cache():
+            import flashinfer_jit_cache
 
-FLASHINFER_CUBIN_DIR: pathlib.Path = _get_cubin_dir()
+            flashinfer_jit_cache_version = flashinfer_jit_cache.__version__
+            # NOTE(Zihao): we don't use exact version match here because the version of flashinfer-jit-cache
+            # contains the CUDA version suffix: e.g. 0.3.1+cu129.
+            if not os.getenv(
+                "FLASHINFER_DISABLE_VERSION_CHECK"
+            ) and not flashinfer_jit_cache_version.startswith(flashinfer_version):
+                raise RuntimeError(
+                    f"flashinfer-jit-cache version ({flashinfer_jit_cache_version}) does not match "
+                    f"flashinfer version ({flashinfer_version}). "
+                    "Please install the same version of both packages. "
+                    "Set FLASHINFER_DISABLE_VERSION_CHECK=1 to bypass this check."
+                )
 
+            return pathlib.Path(flashinfer_jit_cache.get_jit_cache_dir())
 
-def _get_aot_dir():
-    """
-    Get the AOT directory path with the following priority:
-    1. flashinfer-jit-cache package if installed
-    2. Default fallback to _package_root / "data" / "aot"
-    """
-    # First check if flashinfer-jit-cache package is installed
-    if has_flashinfer_jit_cache():
-        import flashinfer_jit_cache
+        return _package_root / "data" / "aot"
 
-        flashinfer_jit_cache_version = flashinfer_jit_cache.__version__
-        # NOTE(Zihao): we don't use exact version match here because the version of flashinfer-jit-cache
-        # contains the CUDA version suffix: e.g. 0.3.1+cu129.
-        # Allow bypassing version check with environment variable
-        if not os.getenv(
-            "FLASHINFER_DISABLE_VERSION_CHECK"
-        ) and not flashinfer_jit_cache_version.startswith(flashinfer_version):
-            raise RuntimeError(
-                f"flashinfer-jit-cache version ({flashinfer_jit_cache_version}) does not match "
-                f"flashinfer version ({flashinfer_version}). "
-                "Please install the same version of both packages. "
-                "Set FLASHINFER_DISABLE_VERSION_CHECK=1 to bypass this check."
-            )
+    def _get_workspace_dir_name() -> pathlib.Path:
+        compilation_context = CompilationContext()
+        # NOTE(Zihao): sorted() is crucial here to ensure deterministic directory names.
+        arch = "_".join(
+            f"{major}{minor}"
+            for major, minor in sorted(compilation_context.TARGET_CUDA_ARCHS)
+        )
+        return FLASHINFER_CACHE_DIR / flashinfer_version / arch
 
-        return pathlib.Path(flashinfer_jit_cache.get_jit_cache_dir())
+    FLASHINFER_CUBIN_DIR: pathlib.Path = _get_cubin_dir()
+    FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir()
+    FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()
+    FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"
+    FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"
+    FLASHINFER_DATA: pathlib.Path = _package_root / "data"
+    FLASHINFER_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "include"
+    FLASHINFER_CSRC_DIR: pathlib.Path = _package_root / "data" / "csrc"
+    # FLASHINFER_SRC_DIR = _package_root / "data" / "src"
+    CUTLASS_INCLUDE_DIRS: list = [
+        _package_root / "data" / "cutlass" / "include",
+        _package_root / "data" / "cutlass" / "tools" / "util" / "include",
+    ]
+    SPDLOG_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "spdlog" / "include"
 
-    # Fall back to default directory
-    return _package_root / "data" / "aot"
+    def get_nvshmem_include_dirs():
+        paths = os.environ.get("NVSHMEM_INCLUDE_PATH")
+        if paths is not None:
+            return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
 
+        import nvidia.nvshmem
 
-FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir()
+        path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "include"
+        return [path]
 
+    def get_nvshmem_lib_dirs():
+        paths = os.environ.get("NVSHMEM_LIBRARY_PATH")
+        if paths is not None:
+            return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
 
-def _get_workspace_dir_name() -> pathlib.Path:
-    compilation_context = CompilationContext()
-    # NOTE(Zihao): sorted() is crucial here to ensure deterministic directory names.
-    # Without it, the same set of CUDA archs could generate different directory names
-    # across runs (e.g., "75_80_89" vs "89_75_80"), causing cache fragmentation.
-    arch = "_".join(
-        f"{major}{minor}"
-        for major, minor in sorted(compilation_context.TARGET_CUDA_ARCHS)
-    )
-    return FLASHINFER_CACHE_DIR / flashinfer_version / arch
+        import nvidia.nvshmem
 
+        path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "lib"
+        return [path]
 
-# use pathlib
-FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()
-FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"
-FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"
-FLASHINFER_DATA: pathlib.Path = _package_root / "data"
-FLASHINFER_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "include"
-FLASHINFER_CSRC_DIR: pathlib.Path = _package_root / "data" / "csrc"
-# FLASHINFER_SRC_DIR = _package_root / "data" / "src"
-CUTLASS_INCLUDE_DIRS: list[pathlib.Path] = [
-    _package_root / "data" / "cutlass" / "include",
-    _package_root / "data" / "cutlass" / "tools" / "util" / "include",
-]
-SPDLOG_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "spdlog" / "include"
+elif IS_HIP:
+    from .._version import __version__ as flashinfer_version
+    from ..get_include_paths import _get_package_root_dir, get_csrc_dir, get_include
 
+    def _get_aot_dir_hip():
+        """
+        Get the HIP AOT directory path with the following priority:
+        1. amd-flashinfer-jit-cache package if installed (with version check)
+        2. Default fallback to _package_root / "data" / "aot"
+        """
+        if has_amd_flashinfer_jit_cache():
+            import amd_flashinfer_jit_cache
 
-def get_nvshmem_include_dirs():
-    paths = os.environ.get("NVSHMEM_INCLUDE_PATH")
-    if paths is not None:
-        return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
+            amd_jit_cache_version = amd_flashinfer_jit_cache.__version__
+            # Version check mirrors the CUDA _get_aot_dir() pattern.
+            # The AMD JIT cache version may include ROCm suffix (e.g. 0.5.3+rocm6.4),
+            # so we check startswith rather than exact match.
+            if not os.getenv(
+                "FLASHINFER_DISABLE_VERSION_CHECK"
+            ) and not amd_jit_cache_version.startswith(flashinfer_version):
+                raise RuntimeError(
+                    f"amd-flashinfer-jit-cache version ({amd_jit_cache_version}) does not match "
+                    f"flashinfer version ({flashinfer_version}). "
+                    "Please install the same version of both packages. "
+                    "Set FLASHINFER_DISABLE_VERSION_CHECK=1 to bypass this check."
+                )
 
-    import nvidia.nvshmem
+            return pathlib.Path(amd_flashinfer_jit_cache.get_jit_cache_dir())
 
-    path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "include"
-    return [path]
+        return _package_root / "data" / "aot"
 
+    def _get_workspace_dir_name() -> pathlib.Path:
+        try:
+            import torch
 
-def get_nvshmem_lib_dirs():
-    paths = os.environ.get("NVSHMEM_LIBRARY_PATH")
-    if paths is not None:
-        return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            gcn_arch = props.gcnArchName
+            # Extract gfx arch (e.g., "gfx942:sramecc+:xnack-" -> "gfx942")
+            match = re.match(r"(gfx\d+)", gcn_arch)
+            if match:
+                arch = match.group(1)
+            else:
+                from torch.utils.cpp_extension import _get_rocm_arch_flags
 
-    import nvidia.nvshmem
+                flags = _get_rocm_arch_flags()
+                archs = [
+                    flag.replace("--offload-arch=", "")
+                    for flag in flags
+                    if flag.startswith("--offload-arch=")
+                ]
+                arch = archs[0] if archs else "noarch"
+        except Exception:
+            arch = "noarch"
+        # e.g.: $HOME/.cache/flashinfer/0.5.3/gfx942/
+        return FLASHINFER_CACHE_DIR / flashinfer_version / arch
 
-    path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "lib"
-    return [path]
+    FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir_hip()
+    FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()
+    FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"
+    FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"
+    FLASHINFER_INCLUDE_DIR: pathlib.Path = pathlib.Path(get_include())
+    FLASHINFER_CSRC_DIR: pathlib.Path = pathlib.Path(get_csrc_dir())
