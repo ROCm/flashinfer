@@ -108,7 +108,6 @@ def single_prefill_with_kv_cache_example(
     pos_encoding_mode: str,
     logits_soft_cap: float,
     return_lse: bool,
-    backend: str = "auto",
 ):
     """
     Run single_prefill_with_kv_cache and verify the output against a naive PyTorch reference implementation.
@@ -163,7 +162,6 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
         # Compute reference in FP32 for better accuracy
@@ -199,7 +197,6 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}")
 
@@ -233,20 +230,19 @@ if __name__ == "__main__":
 
     # Self-attention with logits soft cap
     single_prefill_with_kv_cache_example(
-        128, 128, 1, 1, 64, False, "NHD", "NONE", 8.0, False, backend="aiter"
+        128, 128, 1, 1, 64, False, "NHD", "NONE", 8.0, False
     )
-
-    # # Self-attention without logits soft cap
+    # Self-attention without logits soft cap
     single_prefill_with_kv_cache_example(
-        128, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False, backend="aiter"
+        128, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
     )
     # Multi-head attention (MHA)
     single_prefill_with_kv_cache_example(
-        128, 128, 4, 4, 64, False, "NHD", "NONE", 8.0, False, backend="aiter"
+        128, 128, 4, 4, 64, False, "NHD", "NONE", 8.0, False
     )
     # Grouped query attention (GQA)
     single_prefill_with_kv_cache_example(
-        128, 128, 8, 4, 64, False, "NHD", "NONE", 8.0, False, backend="aiter"
+        128, 128, 8, 4, 64, False, "NHD", "NONE", 8.0, False
     )
     # GQA with qo_len < kv_len (typical prefill)
     single_prefill_with_kv_cache_example(
@@ -254,21 +250,21 @@ if __name__ == "__main__":
     )
     # GQA with LSE enabled
     single_prefill_with_kv_cache_example(
-        15, 127, 8, 4, 64, False, "NHD", "NONE", 0.0, True, backend="aiter"
+        15, 127, 8, 4, 64, False, "NHD", "NONE", 0.0, True
     )
     # GQA with soft cap and LSE enabled
     single_prefill_with_kv_cache_example(
-        15, 127, 8, 4, 64, False, "NHD", "NONE", 8.0, True, backend="aiter"
+        15, 127, 8, 4, 64, False, "NHD", "NONE", 8.0, True
     )
 
-    # # Test case specifically for threadblock_sync_mdo_states validation
-    # # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4, calling threadblock_sync_mdo_states
-    # print("\n" + "=" * 60)
-    # print("Testing threadblock_sync_mdo_states (CTA_TILE_Q=16, NUM_WARPS_KV=4)")
-    # print("=" * 60)
-    # single_prefill_with_kv_cache_example(
-    #     16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
-    # )
-    # single_prefill_with_kv_cache_example(
-    #     16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
-    # )
+    # Test case specifically for threadblock_sync_mdo_states validation
+    # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4, calling threadblock_sync_mdo_states
+    print("\n" + "=" * 60)
+    print("Testing threadblock_sync_mdo_states (CTA_TILE_Q=16, NUM_WARPS_KV=4)")
+    print("=" * 60)
+    single_prefill_with_kv_cache_example(
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+    )
+    single_prefill_with_kv_cache_example(
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
+    )

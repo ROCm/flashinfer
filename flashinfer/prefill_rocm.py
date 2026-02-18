@@ -180,12 +180,9 @@ def _get_aiter_single_prefill_module():
 
         # Normalise k/v to NHD flat layout: [kv_len, num_kv_heads, head_dim].
         # We use mha_batch_prefill_func with page_size=1 (flat 3D KV layout)
-        # rather than flash_attn_varlen_func.  The varlen CK kernel has a
-        # device-side abort when kv_len is large (e.g. 512) and qo_len > kv_len
-        # with return_lse=True.  The batch_prefill kernel with page_size=1 is
-        # the same "buffer allocation" approach used by aiter_paged_run for
-        # non-native page sizes and correctly handles qo_len > kv_len
-        # (verified by AITER's own test_batch_prefill with (1024, 1023) etc.).
+        #The batch_prefill kernel with page_size=1 is the same "buffer allocation" 
+        # approach used by aiter_paged_run for non-native page sizes and correctly 
+        # handles qo_len > kv_len (verified by AITER's test_batch_prefill with (1024, 1023) etc.).
         if layout == TensorLayout["NHD"].value:
             # k shape: [kv_len, num_kv_heads, head_dim]
             kv_len = k.shape[0]
