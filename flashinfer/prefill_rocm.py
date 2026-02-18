@@ -147,10 +147,19 @@ def _get_aiter_single_prefill_module():
     behaviour.
     """
 
-    # Cache of pre-allocated metadata tensors keyed by (qo_len, kv_len, device).
-    # Reusing existing tensors (rather than allocating new ones each call) is
-    # required for CUDA-graph compatibility: new device allocations are forbidden
-    # while a CUDA stream is being captured.
+    # Page size used for the AITER paged-KV layout.  128 matches the
+    # native tile size of the underlying CK kernel and produces the same
+    # memory-access pattern used by the high-performance alibaba reference
+    # implementation.  Using page_size=1 (a previous approach) makes every
+    # token a separate "page", which forces the kernel through a slower
+    # code path and inflates kv_page_indices to kv_len entries.
+    _AITER_SINGLE_PREFILL_PAGE_SIZE = 128
+
+    # Cache of pre-allocated metadata + padded KV tensors keyed by
+    # (qo_len, kv_len, device).  Reusing existing tensors (rather than
+    # allocating new ones each call) is required for CUDA-graph
+    # compatibility: new device allocations are forbidden while a CUDA
+    # stream is being captured.
     _meta_tensor_cache: dict = {}
 
     def aiter_single_prefill_run(
@@ -184,74 +193,98 @@ def _get_aiter_single_prefill_module():
         qo_len = q.shape[0]
         device = q.device
 
-        # Normalise k/v to NHD flat layout: [kv_len, num_kv_heads, head_dim].
-        # We use mha_batch_prefill_func with page_size=1 (flat 3D KV layout)
-        #The batch_prefill kernel with page_size=1 is the same "buffer allocation" 
-        # approach used by aiter_paged_run for non-native page sizes and correctly 
-        # handles qo_len > kv_len (verified by AITER's test_batch_prefill with (1024, 1023) etc.).
-        if layout == TensorLayout["NHD"].value:
-            # k shape: [kv_len, num_kv_heads, head_dim]
-            kv_len = k.shape[0]
-            k_flat = k.contiguous()
-            v_flat = v.contiguous()
-        else:
-            # HND: k shape: [num_kv_heads, kv_len, head_dim]
-            kv_len = k.shape[1]
-            k_flat = k.permute(1, 0, 2).contiguous()
-            v_flat = v.permute(1, 0, 2).contiguous()
+        # k shape: [kv_len, num_kv_heads, head_dim]
+        kv_len = k.shape[0]
 
-        # Paged-KV metadata for batch_size=1, page_size=1:
-        #   - kv_indptr: one sequence spanning all kv_len "pages"
-        #   - kv_page_indices: identity mapping (page i holds token i)
-        #   - kv_last_page_len: last page holds exactly 1 token (page_size=1)
-        #
-        # These tensors are cached by (qo_len, kv_len, device) so that CUDA-graph
-        # capture can reuse existing allocations instead of creating new ones
-        # (new device allocations are forbidden during stream capture).
+        page_size = _AITER_SINGLE_PREFILL_PAGE_SIZE
+        n_pages = (kv_len + page_size - 1) // page_size
+        padded_kv_len = n_pages * page_size
+
+        # Build (or reuse) cached metadata and padded KV buffers.
+        # The cache key includes both qo_len and kv_len so that varying
+        # sequence lengths each get their own pre-allocated set of buffers.
         _cache_key = (qo_len, kv_len, device)
         if _cache_key not in _meta_tensor_cache:
+            # Paged-KV metadata for batch_size=1, page_size=128:
+            #   - cu_seqlens_q : [0, qo_len]
+            #   - kv_indptr    : [0, n_pages]  (one sequence)
+            #   - kv_page_indices: identity mapping over n_pages pages
+            #   - k_buf / v_buf: zero-padded KV buffers (token-level NHD)
+            num_kv_heads = k.shape[1]
+            head_dim = k.shape[2]
             _meta_tensor_cache[_cache_key] = (
                 torch.tensor([0, qo_len], dtype=torch.int32, device=device),
-                torch.tensor([0, kv_len], dtype=torch.int32, device=device),
-                torch.arange(kv_len, dtype=torch.int32, device=device),
-                torch.ones(1, dtype=torch.int32, device=device),
+                torch.tensor([0, n_pages], dtype=torch.int32, device=device),
+                torch.arange(n_pages, dtype=torch.int32, device=device),
+                torch.zeros(
+                    padded_kv_len, num_kv_heads, head_dim,
+                    dtype=k.dtype, device=device,
+                ),
+                torch.zeros(
+                    padded_kv_len, num_kv_heads, head_dim,
+                    dtype=v.dtype, device=device,
+                ),
             )
-        cu_seqlens_q, kv_indptr, kv_page_indices, kv_last_page_len = (
+        cu_seqlens_q, kv_indptr, kv_page_indices, k_buf, v_buf = (
             _meta_tensor_cache[_cache_key]
         )
 
-        return_lse = maybe_lse is not None
-        aiter_result = aiter_mha_module.mha_batch_prefill_func(
-            q=q,
-            k=k_flat,
-            v=v_flat,
-            cu_seqlens_q=cu_seqlens_q,
-            kv_indptr=kv_indptr,
-            kv_page_indices=kv_page_indices,
-            max_seqlen_q=qo_len,
-            max_seqlen_k=kv_len,
-            dropout_p=0.0,
-            softmax_scale=sm_scale,
-            logits_soft_cap=logits_soft_cap,
-            causal=causal,
-            window_size=(window_left, -1),
-            return_lse=return_lse,
-            return_attn_probs=False,
-            kv_last_page_lens=kv_last_page_len,
-        )
+        # Copy actual KV tokens into the padded buffers and zero any
+        # trailing padding tokens so stale values don't affect attention.
+        k_buf[:kv_len].copy_(k)
+        if kv_len < padded_kv_len:
+            k_buf[kv_len:].zero_()
+        v_buf[:kv_len].copy_(v)
+        if kv_len < padded_kv_len:
+            v_buf[kv_len:].zero_()
 
-        if return_lse:
-            aiter_out, aiter_lse = aiter_result[0], aiter_result[1]
-            o.copy_(aiter_out)
-            # aiter (CK kernels) returns LSE in log2 scale with shape
+        # max_seqlen_k is the *actual* (unpadded) sequence length; the
+        # kernel uses it to compute causal masking correctly even though
+        # the KV buffer is padded to a page boundary.
+        if maybe_lse is not None:
+            return_lse = True
+            aiter_result = aiter_mha_module.mha_batch_prefill_func(
+                q=q,
+                k=k_buf,
+                v=v_buf,
+                cu_seqlens_q=cu_seqlens_q,
+                kv_indptr=kv_indptr,
+                kv_page_indices=kv_page_indices,
+                max_seqlen_q=qo_len,
+                max_seqlen_k=kv_len,
+                dropout_p=0.0,
+                softmax_scale=sm_scale,
+                logits_soft_cap=logits_soft_cap,
+                causal=causal,
+                window_size=(window_left, -1),
+                return_lse=return_lse,
+                return_attn_probs=False,
+                out=o,
+            )
+            #  aiter (CK kernels) returns LSE in log2 scale with shape
             # (num_heads, total_q); FlashInfer expects natural-log scale
             # with shape (total_q, num_heads), so transpose and convert.
-            maybe_lse.copy_(aiter_lse.t() / math.log(2))
+            torch.div(aiter_result[1].t(), math.log(2), out=maybe_lse)
         else:
-            if isinstance(aiter_result, tuple):
-                o.copy_(aiter_result[0])
-            else:
-                o.copy_(aiter_result)
+            return_lse = False
+            aiter_mha_module.mha_batch_prefill_func(
+                q=q,
+                k=k_buf,
+                v=v_buf,
+                cu_seqlens_q=cu_seqlens_q,
+                kv_indptr=kv_indptr,
+                kv_page_indices=kv_page_indices,
+                max_seqlen_q=qo_len,
+                max_seqlen_k=kv_len,
+                dropout_p=0.0,
+                softmax_scale=sm_scale,
+                logits_soft_cap=logits_soft_cap,
+                causal=causal,
+                window_size=(window_left, -1),
+                return_lse=return_lse,
+                return_attn_probs=False,
+                out=o,
+            )
 
     return SimpleNamespace(run=aiter_single_prefill_run)
 
