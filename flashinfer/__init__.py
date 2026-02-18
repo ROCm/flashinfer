@@ -69,7 +69,9 @@ if IS_CUDA:
     from .decode import (
         fast_decode_plan as fast_decode_plan,
     )
-    from .decode import cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache
+    from .decode import (
+        cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache,
+    )
     from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache
     from .fp4_quantization import (
         SfLayout,
@@ -151,7 +153,9 @@ if IS_CUDA:
     from .sampling import (
         top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
     )
-    from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
+    from .sampling import (
+        top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs,
+    )
     from .sampling import top_p_renorm_probs as top_p_renorm_probs
     from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
     from .sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
@@ -182,12 +186,16 @@ elif IS_HIP:
         BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
     )  # type: ignore[no-redef]
     from .decode_rocm import (
+        CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
+    )  # type: ignore[no-redef]
+    from .decode_rocm import (
         single_decode_with_kv_cache as single_decode_with_kv_cache,
     )  # type: ignore[no-redef]
     from .get_include_paths import get_csrc_dir, get_include
     from .norm import fused_add_rmsnorm as fused_add_rmsnorm
     from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
     from .norm import gemma_rmsnorm as gemma_rmsnorm
+    from .norm import layernorm as layernorm
     from .norm import rmsnorm as rmsnorm
     from .page import append_paged_kv_cache as append_paged_kv_cache
     from .page import get_batch_indices_positions as get_batch_indices_positions

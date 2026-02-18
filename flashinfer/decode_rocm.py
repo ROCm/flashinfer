@@ -801,6 +801,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
         non_blocking: bool = True,
         block_tables: Optional[torch.Tensor] = None,
         seq_lens: Optional[torch.Tensor] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
     ) -> None:
         r"""Plan batch decode for given problem specification.
 
@@ -848,7 +850,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
             A uint32 1D tensor indicating the kv sequence length of each prompt. shape: ``[batch_size]``.
         block_tables: Optional[torch.Tensor]
             A uint32 2D tensor indicating the block table of each prompt. shape: ``[batch_size, max_num_blocks_per_seq]``.
-
+        fixed_split_size: Optional[int]
+            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
+        disable_split_kv: bool
+            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
 
         Note
         ----
