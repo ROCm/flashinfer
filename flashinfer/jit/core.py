@@ -233,6 +233,10 @@ def gen_jit_spec(
     elif IS_HIP:
         cuda_cflags += [
             "-ffast-math",  # HIP equivalent of -use_fast_math
+            "-fno-finite-math-only",  # Re-enable inf/NaN: clang's -ffast-math includes
+            # -ffinite-math-only which breaks kernels that use -inf
+            # as a sentinel (e.g. online-softmax Map+Reduce path).
+            # CUDA -use_fast_math does NOT enable finite-math-only.
         ]
 
     if verbose:

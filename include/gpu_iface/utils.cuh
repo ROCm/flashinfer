@@ -27,6 +27,11 @@ __forceinline__ __device__ __host__ T1 ceil_div(const T1 x, const T2 y) {
   return (x + y - 1) / y;
 }
 
+template <typename T1, typename T2>
+__forceinline__ __device__ __host__ T1 round_up(const T1 x, const T2 y) {
+  return ceil_div(x, y) * y;
+}
+
 #if defined(PLATFORM_CUDA_DEVICE)
 inline std::pair<int, int> GetCudaComputeCapability() {
   int device_id = 0;

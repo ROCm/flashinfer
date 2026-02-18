@@ -191,6 +191,7 @@ testpaths = [
     "tests/test_norm_hip.py",
     "tests/test_page.py",
     "tests/test_rope_hip.py",
+    "tests/test_sampling_hip.py",
     "tests/test_single_prefill_kernels_hip.py",
     "tests/test_sliding_window_hip.py",
 ]
