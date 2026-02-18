@@ -19,16 +19,16 @@ limitations under the License.
 FlashInfer: Fast Attention Algorithms for LLM Inference
 """
 
+import importlib.util
+
 from .device_utils import IS_CUDA, IS_HIP
 
 # ========================================
 # Version and Backend Setup
 # ========================================
 if IS_CUDA:
-    try:
-        from ._build_meta import __version__ as __version__
-    except ModuleNotFoundError:
-        __version__ = "0.0.0+unknown"
+    from .version import __version__ as __version__
+    from .version import __git_version__ as __git_version__
 
     # ========================================
     # CUDA Imports (Full upstream flashinfer)
@@ -37,7 +37,13 @@ if IS_CUDA:
     from .activation import gelu_and_mul as gelu_and_mul
     from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
     from .activation import silu_and_mul as silu_and_mul
+    from .activation import (
+        silu_and_mul_scaled_nvfp4_experts_quantize as silu_and_mul_scaled_nvfp4_experts_quantize,
+    )
     from .attention import BatchAttention as BatchAttention
+    from .attention import (
+        BatchAttentionWithAttentionSinkWrapper as BatchAttentionWithAttentionSinkWrapper,
+    )
     from .autotuner import autotune as autotune
     from .cascade import (
         BatchDecodeWithSharedPrefixPagedKVCacheWrapper as BatchDecodeWithSharedPrefixPagedKVCacheWrapper,
@@ -53,17 +59,18 @@ if IS_CUDA:
     from .cascade import merge_states as merge_states
     from .decode import (
         BatchDecodeMlaWithPagedKVCacheWrapper as BatchDecodeMlaWithPagedKVCacheWrapper,
-    )  # type: ignore[no-redef]
-    from .decode import (  # type: ignore[no-redef]
+    )
+    from .decode import (
         BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
-    )  # type: ignore[no-redef]
+    )
     from .decode import (
         CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
-    )  # type: ignore[no-redef]
+    )
     from .decode import (
-        cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache,
-    )  # type: ignore[no-redef]
-    from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache  # type: ignore[no-redef]
+        fast_decode_plan as fast_decode_plan,
+    )
+    from .decode import cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache
+    from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache
     from .fp4_quantization import (
         SfLayout,
         block_scale_interleave,
@@ -74,8 +81,10 @@ if IS_CUDA:
         mxfp4_dequantize,
         mxfp4_quantize,
         nvfp4_quantize,
+        nvfp4_batched_quantize,
         shuffle_matrix_a,
         shuffle_matrix_sf_a,
+        scaled_fp4_grouped_quantize,
     )
     from .fp8_quantization import mxfp8_dequantize_host, mxfp8_quantize
     from .fused_moe import (
@@ -91,8 +100,11 @@ if IS_CUDA:
     from .gemm import SegmentGEMMWrapper as SegmentGEMMWrapper
     from .gemm import bmm_fp8 as bmm_fp8
     from .gemm import mm_fp4 as mm_fp4
+    from .gemm import mm_fp8 as mm_fp8
+    from .gemm import tgv_gemm_sm100 as tgv_gemm_sm100
     from .mla import BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper
     from .norm import fused_add_rmsnorm as fused_add_rmsnorm
+    from .norm import layernorm as layernorm
     from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
     from .norm import gemma_rmsnorm as gemma_rmsnorm
     from .norm import rmsnorm as rmsnorm
@@ -101,6 +113,7 @@ if IS_CUDA:
     from .page import get_batch_indices_positions as get_batch_indices_positions
     from .page import get_seq_lens as get_seq_lens
     from .pod import PODWithPagedKVCacheWrapper as PODWithPagedKVCacheWrapper
+    from .pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWrapper
     from .prefill import (
         BatchPrefillWithPagedKVCacheWrapper as BatchPrefillWithPagedKVCacheWrapper,
     )
@@ -138,17 +151,19 @@ if IS_CUDA:
     from .sampling import (
         top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
     )
-    from .sampling import (
-        top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs,
-    )
+    from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
     from .sampling import top_p_renorm_probs as top_p_renorm_probs
     from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
     from .sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
     from .sparse import (
         VariableBlockSparseAttentionWrapper as VariableBlockSparseAttentionWrapper,
     )
+    from .trtllm_low_latency_gemm import (
+        prepare_low_latency_gemm_weights as prepare_low_latency_gemm_weights,
+    )
     from .utils import next_positive_power_of_2 as next_positive_power_of_2
     from .xqa import xqa as xqa
+    from .xqa import xqa_mla as xqa_mla
 elif IS_HIP:
     from ._version import __version__ as __version__
     from .hip_utils import check_torch_rocm_compatibility

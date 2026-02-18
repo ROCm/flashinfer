@@ -19,13 +19,8 @@ from typing import Literal, Optional, Tuple, Union, overload
 
 import torch
 
-from .jit import JitSpec
-from .jit import env as jit_env
-from .jit import (
-    gen_batch_mla_module,
-    gen_jit_spec,
-    current_compilation_context,
-)
+from .jit import gen_batch_mla_module
+from .jit.mla import gen_mla_module
 from .utils import MaskMode, check_shape_dtype_device, determine_mla_backend
 
 
@@ -56,20 +51,6 @@ def _check_cutlass_shape(q_nope_pe, ckv_kpe_cache, kv_len, page_table):
         raise ValueError(
             f"Expected block_num % (128 / block_size) == 0, got {block_num=} and {block_size=}"
         )
-
-
-def gen_mla_module() -> JitSpec:
-    nvcc_flags = current_compilation_context.get_nvcc_flags_list(
-        supported_major_versions=[10, 11]
-    )
-    return gen_jit_spec(
-        "mla",
-        [
-            jit_env.FLASHINFER_CSRC_DIR / "cutlass_mla.cu",
-            jit_env.FLASHINFER_CSRC_DIR / "flashinfer_mla_ops.cu",
-        ],
-        extra_cuda_cflags=nvcc_flags,
-    )
 
 
 @functools.cache
@@ -308,7 +289,7 @@ class BatchMLAPagedAttentionWrapper:
         self._sm_scale = sm_scale
         self._use_profiler = use_profiler
 
-        self._plan_info = self._cached_module.plan.default(
+        self._plan_info = self._cached_module.plan(
             self._float_workspace_buffer,
             self._int_workspace_buffer,
             self._pin_memory_int_workspace_buffer,
@@ -333,6 +314,7 @@ class BatchMLAPagedAttentionWrapper:
         profiler_buffer: Optional[torch.Tensor] = None,
         kv_len: Optional[torch.Tensor] = None,
         page_table: Optional[torch.Tensor] = None,
+        return_lse_base_on_e: bool = False,
     ) -> torch.Tensor: ...
 
     @overload
@@ -348,6 +330,7 @@ class BatchMLAPagedAttentionWrapper:
         profiler_buffer: Optional[torch.Tensor] = None,
         kv_len: Optional[torch.Tensor] = None,
         page_table: Optional[torch.Tensor] = None,
+        return_lse_base_on_e: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
     def run(
@@ -362,6 +345,7 @@ class BatchMLAPagedAttentionWrapper:
         profiler_buffer: Optional[torch.Tensor] = None,
         kv_len: Optional[torch.Tensor] = None,
         page_table: Optional[torch.Tensor] = None,
+        return_lse_base_on_e: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Run the MLA attention computation.
 
@@ -408,7 +392,7 @@ class BatchMLAPagedAttentionWrapper:
             ckv_kpe_cache = torch.cat([ckv_cache, kpe_cache], dim=-1)
             _check_cutlass_shape(q_nope_pe, ckv_kpe_cache, kv_len, page_table)
             lse = torch.empty(0, dtype=torch.float32, device=self.device)
-            self._cached_module.cutlass_mla_paged_attention.default(
+            self._cached_module.cutlass_mla_paged_attention(
                 self._float_workspace_buffer,
                 out,
                 lse,
@@ -445,7 +429,7 @@ class BatchMLAPagedAttentionWrapper:
                     lse, q_nope.shape[:2], torch.float32, q_nope.device, "lse"
                 )
         profiler_args = (profiler_buffer,) if self._use_profiler else ()
-        self._cached_module.run.default(
+        self._cached_module.run(
             self._float_workspace_buffer,
             self._int_workspace_buffer,
             self._plan_info,
@@ -460,6 +444,7 @@ class BatchMLAPagedAttentionWrapper:
             num_heads,
             page_size,
             sm_scale,
+            return_lse_base_on_e,
             *profiler_args,
         )
 
