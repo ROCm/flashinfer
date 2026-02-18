@@ -20,9 +20,9 @@
 // gpu_iface portability layer provides FI_GPU_CALL, gpuError_t, gpuStream_t,
 // gpuLaunchKernel, gpuFuncSetAttribute, etc. on both CUDA and HIP.
 // macros.hpp must be first: it defines PLATFORM_HIP_DEVICE / PLATFORM_CUDA_DEVICE.
-#include <gpu_iface/macros.hpp>
-#include <gpu_iface/gpu_runtime_compat.hpp>
 #include <gpu_iface/dispatch.cuh>
+#include <gpu_iface/gpu_runtime_compat.hpp>
+#include <gpu_iface/macros.hpp>
 
 #ifdef PLATFORM_HIP_DEVICE
 // --- HIP-specific: hiprand, hipcub, and gpu_iface math/utils/vec_dtypes ---
@@ -53,11 +53,11 @@ namespace cub = hipcub;
 #endif  // PLATFORM_HIP_DEVICE
 
 // allocator.h is a pure-C++ header; include it on both CUDA and HIP.
-#include "allocator.h"
-
 #include <limits>
 #include <numeric>
 #include <tuple>
+
+#include "allocator.h"
 
 // Define reduction operators based on CUDA/HIP version
 #ifdef PLATFORM_HIP_DEVICE
@@ -321,11 +321,11 @@ __device__ __forceinline__ std::tuple<float, float> GetMinMaxValue(float* in_dat
     }
     max_val = max(
         max_val, BlockReduce<float, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage.block_prim.reduce)
-                     .Reduce<VEC_SIZE>(in_data_, MaxReduceOp{}));
+                     .template Reduce<VEC_SIZE>(in_data_, MaxReduceOp{}));
     __syncthreads();
     min_val = min(
         min_val, BlockReduce<float, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage.block_prim.reduce)
-                     .Reduce<VEC_SIZE>(in_data_, MinReduceOp{}));
+                     .template Reduce<VEC_SIZE>(in_data_, MinReduceOp{}));
     __syncthreads();
   }
   if (tx == 0) {
@@ -359,7 +359,7 @@ __device__ __forceinline__ float GetMaxValue(float* in_data, uint32_t row_idx, u
     }
     max_val = max(
         max_val, BlockReduce<float, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage.block_prim.reduce)
-                     .Reduce<VEC_SIZE>(in_data_, MaxReduceOp{}));
+                     .template Reduce<VEC_SIZE>(in_data_, MaxReduceOp{}));
     __syncthreads();
   }
   if (tx == 0) {
@@ -860,7 +860,7 @@ __global__ void SamplingFromLogitsKernel(DType* logits, IdType* output, IdType* 
 
     max_data +=
         BlockReduce<DataAndIndex<DType, IdType>, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage)
-            .Sum<VEC_SIZE>(cur_data);
+            .template Sum<VEC_SIZE>(cur_data);
   }
   if (tx == 0) {
     output[bx] = max_data.index;
@@ -1483,8 +1483,8 @@ gpuError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uint
                                                       temperature_arr, temperature_val, d));
             } else {
 #endif
-              FI_GPU_CALL(gpuLaunchKernel((const void*)kernel, nblks, nthrs, args, smem_size,
-                                          stream));
+              FI_GPU_CALL(
+                  gpuLaunchKernel((const void*)kernel, nblks, nthrs, args, smem_size, stream));
 #ifndef PLATFORM_HIP_DEVICE
             }
 #endif
