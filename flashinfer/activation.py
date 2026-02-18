@@ -20,6 +20,7 @@ from typing import Optional
 
 import torch
 
+from .device_utils import IS_CUDA
 from .jit import gen_act_and_mul_module
 from .utils import (
     device_support_pdl,
@@ -27,7 +28,9 @@ from .utils import (
     register_fake_op,
     get_compute_capability,
 )
-from .fp4_quantization import get_fp4_quantization_module
+
+if IS_CUDA:
+    from .fp4_quantization import get_fp4_quantization_module
 
 
 @functools.cache

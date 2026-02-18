@@ -21,7 +21,6 @@ from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.version
-import pynvml
 from torch.torch_version import TorchVersion
 from torch.torch_version import __version__ as torch_version
 import inspect
@@ -277,6 +276,8 @@ def get_gpu_memory_bandwidth(device: torch.device) -> float:
     # Check if it's a CUDA device
     if device.type != "cuda":
         raise ValueError(f"Device must be a CUDA device, got {device}")
+
+    import pynvml  # lazy import: NVIDIA-only library, never reached on HIP/ROCm
 
     # Get device index
     device_index = device.index if device.index is not None else 0
