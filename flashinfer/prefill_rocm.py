@@ -147,6 +147,12 @@ def _get_aiter_single_prefill_module():
     behaviour.
     """
 
+    # Cache of pre-allocated metadata tensors keyed by (qo_len, kv_len, device).
+    # Reusing existing tensors (rather than allocating new ones each call) is
+    # required for CUDA-graph compatibility: new device allocations are forbidden
+    # while a CUDA stream is being captured.
+    _meta_tensor_cache: dict = {}
+
     def aiter_single_prefill_run(
         q: torch.Tensor,
         k: torch.Tensor,
@@ -198,10 +204,21 @@ def _get_aiter_single_prefill_module():
         #   - kv_indptr: one sequence spanning all kv_len "pages"
         #   - kv_page_indices: identity mapping (page i holds token i)
         #   - kv_last_page_len: last page holds exactly 1 token (page_size=1)
-        cu_seqlens_q = torch.tensor([0, qo_len], dtype=torch.int32, device=device)
-        kv_indptr = torch.tensor([0, kv_len], dtype=torch.int32, device=device)
-        kv_page_indices = torch.arange(kv_len, dtype=torch.int32, device=device)
-        kv_last_page_len = torch.ones(1, dtype=torch.int32, device=device)
+        #
+        # These tensors are cached by (qo_len, kv_len, device) so that CUDA-graph
+        # capture can reuse existing allocations instead of creating new ones
+        # (new device allocations are forbidden during stream capture).
+        _cache_key = (qo_len, kv_len, device)
+        if _cache_key not in _meta_tensor_cache:
+            _meta_tensor_cache[_cache_key] = (
+                torch.tensor([0, qo_len], dtype=torch.int32, device=device),
+                torch.tensor([0, kv_len], dtype=torch.int32, device=device),
+                torch.arange(kv_len, dtype=torch.int32, device=device),
+                torch.ones(1, dtype=torch.int32, device=device),
+            )
+        cu_seqlens_q, kv_indptr, kv_page_indices, kv_last_page_len = (
+            _meta_tensor_cache[_cache_key]
+        )
 
         return_lse = maybe_lse is not None
         aiter_result = aiter_mha_module.mha_batch_prefill_func(
