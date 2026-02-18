@@ -30,8 +30,8 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 | **MLA** | TBD | TBD | Not Yet Ported |
 | **POD** | TBD | TBD | Not Yet Ported |
 | **Positional Encoding** | TBD | TBD | Not Yet Ported |
-| **Sampling** | TBD | TBD | Top-K/Top-P Sampling Not Yet Ported |
-| **Normalization** | TBD | TBD | RMS-Norm/Layer-Norm Not Yet Ported |
+| **Sampling** | ✅ | WIP | Supports Top-K/Top-P Sampling |
+| **Normalization** | ✅ | WIP | Supports RMS-Norm/Layer-Norm |
 
 ## GPU and ROCm Support
 
@@ -227,3 +227,78 @@ pytest -v
 ```
 
 The default test configuration is specified in [pyproject.toml](pyproject.toml) under the `testpaths` setting.
+
+## AITER Support
+
+Flasher ROCm now supports the AITER backend for Prefill Operations. To enable AITER for Single and Batch Prefill, first
+
+### Install AITER 
+```
+git clone --recursive https://github.com/ROCm/aiter.git
+cd aiter
+python3 setup.py develop
+```
+
+Flashinfer will automatically detect the AITER backend once it is installed. As of now, only the `NHD` kv_layout is supported by AITER
+
+### Single Prefill Example
+
+This section provides an example on how to use Single Prefill with AITER
+
+```code
+
+import torch
+import flashinfer
+
+def single_prefill_with_kv_cache_aiter_example():
+  qo_len = 128
+  kv_len = 128
+  num_qo_heads = 1
+  num_kv_heads = 1
+  head_dim = 64
+  causal = False
+  kv_layout = "NHD"
+  pos_encoding_mode = "NONE"
+  logits_soft_cap = 8.0
+  return_lse = False
+
+  q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16)
+
+  # NHD Layout
+  k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0",dtype=torch.float16)  
+  v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
+
+
+  # Call flashinfer API
+  logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
+  if return_lse:
+    o, lse = flashinfer.single_prefill_with_kv_cache_return_lse(
+        q,
+        k,
+        v,
+        causal=causal,
+        kv_layout=kv_layout,
+        pos_encoding_mode=pos_encoding_mode,
+        logits_soft_cap=logits_soft_cap,
+        backend="aiter" # Pass the backend = aiter flag to enable # AITER computation
+    )
+    print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
+          
+  else:
+    o = flashinfer.single_prefill_with_kv_cache(
+        q,
+        k,
+        v,
+        causal=causal,
+        kv_layout=kv_layout,
+        pos_encoding_mode=pos_encoding_mode,
+        logits_soft_cap=logits_soft_cap,
+        backend="aiter" # Pass the backend = aiter flag to enable # AITER computation
+    )
+    print(f"  FlashInfer output shape: {o.shape}")
+
+if __name__ == "__main__":
+  single_prefill_with_kv_cache_aiter_example()
+
+```
+
