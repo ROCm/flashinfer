@@ -19,6 +19,8 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
   * [Setting up a Development Environment](#setting-up-a-development-environment)
   * [Building and Installing a Wheel Package](#building-and-installing-a-wheel-package)
   * [Running Tests](#running-tests)
+* [AITER Support](#aiter-support)
+  * [Single Prefill AITER example](#single-prefill-example)
 
 ## Feature Support Matrix
 
@@ -230,13 +232,19 @@ The default test configuration is specified in [pyproject.toml](pyproject.toml) 
 
 ## AITER Support
 
-Flasher ROCm now supports the AITER backend for Prefill Operations. To enable AITER for Single and Batch Prefill, first
+FlashInfer+ROCm now supports the AITER backend for Prefill Operations. To enable AITER for Single and Batch Prefill, follow these steps.
 
-### Install AITER 
-```
+*Install AITER either by building from source*
+
+```bash
 git clone --recursive https://github.com/ROCm/aiter.git
 cd aiter
 python3 setup.py develop
+```
+*or, by installing a wheel package from https://pypi.amd.com/simple/*
+
+```bash
+pip install amd-aiter --index-url https://pypi.amd.com/simple/
 ```
 
 Flashinfer will automatically detect the AITER backend once it is installed. As of now, only the `NHD` kv_layout is supported by AITER
@@ -245,7 +253,7 @@ Flashinfer will automatically detect the AITER backend once it is installed. As 
 
 This section provides an example on how to use Single Prefill with AITER
 
-```code
+```python
 
 import torch
 import flashinfer
