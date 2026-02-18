@@ -160,6 +160,9 @@ elif IS_HIP:
     # HIP/ROCm Imports (AMD-ported modules)
     # ========================================
     from . import jit as jit
+    from .activation import gelu_and_mul as gelu_and_mul
+    from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
+    from .activation import silu_and_mul as silu_and_mul
     from .decode_rocm import (
         BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
     )  # type: ignore[no-redef]
