@@ -178,6 +178,7 @@ filterwarnings = [
 addopts = "-v"
 # HIP-specific test files - running 'pytest' with no args runs only these
 testpaths = [
+    "tests/test_activation.py",
     "tests/test_aot_hip.py",
     "tests/test_batch_decode_kernels_hip.py",
     "tests/test_batch_decode_vllm.py",
@@ -205,6 +206,7 @@ branch = true
 # AMD/HIP modified files - auto-updated by GitHub Action - DO NOT EDIT THIS SECTION MANUALLY
 include = [
     "flashinfer/__init__.py",
+    "flashinfer/activation.py",
     "flashinfer/aiter_utils.py",
     "flashinfer/aot_hip.py",
     "flashinfer/compilation_context_hip.py",
@@ -213,6 +215,7 @@ include = [
     "flashinfer/get_include_paths.py",
     "flashinfer/hip_utils.py",
     "flashinfer/jit/__init__.py",
+    "flashinfer/jit/activation.py",
     "flashinfer/jit/attention/__init__.py",
     "flashinfer/jit/attention/pytorch_hip.py",
     "flashinfer/jit/core.py",

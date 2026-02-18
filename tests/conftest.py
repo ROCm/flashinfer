@@ -14,6 +14,15 @@ import flashinfer
 # Build TORCH_COMPILE_FNS list conditionally based on available modules
 TORCH_COMPILE_FNS = []
 
+# Add activation functions (available on both CUDA and HIP)
+TORCH_COMPILE_FNS.extend(
+    [
+        flashinfer.activation.silu_and_mul,
+        flashinfer.activation.gelu_and_mul,
+        flashinfer.activation.gelu_tanh_and_mul,
+    ]
+)
+
 # Add cascade functions if available (CUDA only)
 if hasattr(flashinfer, "cascade"):
     TORCH_COMPILE_FNS.extend(
