@@ -162,6 +162,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="aiter",
         )
         print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
         # Compute reference in FP32 for better accuracy
@@ -197,6 +198,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="aiter",
         )
         print(f"  FlashInfer output shape: {o.shape}")
 
