@@ -61,7 +61,7 @@ if HAS_AITER:
 # Page sizes natively supported by the AITER CK kernel in linear
 # (non-vectorized) paged KV layout.  For any other page size the AITER
 # backend flattens pages into a token-level (page_size=1) buffer first.
-_AITER_NATIVE_PAGE_SIZES = frozenset({1, 16})
+_AITER_NATIVE_PAGE_SIZES = frozenset({1, 16, 1024})
 
 def make_hashable_cache(func):
     """
@@ -159,13 +159,7 @@ def _get_aiter_single_prefill_module():
     # SUPPORTED_PAGE_SIZE).  Passing a 3D buffer with kv_indptr that
     # counts 128-token pages would make the kernel process only
     # ceil(kv_len/128) tokens — producing wrong outputs.
-    #
-    # page_size=16 is used here: it is natively compiled, requires at
-    # most 15 padding tokens per sequence, and reduces page-table
-    # overhead 16× vs page_size=1.  The k/v buffers are reshaped to 4D
-    # [n_pages, page_size, num_kv_heads, head_dim] so the C++ wrapper
-    # correctly reads page_block_size = k.size(1) = 16.
-    _AITER_SINGLE_PREFILL_PAGE_SIZE = 1024
+    _AITER_SINGLE_PREFILL_PAGE_SIZE = 1
 
     # Cache of pre-allocated metadata + padded KV tensors keyed by
     # (qo_len, kv_len, device).  Reusing existing tensors (rather than
