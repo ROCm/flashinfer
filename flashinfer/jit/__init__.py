@@ -128,9 +128,18 @@ elif IS_HIP:
     from .attention import get_single_decode_uri as get_single_decode_uri
     from .attention import get_single_prefill_uri as get_single_prefill_uri
     from .core import JitSpec as JitSpec
+    from .core import JitSpecStatus as JitSpecStatus
+    from .core import JitSpecRegistry as JitSpecRegistry
+    from .core import jit_spec_registry as jit_spec_registry
+    from .core import MissingJITCacheError as MissingJITCacheError
     from .core import build_jit_specs as build_jit_specs
     from .core import clear_cache_dir as clear_cache_dir
     from .core import gen_jit_spec as gen_jit_spec
+    from .norm import gen_norm_module as gen_norm_module
+    from .page import gen_page_module as gen_page_module
+    from .quantization import gen_quantization_module as gen_quantization_module
+    from .rope import gen_rope_module as gen_rope_module
+    from .sampling import gen_sampling_module as gen_sampling_module
 else:
     # CPU-only torch (no CUDA or HIP)
     raise RuntimeError(
