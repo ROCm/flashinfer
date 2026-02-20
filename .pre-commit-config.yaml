@@ -47,6 +47,13 @@ repos:
       rev: 'v1.17.1'  # Use the sha / tag you want to point at
       hooks:
       -   id: mypy
+          # --ignore-missing-imports: torch, jinja2, pynvml, packaging, and other
+          # runtime deps are not installed in the pre-commit isolation environment
+          # (ROCm torch ships from AMD's repo, not PyPI).  The hook still performs
+          # structural type checking on code that can be analyzed.
+          args: ["--config-file", "pyproject.toml", "--ignore-missing-imports", "--exclude", "flashinfer-cubin/"]
+          files: ^flashinfer/
+          exclude: ^(flashinfer-cubin/|3rdparty/|build/)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.

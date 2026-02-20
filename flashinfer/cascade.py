@@ -20,21 +20,9 @@ from typing import List, Optional, Tuple, Union
 import torch
 
 from .decode import BatchDecodeWithPagedKVCacheWrapper
-from .jit import JitSpec
-from .jit import env as jit_env
-from .jit import gen_jit_spec
+from .jit.cascade import gen_cascade_module
 from .prefill import BatchPrefillWithPagedKVCacheWrapper, single_prefill_with_kv_cache
 from .utils import register_custom_op, register_fake_op
-
-
-def gen_cascade_module() -> JitSpec:
-    return gen_jit_spec(
-        "cascade",
-        [
-            jit_env.FLASHINFER_CSRC_DIR / "cascade.cu",
-            jit_env.FLASHINFER_CSRC_DIR / "flashinfer_cascade_ops.cu",
-        ],
-    )
 
 
 @functools.cache
@@ -361,6 +349,7 @@ class MultiLevelCascadeAttentionWrapper:
                     paged_kv_indptr_buf_arr,
                     paged_kv_indices_buf_arr,
                     paged_kv_last_page_len_buf_arr,
+                    strict=True,
                 )
             ]
         else:
@@ -393,7 +382,7 @@ class MultiLevelCascadeAttentionWrapper:
             be the same as the device of the input tensors.
         """
         for wrapper, int_workspace_buffer in zip(
-            self._batch_prefill_wrappers, int_workspace_buffers
+            self._batch_prefill_wrappers, int_workspace_buffers, strict=True
         ):
             wrapper.reset_workspace_buffer(float_workspace_buffer, int_workspace_buffer)
 
@@ -491,6 +480,7 @@ class MultiLevelCascadeAttentionWrapper:
                 paged_kv_indptr_arr,
                 paged_kv_indices_arr,
                 paged_kv_last_page_len,
+                strict=True,
             )
         ):
             wrapper.plan(

@@ -14,7 +14,6 @@ flashinfer/data/
 flashinfer/_version.py
 flashinfer/__config__.py
 flashinfer/jit/aot_config.py
-aot-ops/
 csrc/aot_default_additional_params.h
 *.out
 
@@ -81,6 +80,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+junit/
 
 # Translations
 *.mo
