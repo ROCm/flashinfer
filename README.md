@@ -234,7 +234,7 @@ The default test configuration is specified in [pyproject.toml](pyproject.toml) 
 ## AITER Support
 
 FlashInfer+ROCm has experimental support to use [AITER](https://github.com/ROCm/aiter) as a
-backeend. The `aiter` backend currently is enabled for the `single_prefill` and `batch_prefill`
+backend. The `aiter` backend currently is enabled for the `single_prefill` and `batch_prefill`
 kernels. To use AITER as the backend for these kernels, please set `backend=aiter` keyword
 argument when invoking the kernels. Additionally, AITER should also be installed on your system and
 you may follow one of the below ways to do so.
