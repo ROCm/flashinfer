@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.26.1)
 
+rocm_setup_version(VERSION 0.2.5)
+
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_INSTALL_MESSAGE LAZY)
 
