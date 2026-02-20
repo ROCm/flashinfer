@@ -25,14 +25,20 @@ import torch
 from .jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
-    gen_fmha_cutlass_sm100a_module,
     gen_single_prefill_module,
     get_batch_prefill_uri,
     get_single_prefill_uri,
-    setup_cubin_loader,
-    gen_trtllm_gen_fmha_module,
 )
-from .cudnn import cudnn_batch_prefill_with_kv_cache
+
+# CUDA-specific imports
+if torch.version.cuda:
+    from .jit import (
+        gen_fmha_cutlass_sm100a_module,
+        setup_cubin_loader,
+        gen_trtllm_gen_fmha_module,
+    )
+    from .cudnn import cudnn_batch_prefill_with_kv_cache
+
 from .page import block_sparse_indices_to_vector_sparse_offsets, get_seq_lens
 from .quantization import packbits, segment_packbits
 from .utils import (
