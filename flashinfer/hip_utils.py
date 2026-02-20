@@ -190,13 +190,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     # Add new tuple for adding a new version group
     _ROCM_ARCH_GROUPS = [
         (
-            ["7.12", "7.11", "7.10"],
-            ["gfx950", "gfx942", "gfx90a", "gfx908", "gfx906",
-             "gfx1201", "gfx1200", "gfx1151", "gfx1150",
-             "gfx1102", "gfx1101", "gfx1100", "gfx1030"],
-        ),
-        (
-            ["7.2", "7.1", "7.0"],
+            ["7.3", "7.2", "7.1", "7.0"],
             ["gfx950", "gfx1201", "gfx1200", "gfx1101", "gfx1100",
              "gfx1030", "gfx942", "gfx90a", "gfx908"],
         ),
