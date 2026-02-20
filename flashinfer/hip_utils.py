@@ -6,40 +6,117 @@
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942"]
 
 
-def get_system_rocm_version():
+def get_rocm_home():
     """
-    Attempt to detect the system ROCm version.
+    Get the ROCM_HOME directory from environment variables or default path.
 
     Returns:
-        str: ROCm version like "6.4" or "7.0", or None if not detectable
+        str: Path to ROCm installation (e.g., "/opt/rocm")
     """
     import os
-    import re
-    import subprocess
 
-    # Method 1: Try /opt/rocm/.info/version (most reliable)
-    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
-    version_file = os.path.join(rocm_path, ".info", "version")
+    return os.environ.get("ROCM_PATH") or os.environ.get("ROCM_HOME") or "/opt/rocm"
+
+
+def is_therock_build() -> bool:
+    """
+    Check if ROCm was built by using TheRock build system.
+
+    Returns:
+        bool: True if TheRock manifest exists, False otherwise
+    """
+    import os
+
+    rocm_home = get_rocm_home()
+    manifest_path = os.path.join(rocm_home, "share", "therock", "therock_manifest.json")
+    return os.path.isfile(manifest_path)
+
+
+def get_system_rocm_version_from_info_file():
+    """
+    Try to get ROCm version from /opt/rocm/.info/version file.
+
+    Returns:
+        str: ROCm version like "7.1.0" or None if not found
+    """
+    import os
+
+    rocm_home = get_rocm_home()
+    version_file = os.path.join(rocm_home, ".info", "version")
     try:
         with open(version_file, "r") as f:
             version = f.read().strip()
             return ".".join(version.split(".")[:3])
     except (FileNotFoundError, IOError):
-        pass
+        return None
 
-    # Method 2: Try amd-smi command
+
+def get_system_rocm_version_from_hipconfig():
+    """
+    Try to get ROCm version from hipconfig --version command.
+
+    Returns:
+        str: ROCm version like "7.1.0" or None if not found
+    """
+    import re
+    import subprocess
+
     try:
         result = subprocess.run(
-            ["amd-smi"], capture_output=True, text=True, timeout=5, check=False
+            ["hipconfig", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False
         )
         if result.returncode == 0:
-            match = re.search(r"ROCm version:\s*(\d+\.\d+\.\d)", result.stdout)
+            match = re.search(r"(\d+\.\d+\.\d+)", result.stdout)
             if match:
                 return match.group(1)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
-    # Method 3: Try dpkg (Ubuntu/Debian)
+    return None
+
+
+def get_system_rocm_version_from_amd_smi():
+    """
+    Try to get ROCm version from amd-smi command.
+
+    Returns:
+        str: ROCm version like "7.1.0" or None if not found
+    """
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["amd-smi"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False
+        )
+        if result.returncode == 0:
+            match = re.search(r"ROCm version:\s*(\d+\.\d+\.\d+)", result.stdout)
+            if match:
+                return match.group(1)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    return None
+
+
+def get_system_rocm_version_from_dpkg():
+    """
+    Try to get ROCm version from dpkg (Ubuntu/Debian package manager).
+
+    Returns:
+        str: ROCm version like "7.1.0" or None if not found
+    """
+    import re
+    import subprocess
+
     try:
         result = subprocess.run(
             ["dpkg", "-l", "rocm-core"],
@@ -49,11 +126,42 @@ def get_system_rocm_version():
             check=False,
         )
         if result.returncode == 0:
-            match = re.search(r"rocm-core\s+(\d+\.\d+\.\d)", result.stdout)
+            match = re.search(r"rocm-core\s+(\d+\.\d+\.\d+)", result.stdout)
             if match:
                 return match.group(1)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+
+    return None
+
+
+def get_system_rocm_version():
+    """
+    Attempt to detect the system ROCm version.
+
+    For standard builds, tries methods in order of reliability.
+    For TheRock builds, prioritizes hipconfig as it's more reliable.
+
+    Returns:
+        str: ROCm version like "7.1.0" or None if not detectable
+    """
+    # For TheRock builds, prioritize hipconfig
+    if is_therock_build():
+        return get_system_rocm_version_from_hipconfig()
+
+    # Try standard detection methods in order of reliability
+    detection_methods = [
+        get_system_rocm_version_from_info_file,
+        get_system_rocm_version_from_amd_smi,
+        get_system_rocm_version_from_dpkg,
+        get_system_rocm_version_from_hipconfig,
+    ]
+
+    for method in detection_methods:
+        version = method()
+        if version:
+            return version
+        print(f"ROCm version not found using {method.__name__}. Trying next method...")
 
     return None
 
@@ -77,42 +185,32 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     # ROCm compatibility matrix: version -> supported gfx architectures
     # Refer: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html
+    #        https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md#rocm-on-linux
+    # Update lists for adding or removing a version or arch
+    # Add new tuple for adding a new version group
+    _ROCM_ARCH_GROUPS = [
+        (
+            ["7.12", "7.11", "7.10"],
+            ["gfx950", "gfx942", "gfx90a", "gfx908", "gfx906",
+             "gfx1201", "gfx1200", "gfx1151", "gfx1150",
+             "gfx1102", "gfx1101", "gfx1100", "gfx1030"],
+        ),
+        (
+            ["7.2", "7.1", "7.0"],
+            ["gfx950", "gfx1201", "gfx1200", "gfx1101", "gfx1100",
+             "gfx1030", "gfx942", "gfx90a", "gfx908"],
+        ),
+        (
+            ["6.4", "6.3"],
+            ["gfx1100", "gfx1030", "gfx942", "gfx90a", "gfx908"],
+        ),
+    ]
+
+    # Build the compatibility matrix
     ROCM_COMPAT_MATRIX = {
-        "7.2": [
-            "gfx950",
-            "gfx1201",
-            "gfx1200",
-            "gfx1101",
-            "gfx1100",
-            "gfx1030",
-            "gfx942",
-            "gfx90a",
-            "gfx908",
-        ],
-        "7.1": [
-            "gfx950",
-            "gfx1201",
-            "gfx1200",
-            "gfx1101",
-            "gfx1100",
-            "gfx1030",
-            "gfx942",
-            "gfx90a",
-            "gfx908",
-        ],
-        "7.0": [
-            "gfx950",
-            "gfx1201",
-            "gfx1200",
-            "gfx1101",
-            "gfx1100",
-            "gfx1030",
-            "gfx942",
-            "gfx90a",
-            "gfx908",
-        ],
-        "6.4": ["gfx1100", "gfx1030", "gfx942", "gfx90a", "gfx908"],
-        "6.3": ["gfx1100", "gfx1030", "gfx942", "gfx90a", "gfx908"],
+        version: archs
+        for versions, archs in _ROCM_ARCH_GROUPS
+        for version in versions
     }
 
     # Get architecture list from parameter, env var, or default
@@ -124,7 +222,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     if system_rocm_version is None:
         raise RuntimeError(
             "Could not detect ROCm installation. Please ensure ROCm is installed and "
-            "accessible (check ROCM_PATH or /opt/rocm)."
+            "accessible (check ROCM_PATH, ROCM_HOME or /opt/rocm)."
         )
 
     # Parse version to major.minor for compatibility check
