@@ -11,7 +11,7 @@ typedef hipStream_t cudaStream_t;
 
 #include <ATen/Utils.h>
 #include <ATen/core/Generator.h>
-#include <ATen/cuda/CUDAGeneratorImpl.h>
+#include <ATen/hip/HIPGeneratorImpl.h>
 
 #include <ATen/cuda/detail/UnpackRaw.cuh>
 #include <flashinfer/sampling.cuh>
