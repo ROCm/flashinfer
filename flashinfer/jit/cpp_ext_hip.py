@@ -19,10 +19,11 @@ from torch.utils.cpp_extension import (
     _get_pybind11_abi_build_flags,
 )
 
-from torch.utils.cpp_extension import ROCM_HOME
+from flashinfer.hip_utils import get_rocm_home
 
 from . import env as jit_env
 
+ROCM_HOME = get_rocm_home()
 
 def _get_glibcxx_abi_build_flags() -> List[str]:
     glibcxx_abi_cflags = [
@@ -112,11 +113,7 @@ def generate_ninja_build_for_op(
         ldflags += extra_ldflags
 
     cxx = os.environ.get("CXX", "c++")
-    rocm_home = ROCM_HOME or "/opt/rocm"
-    amdclang = os.environ.get("PYTORCH_AMDCLANG", "$rocm_home/bin/amdclang++")
-
-    cxx = os.environ.get("CXX", "c++")
-    rocm_home = ROCM_HOME or "/opt/rocm"
+    rocm_home = ROCM_HOME
     amdclang = os.environ.get("PYTORCH_AMDCLANG", "$rocm_home/bin/amdclang++")
 
     lines = [
@@ -164,11 +161,7 @@ def generate_ninja_build_for_op(
     for source in sources:
         is_hip = source.suffix == ".cu"
         object_suffix = ".cuda.o" if is_hip else ".o"
-        cmd = ""
-        if is_hip:
-            cmd = "hip_compile"
-        else:
-            cmd = "compile"
+        cmd = "hip_compile" if is_hip else "compile"
         obj_name = source.with_suffix(object_suffix).name
         obj = f"$name/{obj_name}"
         objects.append(obj)
