@@ -221,6 +221,22 @@ def validate_flashinfer_rocm_arch(
     return arch_flags, arch_set
 
 
+def get_available_gpu_count() -> int:
+    """
+    Query the number of AMD GPUs visible to the current process.
+
+    Uses torch.cuda.device_count(), which maps to the HIP runtime on ROCm and
+    respects HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES.  torch is a required
+    dependency of amd-flashinfer, so no fallback is needed.
+
+    Returns:
+        int: Number of visible GPUs (0 if none are visible to this process).
+    """
+    import torch
+
+    return torch.cuda.device_count()
+
+
 def check_torch_rocm_compatibility() -> None:
     """
     Verify that PyTorch is installed with compatible ROCm support.
@@ -253,7 +269,8 @@ def check_torch_rocm_compatibility() -> None:
             "  2. Install PyTorch for ROCm:\n"
             "     pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/\n\n"
             "See https://github.com/rocm/flashinfer for detailed installation instructions.\n"
-            + "=" * 70
+            + "="
+            * 70
         )
 
     # ROCm version compatibility warning
