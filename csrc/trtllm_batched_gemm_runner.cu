@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-#include <c10/util/Exception.h>
-
+#include <cstring>
 #include <vector>
 
 #include "flashinfer/trtllm/batched_gemm/KernelRunner.h"
 // #include "tensorrt_llm/common/assert.h"
+#include "flashinfer/exception.h"
 #include "flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export/BatchedGemmInterface.h"
 #include "flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export/Enums.h"
 #include "flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export/trtllm/gen/DtypeDecl.h"
@@ -104,13 +104,6 @@ TrtllmGenBatchedGemmRunner::TrtllmGenBatchedGemmRunner(
         tileSize == mOptions.tileSize &&
         options.mUseShuffledMatrixA == mOptions.useShuffledMatrixA &&
         options.mLayoutA == mOptions.weightLayout) {
-      // FIXME: Disable split-k for swiglu for now.
-      if (static_cast<batchedGemm::gemmGatedAct::ActType>(mOptions.actType) ==
-              batchedGemm::gemmGatedAct::ActType::SwiGlu &&
-          options.mClusterDimZ != 1) {
-        continue;
-      }
-
       if (options.mFusedAct) {
         if (options.mActType != static_cast<batchedGemm::gemmGatedAct::ActType>(mOptions.actType)) {
           continue;
@@ -123,7 +116,16 @@ TrtllmGenBatchedGemmRunner::TrtllmGenBatchedGemmRunner(
     }
   }
 
-  TORCH_CHECK(!mPassingConfigIndices.empty(), "No kernel found for the given options");
+  std::ostringstream error_msg;
+  error_msg << "No kernel found for the given options: "
+            << "mDtypeA: " << tg::dtypeToString(mOptions.dtypeA)
+            << ", mDtypeB: " << tg::dtypeToString(mOptions.dtypeB)
+            << ", mDtypeC: " << tg::dtypeToString(mOptions.dtypeC)
+            << ", mUseDeepSeekFp8: " << mOptions.deepSeekFp8
+            << ", mTransposeMmaOutput: " << mOptions.transposeMmaOutput
+            << ", mRouteAct: " << mOptions.routeAct << ", mFusedAct: " << mOptions.fusedAct
+            << ", mIsStaticBatch: " << mOptions.staticBatch << ", mTileSize: " << mOptions.tileSize;
+  FLASHINFER_CHECK(!mPassingConfigIndices.empty(), error_msg.str());
 }
 
 size_t TrtllmGenBatchedGemmRunner::getWorkspaceSizeInBytes(
@@ -143,6 +145,10 @@ size_t TrtllmGenBatchedGemmRunner::getWorkspaceSizeInBytes(
   gemmData.mProblemDimensions.mRank = 0;
   gemmData.mProblemDimensions.mWorldSize = 1;
   gemmData.mProblemDimensions.mMaxNumCtasInTokenDim = maxNumCtasInBatchDim;
+
+  gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+  gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+  gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
 
   auto bmm = BatchedGemmInterface();
 
@@ -170,24 +176,26 @@ void TrtllmGenBatchedGemmRunner::run(
 
   auto const& config = configs[configIndex];
 
-  TORCH_CHECK(numBatches > 0, "Batched GEMM requires numBatches > 0");
+  FLASHINFER_CHECK(numBatches > 0, "Batched GEMM requires numBatches > 0");
   if (!mOptions.staticBatch) {
-    TORCH_CHECK(totalNumPaddedTokens,
-                "Batched GEMM with dynamic batching requires totalNumPaddedTokens");
-    TORCH_CHECK(ctaIdxXyToBatchIdx,
-                "Batched GEMM with dynamic batching requires ctaIdxXyToBatchIdx");
-    TORCH_CHECK(ctaIdxXyToMnLimit, "Batched GEMM with dynamic batching requires ctaIdxXyToMnLimit");
-    TORCH_CHECK(numNonExitingCtas, "Batched GEMM with dynamic batching requires numNonExitingCtas");
+    FLASHINFER_CHECK(totalNumPaddedTokens,
+                     "Batched GEMM with dynamic batching requires totalNumPaddedTokens");
+    FLASHINFER_CHECK(ctaIdxXyToBatchIdx,
+                     "Batched GEMM with dynamic batching requires ctaIdxXyToBatchIdx");
+    FLASHINFER_CHECK(ctaIdxXyToMnLimit,
+                     "Batched GEMM with dynamic batching requires ctaIdxXyToMnLimit");
+    FLASHINFER_CHECK(numNonExitingCtas,
+                     "Batched GEMM with dynamic batching requires numNonExitingCtas");
   }
 
   if (!mOptions.staticBatch && numTokens != 0) {
-    TORCH_CHECK(maxNumCtasInBatchDim > 0,
-                "Batched GEMM with dynamic batching requires maxNumCtasInBatchDim > 0");
+    FLASHINFER_CHECK(maxNumCtasInBatchDim > 0,
+                     "Batched GEMM with dynamic batching requires maxNumCtasInBatchDim > 0");
   }
 
   if (mOptions.routeAct) {
-    TORCH_CHECK(routeMap, "Batched GEMM with routeAct requires routeMap");
-    TORCH_CHECK(numTokens > 0, "Batched GEMM with routeAct requires numTokens > 0");
+    FLASHINFER_CHECK(routeMap, "Batched GEMM with routeAct requires routeMap");
+    FLASHINFER_CHECK(numTokens > 0, "Batched GEMM with routeAct requires numTokens > 0");
   }
 
   // Dims
@@ -237,17 +245,21 @@ void TrtllmGenBatchedGemmRunner::run(
   int32_t multiProcessorCount;
   cudaDeviceGetAttribute(&multiProcessorCount, cudaDevAttrMultiProcessorCount, device);
 
+  gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+  gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+  gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
+
   // FIXME once we start using all-reduce in the epilogue of the bmm this can be moved elsewhere
   bmm.runInitBeforeWorldSync(config, gemmData, static_cast<void*>(stream));
 
   auto const err = bmm.run(config, workspace, gemmData, static_cast<void*>(stream),
                            multiProcessorCount, enable_pdl, globalTrtllmGenBatchedGemmModuleCache);
 
-  TORCH_CHECK(err == 0,
-              "Error occurred when running GEMM!"
-              " (numBatches: ",
-              numBatches, ", GemmMNK: ", m, " ", n, " ", k, ", Kernel: ", config.mFunctionName,
-              ")");
+  FLASHINFER_CHECK(err == 0,
+                   "Error occurred when running GEMM!"
+                   " (numBatches: ",
+                   numBatches, ", GemmMNK: ", m, " ", n, " ", k, ", Kernel: ", config.mFunctionName,
+                   ")");
 }
 
 void TrtllmGenBatchedGemmRunner::run(int32_t m, int32_t n, int32_t k,
@@ -325,6 +337,10 @@ std::vector<int64_t> TrtllmGenBatchedGemmRunner::getValidConfigIndices(
   gemmData.mProblemDimensions.mWorldSize = 1;
   gemmData.mProblemDimensions.mMaxNumCtasInTokenDim = maxNumCtasInBatchDim;
 
+  gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+  gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+  gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
+
   auto cmpFunc = [&configs, &gemmData, &bmm, &multiProcessorCount](int64_t idx0, int64_t idx1) {
     auto const& optionsA = configs[idx0].mOptions;
     auto const& optionsB = configs[idx1].mOptions;
@@ -373,6 +389,7 @@ std::vector<int64_t> TrtllmGenBatchedGemmRunner::getValidConfigIndices(
 
     return false;
   };
+
   // Sort configs by options.
   std::vector<int64_t> sortedIndices = mPassingConfigIndices;
   std::sort(sortedIndices.begin(), sortedIndices.end(), cmpFunc);
@@ -384,14 +401,14 @@ std::vector<int64_t> TrtllmGenBatchedGemmRunner::getValidConfigIndices(
   // Filter out invalid configs.
   std::vector<int64_t> validConfigIndices;
   for (auto const& configIndex : prioritizedIndices) {
-    auto const& config = configs[configIndex];
-    auto isValidConfig = bmm.isValidConfig(config, gemmData);
+    auto isValidConfig = bmm.isValidConfig(configs[configIndex], gemmData);
     if (isValidConfig) {
       validConfigIndices.push_back(configIndex);
     }
   }
 
-  TORCH_CHECK(!validConfigIndices.empty(), "No valid config found for the given problem shape");
+  FLASHINFER_CHECK(!validConfigIndices.empty(),
+                   "No valid config found for the given problem shape");
 
   return validConfigIndices;
 }
@@ -431,7 +448,9 @@ bool TrtllmGenBatchedGemmRunner::isValidConfigIndex(int32_t configIndex, int32_t
 
   auto const& config = configs[configIndex];
 
-  return bmm.isValidConfig(config, gemmData);
+  // FIXME: temporarily disable split-k as renormalize routing plus expert number 256 failed in
+  // trtllm-gen ac83afb
+  return bmm.isValidConfig(config, gemmData) && config.mOptions.mClusterDimZ == 1;
 }
 
 }  // namespace kernels

@@ -16,13 +16,13 @@
 
 #include <iostream>
 
+#include "flashinfer/exception.h"
 #include "flashinfer/trtllm/batched_gemm/KernelRunner.h"
 #include "flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export/trtllm/gen/DtypeDecl.h"
 #include "flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export/trtllm/gen/SfLayoutDecl.h"
 #include "flashinfer/trtllm/fused_moe/DevKernel.h"
 #include "flashinfer/trtllm/fused_moe/RoutingKernel.h"
 #include "flashinfer/trtllm/fused_moe/runner.h"
-// #include <tensorrt_llm/common/assert.h>
 
 namespace tensorrt_llm {
 namespace kernels {
@@ -38,7 +38,9 @@ inline int32_t computeLog2(int32_t val, std::string const& name = "") {
   while (n >>= 1) {
     ++out;
   }
-  TORCH_CHECK((1 << out) == val, "Expected ", name, " to be a power of 2, got ", val);
+  if ((1 << out) != val) {
+    out = -1;
+  }
   return out;
 }
 }  // namespace
@@ -54,22 +56,27 @@ void Runner::run(void* routingLogits, void* routingBias, int32_t numTokens, int3
                  int32_t* expandedIdxToPermutedIdx, int32_t* permutedIdxToExpandedIdx,
                  int32_t* permutedIdxToTokenIdx, void* expertWeights, int32_t* numTokensPerExpert,
                  int32_t* ctaIdxXyToBatchIdx, int32_t* ctaIdxXyToMnLimit,
-                 int32_t* numNonExitingCtas, btg::Dtype dtypeElt, bool useRoutingScalesOnInput,
-                 bool useDeepSeekFp8, RoutingMethodType routingMethodType, cudaStream_t stream) {
+                 int32_t* numNonExitingCtas, btg::Dtype dtypeElt, btg::Dtype dtypeBias,
+                 bool useRoutingScalesOnInput, bool useDeepSeekFp8,
+                 RoutingMethodType routingMethodType, cudaStream_t stream) {
   if (routingMethodType == RoutingMethodType::DeepSeekV3) {
-    TORCH_CHECK(topK <= 8, "For DeepSeek routing method, must have topK <= 8");
-    TORCH_CHECK(topkGroup <= 4, "For DeepSeek routing method, must have topkGroup <= 4");
+    FLASHINFER_CHECK(topK <= 8, "For DeepSeek routing method, must have topK <= 8");
+    FLASHINFER_CHECK(topkGroup <= 4, "For DeepSeek routing method, must have topkGroup <= 4");
     moe::dev::routing::routingDeepSeek::Data routingData;
-    routingData.mDtypeExpW = btg::Dtype::Bfloat16;
+    routingData.mDtypeExpW =
+        btg::Dtype::Bfloat16;            // for DeepSeek, the expW is currently always bfloat16
+    routingData.mDtypeBias = dtypeBias;  // for DeepSeek, the bias can be bfloat16 or fp32
+
+    routingData.mDtypeScore = btg::Dtype::Fp32;  // for DeepSeek, the score is currently always fp32
     routingData.mUsePdl = true;
 
     // output:
-    routingData.mPtrExpertIdx = routingExpertIndexes;
+    routingData.mPtrTopKPacked = routingExpertIndexes;
     routingData.mPtrExpertCounts = expertCountHistogram;
     routingData.mPtrPermutedIdxSize = permutedIdxSize;
     routingData.mPtrExpandedIdxToPermutedIdx = expandedIdxToPermutedIdx;
     routingData.mPtrPermutedIdxToTokenIdx = permutedIdxToTokenIdx;
-    routingData.mPtrExpertWeights = expertWeights;
+    routingData.mPtrTopKWeights = expertWeights;
 
     routingData.mPtrCtaIdxXyToBatchIdx = ctaIdxXyToBatchIdx;
     routingData.mPtrCtaIdxXyToMnLimit = ctaIdxXyToMnLimit;
@@ -84,6 +91,7 @@ void Runner::run(void* routingLogits, void* routingBias, int32_t numTokens, int3
     routingData.mNumLimitedGroups = topkGroup;
     routingData.mTopK = topK;
     routingData.mPaddingLog2 = computeLog2(mTileTokensDim);
+    routingData.mTileTokensDim = mTileTokensDim;
     routingData.mLocalExpertsStartIdx = localExpertOffset;
     routingData.mLocalExpertsStrideLog2 = 0;
     routingData.mNumLocalExperts = localNumExperts;
@@ -91,22 +99,22 @@ void Runner::run(void* routingLogits, void* routingBias, int32_t numTokens, int3
     routingData.mUseRoutingSoftmax = false;
     moe::dev::routing::routingDeepSeek::run(routingData, stream);
   } else if (routingMethodType == RoutingMethodType::Llama4) {
-    TORCH_CHECK(topK == 1, "For Llama routing method, must have topK == 1");
+    FLASHINFER_CHECK(topK == 1, "For Llama routing method, must have topK == 1");
     if (nGroup > 0 || topkGroup > 0) {
-      TORCH_WARN("For Llama routing method, nGroup/topkGroup is ignored, got ", nGroup, "/",
-                 topkGroup);
+      FLASHINFER_WARN("For Llama routing method, nGroup/topkGroup is ignored, got ", nGroup, "/",
+                      topkGroup);
     }
     moe::dev::routing::routingLlama4::Data routingData;
     routingData.mDtypeExpW = btg::Dtype::Bfloat16;
     routingData.mUsePdl = true;
 
     // output:
-    routingData.mPtrExpertIdx = routingExpertIndexes;
+    routingData.mPtrTopKPacked = routingExpertIndexes;
     routingData.mPtrExpertCounts = expertCountHistogram;
     routingData.mPtrPermutedIdxSize = permutedIdxSize;
     routingData.mPtrExpandedIdxToPermutedIdx = expandedIdxToPermutedIdx;
     routingData.mPtrPermutedIdxToTokenIdx = permutedIdxToTokenIdx;
-    routingData.mPtrExpertWeights = expertWeights;
+    routingData.mPtrTopKWeights = expertWeights;
 
     routingData.mPtrCtaIdxXyToBatchIdx = ctaIdxXyToBatchIdx;
     routingData.mPtrCtaIdxXyToMnLimit = ctaIdxXyToMnLimit;
@@ -118,6 +126,7 @@ void Runner::run(void* routingLogits, void* routingBias, int32_t numTokens, int3
     routingData.mNumExperts = numExperts;
     routingData.mTopK = topK;
     routingData.mPaddingLog2 = computeLog2(mTileTokensDim);
+    routingData.mTileTokensDim = mTileTokensDim;
     routingData.mLocalExpertsStartIdx = localExpertOffset;
     routingData.mLocalExpertsStrideLog2 = 0;
     routingData.mNumLocalExperts = localNumExperts;
@@ -143,12 +152,12 @@ void Runner::run(void* routingLogits, void* routingBias, int32_t numTokens, int3
     //
     // Outputs
     //
-    routingData.mPtrExpertIdx = routingExpertIndexes;
+    routingData.mPtrTopKPacked = routingExpertIndexes;
     routingData.mPtrExpertCounts = expertCountHistogram;
     routingData.mPtrPermutedIdxSize = permutedIdxSize;
     routingData.mPtrExpandedIdxToPermutedIdx = expandedIdxToPermutedIdx;
     routingData.mPtrPermutedIdxToTokenIdx = permutedIdxToTokenIdx;
-    routingData.mPtrExpertWeights = expertWeights;
+    routingData.mPtrTopKWeights = expertWeights;
 
     //
     // Grouped Gemm Launch Config Buffers
@@ -164,15 +173,16 @@ void Runner::run(void* routingLogits, void* routingBias, int32_t numTokens, int3
     routingData.mNumExperts = numExperts;
     routingData.mTopK = topK;
     routingData.mPaddingLog2 = computeLog2(mTileTokensDim);
+    routingData.mTileTokensDim = mTileTokensDim;
     routingData.mLocalExpertsStartIdx = localExpertOffset;
     routingData.mLocalExpertsStrideLog2 = 0;
     routingData.mNumLocalExperts = localNumExperts;
 
     moe::dev::routing::routingRenormalize::run(routingData, stream);
   } else {
-    TORCH_CHECK(false, "Unimplemented routing method ",
-                serializeMoeRoutingMethodType(routingMethodType), " of enum ",
-                (int)routingMethodType);
+    FLASHINFER_CHECK(false, "Unimplemented routing method ",
+                     serializeMoeRoutingMethodType(routingMethodType), " of enum ",
+                     (int)routingMethodType);
   }
 }
 }  // namespace Routing
@@ -203,8 +213,8 @@ tensorrt_llm::kernels::TrtllmGenBatchedGemmRunnerOptions getOptions(
         .weightLayout = weightLayout};
     return options;
   } else {
-    TORCH_CHECK(false, "Unimplemented gated act type ", MoE::serializeGatedActType(gatedActType),
-                " of enum ", (int)gatedActType);
+    FLASHINFER_CHECK(false, "Unimplemented gated act type ",
+                     MoE::serializeGatedActType(gatedActType), " of enum ", (int)gatedActType);
   }
 }
 
@@ -380,8 +390,8 @@ Runner::Runner(btg::Dtype dtypeAct, btg::Dtype dtypeWeights, bool useDeepSeekFp8
       mPassingConfigs.push_back(MoEConfig{indexGemm1, indexGemm2});
     }
   }
-  TORCH_CHECK(!mPassingConfigs.empty(),
-              "No compatible configs found for the fp8 block scale MoE runner.");
+  FLASHINFER_CHECK(!mPassingConfigs.empty(),
+                   "No compatible configs found for the fp8 block scale MoE runner.");
 }
 
 Runner::Runner(btg::Dtype dtypeElt, bool useDeepSeekFp8, int32_t tileTokensDim,
@@ -489,8 +499,8 @@ int64_t Runner::getDefaultValidConfigIndex(int32_t topK, int32_t hiddenSize,
                          [indexGemm1, indexGemm2](MoEConfig cfg) {
                            return (cfg.gemm1Config == indexGemm1 && cfg.gemm2Config == indexGemm2);
                          });
-  TORCH_CHECK(it != mPassingConfigs.end(),
-              "No compatible configs found for the block scale MoE runner.");
+  FLASHINFER_CHECK(it != mPassingConfigs.end(),
+                   "No compatible configs found for the block scale MoE runner.");
   return std::distance(mPassingConfigs.begin(), it);
 }
 
@@ -508,7 +518,7 @@ void Runner::run(MoERunnerArgs const& args, MoEWorkspace const& workspace, int d
   auto const& config = mPassingConfigs[configIndex];
 
   mPermuteGemm1.run(args.hidden_states, hidden_states_scale_linear, args.gemm1_weights,
-                    args.gemm1_weights_scale, workspace.expert_weights, args.output1_scales_scalar,
+                    args.gemm1_weights_scale, workspace.token_scales, args.output1_scales_scalar,
                     args.output1_scales_gate_scalar, args.gemm1_bias, args.gemm1_alpha,
                     args.gemm1_beta, args.gemm1_clamp_limit, workspace.gemm1_output,
                     workspace.gemm1_output_scale, args.top_k, args.hidden_size,

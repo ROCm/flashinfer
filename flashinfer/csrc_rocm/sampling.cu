@@ -10,12 +10,8 @@ typedef hipStream_t cudaStream_t;
 #endif
 
 #include <ATen/Utils.h>
-#include <ATen/core/Generator.h>
-#include <ATen/cuda/CUDAGeneratorImpl.h>
 
-#include <ATen/cuda/detail/UnpackRaw.cuh>
 #include <flashinfer/sampling.cuh>
-#include <mutex>
 
 #include "pytorch_extension_utils.h"
 
@@ -48,54 +44,40 @@ void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
 
 void sampling_from_logits(at::Tensor logits, at::Tensor output,
                           std::optional<at::Tensor> maybe_indices, bool deterministic,
-                          std::optional<at::Generator> gen_) {
+                          int64_t philox_seed, int64_t philox_offset) {
   CHECK_INPUT(logits);
   auto device = logits.device();
   CHECK_DIM(2, logits);  // logits: (batch_size, vocab_size)
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = logits.size(1);
 
-  uint64_t philox_seed, philox_offset;
-  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-      gen_, at::cuda::detail::getDefaultCUDAGenerator());
-  std::lock_guard<std::mutex> lock(gen->mutex_);
-  at::PhiloxCudaState rng_engine_inputs = gen->philox_cuda_state(batch_size * vocab_size);
-  philox_seed = rng_engine_inputs.seed_.val;
-  philox_offset = rng_engine_inputs.offset_.val;
-
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   gpuError_t status = sampling::SamplingFromLogits(
       static_cast<float*>(logits.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
-      batch_size, vocab_size, deterministic, philox_seed, philox_offset, stream);
+      batch_size, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
+      static_cast<uint64_t>(philox_offset), stream);
   TORCH_CHECK(status == gpuSuccess, "SamplingFromLogits failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
 
 void sampling_from_probs(at::Tensor probs, at::Tensor output,
                          std::optional<at::Tensor> maybe_indices, bool deterministic,
-                         std::optional<at::Generator> gen_) {
+                         int64_t philox_seed, int64_t philox_offset) {
   CHECK_INPUT(probs);
   auto device = probs.device();
   CHECK_DIM(2, probs);  // probs: (batch_size, vocab_size)
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
 
-  uint64_t philox_seed, philox_offset;
-  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-      gen_, at::cuda::detail::getDefaultCUDAGenerator());
-  std::lock_guard<std::mutex> lock(gen->mutex_);
-  at::PhiloxCudaState rng_engine_inputs = gen->philox_cuda_state(batch_size);
-  philox_seed = rng_engine_inputs.seed_.val;
-  philox_offset = rng_engine_inputs.offset_.val;
-
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   gpuError_t status = sampling::SamplingFromProb(
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
-      batch_size, vocab_size, deterministic, philox_seed, philox_offset, stream);
+      batch_size, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
+      static_cast<uint64_t>(philox_offset), stream);
   TORCH_CHECK(status == gpuSuccess,
               "SamplingFromProbs failed with error code " + std::string(hipGetErrorString(status)));
 }
@@ -103,20 +85,13 @@ void sampling_from_probs(at::Tensor probs, at::Tensor output,
 void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
-                               bool deterministic, std::optional<at::Generator> gen_) {
+                               bool deterministic, int64_t philox_seed, int64_t philox_offset) {
   CHECK_INPUT(probs);
   auto device = probs.device();
   CHECK_DIM(2, probs);  // probs: (batch_size, vocab_size)
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
   bool has_top_p_arr = maybe_top_p_arr.has_value();
-  uint64_t philox_seed, philox_offset;
-  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-      gen_, at::cuda::detail::getDefaultCUDAGenerator());
-  std::lock_guard<std::mutex> lock(gen->mutex_);
-  at::PhiloxCudaState rng_engine_inputs = gen->philox_cuda_state(32 * batch_size);
-  philox_seed = rng_engine_inputs.seed_.val;
-  philox_offset = rng_engine_inputs.offset_.val;
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -124,7 +99,8 @@ void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr, batch_size,
-      top_p_val, vocab_size, deterministic, philox_seed, philox_offset, stream);
+      top_p_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
+      static_cast<uint64_t>(philox_offset), stream);
   TORCH_CHECK(status == gpuSuccess, "TopPSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -132,7 +108,7 @@ void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
 void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val,
-                               bool deterministic, std::optional<at::Generator> gen_) {
+                               bool deterministic, int64_t philox_seed, int64_t philox_offset) {
   CHECK_INPUT(probs);
   CHECK_INPUT(output);
   auto device = probs.device();
@@ -142,13 +118,6 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
   bool has_top_k_arr = maybe_top_k_arr.has_value();
-  uint64_t philox_seed, philox_offset;
-  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-      gen_, at::cuda::detail::getDefaultCUDAGenerator());
-  std::lock_guard<std::mutex> lock(gen->mutex_);
-  at::PhiloxCudaState rng_engine_inputs = gen->philox_cuda_state(32 * batch_size);
-  philox_seed = rng_engine_inputs.seed_.val;
-  philox_offset = rng_engine_inputs.offset_.val;
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -156,7 +125,8 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_k_arr ? static_cast<float*>(maybe_top_k_arr->data_ptr()) : nullptr, batch_size,
-      top_k_val, vocab_size, deterministic, philox_seed, philox_offset, stream);
+      top_k_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
+      static_cast<uint64_t>(philox_offset), stream);
   TORCH_CHECK(status == gpuSuccess, "TopKSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -164,7 +134,7 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
 void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_min_p_arr, double min_p_val,
-                               bool deterministic, std::optional<at::Generator> gen_) {
+                               bool deterministic, int64_t philox_seed, int64_t philox_offset) {
   CHECK_INPUT(probs);
   CHECK_INPUT(output);
   auto device = probs.device();
@@ -174,13 +144,6 @@ void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
   bool has_min_p_arr = maybe_min_p_arr.has_value();
-  uint64_t philox_seed, philox_offset;
-  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-      gen_, at::cuda::detail::getDefaultCUDAGenerator());
-  std::lock_guard<std::mutex> lock(gen->mutex_);
-  at::PhiloxCudaState rng_engine_inputs = gen->philox_cuda_state(batch_size);
-  philox_seed = rng_engine_inputs.seed_.val;
-  philox_offset = rng_engine_inputs.offset_.val;
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -189,7 +152,8 @@ void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
       has_min_p_arr ? static_cast<float*>(maybe_min_p_arr->data_ptr()) : nullptr,
       static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
-      batch_size, min_p_val, vocab_size, deterministic, philox_seed, philox_offset, stream);
+      batch_size, min_p_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
+      static_cast<uint64_t>(philox_offset), stream);
   TORCH_CHECK(status == gpuSuccess, "MinPSamplingFromProb failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -198,7 +162,8 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
                                      std::optional<at::Tensor> maybe_indices,
                                      std::optional<at::Tensor> maybe_top_k_arr, double top_k_val,
                                      std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
-                                     bool deterministic, std::optional<at::Generator> gen_) {
+                                     bool deterministic, int64_t philox_seed,
+                                     int64_t philox_offset) {
   CHECK_INPUT(probs);
   CHECK_INPUT(output);
   auto device = probs.device();
@@ -209,13 +174,6 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
   unsigned int vocab_size = probs.size(1);
   bool has_top_k_arr = maybe_top_k_arr.has_value();
   bool has_top_p_arr = maybe_top_p_arr.has_value();
-  uint64_t philox_seed, philox_offset;
-  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-      gen_, at::cuda::detail::getDefaultCUDAGenerator());
-  std::lock_guard<std::mutex> lock(gen->mutex_);
-  at::PhiloxCudaState rng_engine_inputs = gen->philox_cuda_state(32 * batch_size);
-  philox_seed = rng_engine_inputs.seed_.val;
-  philox_offset = rng_engine_inputs.offset_.val;
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -225,8 +183,8 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr,
       static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
-      batch_size, top_k_val, top_p_val, vocab_size, deterministic, philox_seed, philox_offset,
-      stream);
+      batch_size, top_k_val, top_p_val, vocab_size, deterministic,
+      static_cast<uint64_t>(philox_seed), static_cast<uint64_t>(philox_offset), stream);
   TORCH_CHECK(status == gpuSuccess, "TopKTopPSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -235,7 +193,7 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
                                 at::Tensor target_probs, at::Tensor output_token_ids,
                                 at::Tensor output_accepted_token_num,
                                 at::Tensor output_emitted_draft_token_num, bool deterministic,
-                                std::optional<at::Generator> gen_) {
+                                int64_t philox_seed, int64_t philox_offset) {
   CHECK_INPUT(draft_probs);
   CHECK_INPUT(draft_token_ids);
   CHECK_INPUT(target_probs);
@@ -254,14 +212,6 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
   CHECK_EQ(vocab_size, target_probs.size(2));
   CHECK_EQ(batch_size, output_accepted_token_num.size(0));
   CHECK_EQ(batch_size, output_emitted_draft_token_num.size(0));
-  uint64_t philox_seed, philox_offset;
-  auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-      gen_, at::cuda::detail::getDefaultCUDAGenerator());
-  std::lock_guard<std::mutex> lock(gen->mutex_);
-  at::PhiloxCudaState rng_engine_inputs =
-      gen->philox_cuda_state(batch_size * (num_speculate_tokens + 1));
-  philox_seed = rng_engine_inputs.seed_.val;
-  philox_offset = rng_engine_inputs.offset_.val;
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -270,7 +220,8 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
       static_cast<float*>(target_probs.data_ptr()), static_cast<int*>(output_token_ids.data_ptr()),
       static_cast<int*>(output_accepted_token_num.data_ptr()),
       static_cast<int*>(output_emitted_draft_token_num.data_ptr()), batch_size,
-      num_speculate_tokens, vocab_size, deterministic, philox_seed, philox_offset, stream);
+      num_speculate_tokens, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
+      static_cast<uint64_t>(philox_offset), stream);
 
   TORCH_CHECK(status == gpuSuccess, "ChainSpeculativeSampling failed with error code " +
                                         std::string(hipGetErrorString(status)));
