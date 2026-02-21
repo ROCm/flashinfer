@@ -6,8 +6,8 @@
 
 ## Added
 
-- Add AITER backend support for Flashinfer SinglePrefill (#167) @rtmadduri
-- Add AITER backend support for Flashinfer BatchPrefill (#161) @rtmadduri
+- Add AITER backend support for FlashInfer SinglePrefill (#167) @rtmadduri
+- Add AITER backend support for FlashInfer BatchPrefill (#161) @rtmadduri
 - Port sampling module (OnlineSoftmax / SamplingFromLogits) to HIP (#102, #163) @Debasis Mandal, @Diptorup Deb
 - Port quantization module to ROCm/HIP (#145) @Diptorup Deb
 - Enable activation kernels on v0.3.1 API (#165) @Diptorup Deb
