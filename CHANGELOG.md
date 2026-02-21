@@ -1,3 +1,52 @@
+# v0.3.1+amd.1
+
+## Updated Upstream
+
+- Updated to upstream v0.3.1 tag of FlashInfer (#156) @Diptorup Deb
+
+## Added
+
+- Add AITER backend support for FlashInfer SinglePrefill (#167) @rtmadduri
+- Add AITER backend support for FlashInfer BatchPrefill (#161) @rtmadduri
+- Port sampling module (OnlineSoftmax / SamplingFromLogits) to HIP (#102, #163) @Debasis Mandal, @Diptorup Deb
+- Port quantization module to ROCm/HIP (#145) @Diptorup Deb
+- Enable activation kernels on v0.3.1 API (#165) @Diptorup Deb
+- Add ROCm-specific logits_processor test case (#166) @Diptorup Deb
+- Add cuda graph support for paged batch prefill (#135, #138) @Debasis Mandal
+- Add device_utils for HIP/CUDA device identification (#149) @Diptorup Deb
+- Initial infrastructure for AMD-specific code coverage automation (#128) @Diptorup Deb
+
+## Changed
+
+- Port over upstream's latest AOT infrastructure to amd-flashinfer (#123) @Diptorup Deb
+- Isolate HIP kernels in dedicated csrc_rocm directory (#144) @Diptorup Deb
+- Remove CUDA sections from pytorch_hip (#143) @Diptorup Deb
+- Refactor sampling.cuh to unified CUDA/HIP header (#147) @Diptorup Deb
+- Refactor pytorch.py to increase coverage (#132) @Debasis Mandal
+- Port HIP unit tests to v0.3.1 API @Diptorup Deb
+- Updates coverage script to identify unmodified but tested modules (#157) @Diptorup Deb
+- Update README with published docker images (#137) @Debasis Mandal
+
+## Removed
+
+- Remove cascade attention support (not supported on ROCm) (#129, #130) @Debasis Mandal
+
+## Fixed
+
+- Fix device contextmanager to use per-call context instead of setting default globally (#146) @Diptorup Deb
+- Fix minor issues in pytorch_hip.py @Diptorup Deb
+
+## Maintenance
+
+- Tech debt reduction: remove superficial diffs and unused code (#152, #153) @Diptorup Deb
+- Update pre-commit hooks with AMD-specific configuration @Diptorup Deb
+
+---
+
+**Contributors**: @Diptorup Deb, @Debasis Mandal, @rtmadduri
+
+**Summary**: This release rebases amd-flashinfer onto the upstream v0.3.1 tag and adds significant new functionality. Key additions include AITER backend support for both single and batch prefill, full sampling and quantization module ports to ROCm/HIP, and CUDA graph support for paged batch prefill. Infrastructure improvements include isolation of HIP kernels into a dedicated `csrc_rocm` directory, updated AOT build infrastructure, and initial AMD-specific code coverage tooling.
+
 # v0.2.5+amd.2
 
 ## Added
