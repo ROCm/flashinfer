@@ -367,13 +367,21 @@ def get_files_from_test_usage(
     all_files = set()
 
     for testpath in testpaths:
-        test_file = Path(testpath)
-        if not test_file.exists():
-            print(f"Warning: Test file not found: {testpath}", file=sys.stderr)
+        test_path = Path(testpath)
+        if not test_path.exists():
+            print(f"Warning: Test path not found: {testpath}", file=sys.stderr)
             continue
 
-        modules = extract_flashinfer_usage_from_file(test_file, aliases, function_map)
-        all_modules.update(modules)
+        if test_path.is_dir():
+            test_files = sorted(test_path.rglob("*.py"))
+        else:
+            test_files = [test_path]
+
+        for test_file in test_files:
+            modules = extract_flashinfer_usage_from_file(
+                test_file, aliases, function_map
+            )
+            all_modules.update(modules)
 
     # Convert modules to file paths
     for module_name in all_modules:
@@ -496,7 +504,7 @@ def main():
     # Get files from test usage
     print("\n3. Analyzing test usage from pyproject.toml testpaths...")
     testpaths = parse_testpaths_from_pyproject()
-    print(f"   Found {len(testpaths)} test files")
+    print(f"   Found {len(testpaths)} test paths (files and directories)")
 
     test_used_files = get_files_from_test_usage(testpaths, aliases, function_map)
     print(f"   Found {len(test_used_files)} used modules")
