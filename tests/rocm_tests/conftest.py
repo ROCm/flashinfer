@@ -12,35 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-
 from flashinfer.hip_utils import get_available_gpu_count
-
-
-def pytest_configure(config):
-    """Pin each pytest-xdist worker to a dedicated physical GPU.
-
-    When running under xdist (pytest -n <N>), each worker receives a unique
-    PYTEST_XDIST_WORKER env var (e.g. "gw0", "gw1", ...).  We map the numeric
-    suffix directly to a GPU ordinal and restrict the worker process to that
-    device by setting HIP_VISIBLE_DEVICES (and CUDA_VISIBLE_DEVICES for
-    compatibility).  Tests continue to address the device as index 0 and are
-    transparently routed to their assigned physical GPU — no test changes
-    required.
-    """
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
-    if worker_id is None or not worker_id.startswith("gw"):
-        return
-
-    gpu_index = int(worker_id[2:])
-    n_gpus = get_available_gpu_count()
-    if gpu_index >= n_gpus:
-        raise RuntimeError(
-            f"xdist worker {worker_id} requires GPU {gpu_index} but only "
-            f"{n_gpus} GPU(s) are available. Pass a lower value to -n."
-        )
-    os.environ["HIP_VISIBLE_DEVICES"] = str(gpu_index)
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
 
 
 def pytest_xdist_auto_num_workers(config):
