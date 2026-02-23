@@ -10,6 +10,14 @@ typedef hipStream_t cudaStream_t;
 #endif
 
 #include <ATen/Utils.h>
+#include <ATen/core/Generator.h>
+
+// Use HIP generator header if available, otherwise fall back to CUDA header
+#if __has_include(<ATen/hip/HIPGeneratorImpl.h>)
+#include <ATen/hip/HIPGeneratorImpl.h>
+#else
+#include <ATen/cuda/CUDAGeneratorImpl.h>
+#endif
 
 #include <flashinfer/sampling.cuh>
 
