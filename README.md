@@ -1,28 +1,25 @@
-# FlashInfer+ROCm: An AMD ROCm port of FlashInfer
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/flashinfer-ai/web-data/blob/main/logo/FlashInfer-black-background.png?raw=true">
+    <img alt="FlashInfer" src="https://github.com/flashinfer-ai/web-data/blob/main/logo/FlashInfer-white-background.png?raw=true" width=55%>
+  </picture>
+</p>
+<h1 align="center">
+Kernel Library for LLM Serving
+</h1>
 
-FlashInfer+ROCm is a port of the [FlashInfer](https://github.com/flashinfer-ai/flashinfer) library
-that adds support for AMD Instinct GPUs. The project is in active development with current focus on
-porting attention kernels to ROCm.
+<p align="center">
+| <a href="https://flashinfer.ai"><b>Blog</b></a> | <a href="https://docs.flashinfer.ai"><b>Documentation</b></a> | <a href="https://join.slack.com/t/flashinfer/shared_invite/zt-379wct3hc-D5jR~1ZKQcU00WHsXhgvtA"><b>Slack</b></a> |  <a href="https://github.com/orgs/flashinfer-ai/discussions"><b>Discussion Forum</b></a> |
+</p>
 
-**Versioning:** The release tag format `<upstream_version>+amd` ties each FlashInfer+ROCm release
-to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.2.5`).
+[![Build Status](https://ci.tlcpack.ai/job/flashinfer-ci/job/main/badge/icon)](https://ci.tlcpack.ai/job/flashinfer-ci/job/main/)
+[![Documentation](https://github.com/flashinfer-ai/flashinfer/actions/workflows/build-doc.yml/badge.svg)](https://github.com/flashinfer-ai/flashinfer/actions/workflows/build-doc.yml)
 
-## Table of Contents
+FlashInfer is a library and kernel generator for Large Language Models that provides high-performance implementation of LLM GPU kernels such as FlashAttention, SparseAttention, PageAttention, Sampling, and more. FlashInfer focuses on LLM serving and inference, and delivers state-of-the-art performance across diverse scenarios.
 
-* [Feature Support Matrix](#feature-support-matrix)
-* [GPU and ROCm Support](#gpu-and-rocm-support)
-* [Getting Started](#getting-started)
-  * [Option 1: Get a Pre-built Docker Image](#option-1-get-a-pre-built-docker-image)
-  * [Option 2: Install from a Wheel Package](#option-2-install-from-a-wheel-package)
-  * [Trying the Examples](#trying-the-examples)
-* [Build from Source](#build-from-source)
-  * [Setting up a Development Environment](#setting-up-a-development-environment)
-  * [Building and Installing a Wheel Package](#building-and-installing-a-wheel-package)
-  * [Running Tests](#running-tests)
-* [AITER Support](#aiter-support)
-  * [Single Prefill AITER example](#single-prefill-example)
+Check our [v0.2 release blog](https://flashinfer.ai/2024/12/16/flashinfer-v02-release.html) for new features!
 
-## Feature Support Matrix
+The core features of FlashInfer include:
 
 | Kernel Type | FP16 / BF16 | FP8 (E4M3, E5M2) | Has AITER backend | Notes |
 | :--- | :---: | :---: | :---: | :--- |
@@ -36,172 +33,111 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 | **Logits Processor** | ✅ | TBD | No |  |
 | **Normalization** | ✅ | TBD | No | Supports RMS-Norm/Layer-Norm |
 
-## GPU and ROCm Support
+FlashInfer supports PyTorch, TVM and C++ (header-only) APIs, and can be easily integrated into existing projects.
 
-**Supported GPU:** gfx942 (CDNA3 architecture)
+## News
 
-**Supported ROCm versions:** 6.4.1, 7.1.1
-
-## Torch Version Support
-
-**Torch+ROCm:** 2.7.1, 2.8.0
-
-**Note**: Other versions may work but have not been tested. Refer to <https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm-version}/> (replacing `{rocm-version}` with the desired ROCm version, e.g., `6.4.1`) for available versions.
+- [Mar 10, 2025] [Blog Post](https://flashinfer.ai/2025/03/10/sampling.html) Sorting-Free GPU Kernels for LLM Sampling, which explains the design of sampling kernels in FlashInfer.
+- [Mar 1, 2025] Checkout flashinfer's [intra-kernel profiler](https://github.com/flashinfer-ai/flashinfer/tree/main/profiler) for visualizing the timeline of each threadblock in GPU kernels.
+- [Dec 16, 2024] [Blog Post](https://flashinfer.ai/2024/12/16/flashinfer-v02-release.html) FlashInfer 0.2 - Efficient and Customizable Kernels for LLM Inference Serving
+- [Sept 2024] We've launched a [Slack](https://join.slack.com/t/flashinfer/shared_invite/zt-2r93kj2aq-wZnC2n_Z2~mf73N5qnVGGA) workspace for Flashinfer users and developers. Join us for timely support, discussions, updates and knowledge sharing!
+- [Jan 31, 2024] [Blog Post](https://flashinfer.ai/2024/01/08/cascade-inference.html) Cascade Inference: Memory-Efficient Shared Prefix Batch Decoding
+- [Jan 31, 2024] [Blog Post](https://flashinfer.ai/2024/01/03/introduce-flashinfer.html) Accelerating Self-Attentions for LLM Serving with FlashInfer
 
 ## Getting Started
 
-### Option 1: Get a Pre-built Docker Image
+Using our PyTorch API is the easiest way to get started:
 
-AMD validates and publishes [FlashInfer images](https://hub.docker.com/r/rocm/flashinfer/tags)
-with ROCm backends on Docker Hub. The following Docker image tag and associated
-inventories represent the latest available FlashInfer version from the official Docker Hub.
+### Install from PyPI
 
-| Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
-| ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
-| rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8 | [7.1.1](https://repo.radeon.com/rocm/apt/7.1.1/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.8.0](https://github.com/ROCm/pytorch/releases/tag/v2.8.0) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI325X, MI300X |
-| rocm/flashinfer:flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7 | [6.4.1](https://repo.radeon.com/rocm/apt/6.4.1/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.7.1](https://github.com/ROCm/pytorch/releases/tag/v2.7.1) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI300X |
-
-**Start a container:**
+FlashInfer is available as a Python package for Linux. Install the core package with:
 
 ```bash
-docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
-  --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --ipc=host --shm-size 128G --name=<container-name> <docker-image-tag>
+pip install flashinfer-python
 ```
 
-**Activate the environment and verify:**
+**Package Options:**
+
+- **flashinfer-python**: Core package that compiles/downloads kernels on first use
+- **flashinfer-cubin**: Pre-compiled kernel binaries for all supported GPU architectures
+- **flashinfer-jit-cache**: Pre-built kernel cache for specific CUDA versions
+
+**For faster initialization and offline usage**, install the optional packages to have most kernels pre-compiled:
 
 ```bash
-# Activate micromamba environment (Note: env name may vary based on the image)
-micromamba activate base
-
-# Verify installation
-python -c "import flashinfer; print(flashinfer.__version__)"
+pip install flashinfer-python flashinfer-cubin
+# JIT cache package (replace cu129 with your CUDA version: cu128, cu129, or cu130)
+pip install flashinfer-jit-cache --index-url https://flashinfer.ai/whl/cu129
 ```
 
-Expected output: `0.2.5+amd.2` (with a possible JIT backend message)
+This eliminates compilation and downloading overhead at runtime.
 
-### Option 2: Install from a Wheel Package
+### Install from Source
 
-Install from AMD's package repository:
+Build the core package from source:
 
 ```bash
-pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
+git clone https://github.com/flashinfer-ai/flashinfer.git --recursive
+cd flashinfer
+python -m pip install -v .
 ```
 
-Install the needed ROCm-enabled torch package from <https://repo.radeon.com>:
+**For development**, install in editable mode:
 
 ```bash
-pip install torch==2.8.0 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1.1
+python -m pip install --no-build-isolation -e . -v
 ```
 
-**NOTE**: The torch version should be exactly as available on repo.radeon.com otherwise a non-ROCm
-torch version will get installed from pypi.
+**Build optional packages:**
 
-### Trying the Examples
-
-Download and run example scripts from the repository:
+`flashinfer-cubin`:
 
 ```bash
-# Download a single example
-wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/single_prefill_example.py
-python single_prefill_example.py
-
-# Download all examples
-for example in single_prefill_example.py batch_prefill_example.py batch_decode_example.py; do
-  wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/$example
-done
+cd flashinfer-cubin
+python -m build --no-isolation --wheel
+python -m pip install dist/*.whl
 ```
 
-**Available examples:**
-
-* `single_prefill_example.py` - Single-sequence prefill attention
-* `batch_prefill_example.py` - Batched prefill attention
-* `batch_decode_example.py` - Batched decode attention
-
-## Build from Source
-
-### Setting up a Development Environment
-
-Build the development Docker image with the repository's Dockerfile:
+`flashinfer-jit-cache` (customize `FLASHINFER_CUDA_ARCH_LIST` for your target GPUs):
 
 ```bash
-docker build \
-  --build-arg ROCM_VERSION=7.1.1 \
-  --build-arg PY_VERSION=3.12 \
-  --build-arg TORCH_VERSION=2.8.0 \
-  --build-arg USERNAME=$USER \
-  --build-arg USER_UID=$(id -u) \
-  --build-arg USER_GID=$(id -g) \
-  -t flashinfer-0.2.5_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8.0 \
-  -f .devcontainer/rocm/Dockerfile .
+export FLASHINFER_CUDA_ARCH_LIST="7.5 8.0 8.9 9.0a 10.0a 10.3a 11.0a 12.0f"
+cd flashinfer-jit-cache
+python -m build --no-isolation --wheel
+python -m pip install dist/*.whl
 ```
 
-<!-- markdownlint-disable MD033 -->
-<details>
-<summary>Build argument descriptions</summary>
+For more details, see the [Install from Source documentation](https://docs.flashinfer.ai/installation.html#install-from-source).
 
-* `ROCM_VERSION`: ROCm version (default: 7.1.1)
-* `PY_VERSION`: Python version (default: 3.12)
-* `TORCH_VERSION`: PyTorch version (default: 2.8.0)
-* `USERNAME`: Username inside container (default: devuser)
-* `USER_UID`: User ID for matching host permissions
-* `USER_GID`: Group ID for matching host permissions
+### Install Nightly Build
 
-</details>
-<!-- markdownlint-enable MD033 -->
-
-**Run the development container:**
+Nightly builds are available for testing the latest features:
 
 ```bash
-docker run -it \
-  --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --ipc=host --privileged --shm-size=128G --network=host \
-  --device=/dev/kfd --device=/dev/dri \
-  --group-add video --group-add render \
-  -v $PWD:/workspace \
-  --name flashinfer-dev-container \
-  flashinfer-0.2.5_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8.0
+# Core and cubin packages
+pip install -U --pre flashinfer-python --index-url https://flashinfer.ai/whl/nightly/ --no-deps # Install the nightly package from custom index, without installing dependencies
+pip install flashinfer-python  # Install flashinfer-python's dependencies from PyPI
+pip install -U --pre flashinfer-cubin --index-url https://flashinfer.ai/whl/nightly/
+# JIT cache package (replace cu129 with your CUDA version: cu128, cu129, or cu130)
+pip install -U --pre flashinfer-jit-cache --index-url https://flashinfer.ai/whl/nightly/cu129
 ```
 
-<!-- markdownlint-disable MD033 -->
-<details>
-<summary>Docker run argument descriptions</summary>
+### Verify Installation
 
-* `--cap-add=SYS_PTRACE`: Enables debugging
-* `--security-opt seccomp=unconfined`: Relaxes security for development
-* `--ipc=host`: Shares host IPC for better performance
-* `--privileged`: Required for GPU access
-* `--shm-size=128G`: Shared memory size (adjust as needed)
-* `--network=host`: Uses host networking
-* `--device=/dev/kfd --device=/dev/dri`: Exposes AMD GPU devices
-* `--group-add video --group-add render`: GPU access groups
-* `-v <host-path>:<container-path>`: Mounts source code
-
-</details>
-<!-- markdownlint-enable MD033 -->
-
-**Note:** Environment name varies based on Python, PyTorch, and ROCm versions.
-
-### Building and Installing a Wheel Package
-
-**Build with AOT (Ahead-of-Time) compiled kernels:**
+After installation, verify that FlashInfer is correctly installed and configured:
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 FLASHINFER_AOT_TORCH_EXTS=ON \
-  python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist && pip install amd_flashinfer-*.whl
+flashinfer show-config
 ```
 
-**Build with JIT (Just-in-Time) compilation only:**
+This command displays:
 
-```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 \
-  python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist && pip install amd_flashinfer-*.whl
-```
+- FlashInfer version and installed packages (flashinfer-python, flashinfer-cubin, flashinfer-jit-cache)
+- PyTorch and CUDA version information
+- Environment variables and artifact paths
+- Downloaded cubin status and module compilation status
 
-**Editable install for development:**
+### Trying it out
 
 ```bash
 FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip install --no-build-isolation -ve.
@@ -264,24 +200,19 @@ This section provides an example on how to use Single Prefill with AITER
 import torch
 import flashinfer
 
-def single_prefill_with_kv_cache_aiter_example():
-  qo_len = 128
-  kv_len = 128
-  num_qo_heads = 1
-  num_kv_heads = 1
-  head_dim = 64
-  causal = False
-  kv_layout = "NHD"
-  pos_encoding_mode = "NONE"
-  logits_soft_cap = 8.0
-  return_lse = False
+kv_len = 2048
+num_kv_heads = 32
+head_dim = 128
 
-  q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16)
+k = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
+v = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
 
   # NHD Layout
   k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0",dtype=torch.float16)
   v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
 
+num_qo_heads = 32
+q = torch.randn(num_qo_heads, head_dim).half().to(0)
 
   # Call flashinfer API
   logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
@@ -311,7 +242,14 @@ def single_prefill_with_kv_cache_aiter_example():
     )
     print(f"  FlashInfer output shape: {o.shape}")
 
-if __name__ == "__main__":
-  single_prefill_with_kv_cache_aiter_example()
+# append attention
+append_qo_len = 128
+q = torch.randn(append_qo_len, num_qo_heads, head_dim).half().to(0) # append attention, the last 128 tokens in the KV-Cache are the new tokens
+o = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True) # append attention without RoPE on-the-fly, apply causal mask
+o_rope_on_the_fly = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, pos_encoding_mode="ROPE_LLAMA") # append attention with LLaMA style RoPE on-the-fly, apply causal mask
 
+# prefill attention
+qo_len = 2048
+q = torch.randn(qo_len, num_qo_heads, head_dim).half().to(0) # prefill attention
+o = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=False) # prefill attention without RoPE on-the-fly, do not apply causal mask
 ```

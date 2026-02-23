@@ -140,7 +140,8 @@ __device__ __forceinline__ void write_o_(float (*o_frag)[KTraits::NUM_MMA_D_VO][
 
 template <typename KTraits>
 __device__ __forceinline__ void normalize_d(float (*o_frag)[KTraits::NUM_MMA_D_VO][8],
-                                            typename KTraits::DTypeQKAccum (*m)[2], float (*d)[2]) {
+                                            typename KTraits::DTypeQKAccum (*m)[2], float (*d)[2],
+                                            float v_scale = 1.0f) {
   using AttentionVariant = typename KTraits::AttentionVariant;
   if constexpr (AttentionVariant::use_softmax) {
     float d_rcp[KTraits::NUM_MMA_Q][2];
@@ -163,6 +164,9 @@ __device__ __forceinline__ void normalize_d(float (*o_frag)[KTraits::NUM_MMA_D_V
         for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
           o_frag[mma_q][mma_d][reg_id] =
               o_frag[mma_q][mma_d][reg_id] * d_rcp[mma_q][(reg_id >> 1) & 1];
+          if (v_scale != 1.0f) {
+            o_frag[mma_q][mma_d][reg_id] *= v_scale;
+          }
         }
       }
     }
@@ -391,7 +395,7 @@ struct BlockBatchPagedAttentionPersistent {
       threadblock_sync_mdo_states<KTraits>(o_frag, smem_storage, m, d, warp_idx, lane_idx, tid);
 
       // normalize d
-      normalize_d<KTraits>(o_frag, m, d);
+      normalize_d<KTraits>(o_frag, m, d, params.v_scale);
 
       // write back to global memory
       // o_indptr (partial_o): [packed_qo_len * num_kv_chunks, num_kv_heads, head_dim]
@@ -404,10 +408,13 @@ struct BlockBatchPagedAttentionPersistent {
                           warp_idx, lane_idx, tid);
       } else {
         // write through
+        // o_stride_n = num_qo_heads* head_dim
+        const uint32_t o_stride_n = num_kv_heads * gqa_group_size * HEAD_DIM_VO,
+                       o_stride_h = HEAD_DIM_VO;
         DTypeO* o_ptr_base =
-            params.final_o + q_indptr * q_stride_n + (kv_head_idx * gqa_group_size) * q_stride_h;
+            params.final_o + q_indptr * o_stride_n + (kv_head_idx * gqa_group_size) * o_stride_h;
         write_o_reg_gmem<KTraits>(o_frag, &q_smem, o_ptr_base, qo_packed_idx_base, q_len,
-                                  q_stride_n, q_stride_h, gqa_group_size, tid);
+                                  o_stride_n, o_stride_h, gqa_group_size, tid);
       }
 
       if constexpr (variant.use_softmax) {
@@ -515,7 +522,7 @@ struct BlockBatchReductionPersistent {
 #pragma unroll 1
     for (uint32_t i = worker_id; i < num_packed_qo_len * num_kv_heads; i += num_workers) {
       PROFILER_EVENT_START(profiler_closure, PersistentProfileEventType::kReduction);
-
+      __syncwarp();  // avoid data hazard due to reordering st.cast_store
       // remap workload
       uint32_t packed_qo_idx = i / num_kv_heads;
       uint32_t kv_head_idx = i % num_kv_heads;

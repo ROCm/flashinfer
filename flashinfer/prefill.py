@@ -36,6 +36,7 @@ from .cudnn import cudnn_batch_prefill_with_kv_cache
 from .page import block_sparse_indices_to_vector_sparse_offsets, get_seq_lens
 from .quantization import packbits, segment_packbits
 from .utils import (
+    log2e,
     FP4Tensor,
     MaskMode,
     PosEncodingMode,
@@ -54,6 +55,8 @@ from .utils import (
     is_float8,
     is_sm100a_supported,
     is_sm110a_supported,
+    is_sm120a_supported,
+    is_sm121a_supported,
     register_custom_op,
     register_fake_op,
     ceil_div,
@@ -75,7 +78,12 @@ def get_fmha_module(
     device: torch.device,
     use_fp16_qk_reduction: bool = False,
 ):
-    if is_sm100a_supported(device) or is_sm110a_supported(device):
+    if (
+        is_sm100a_supported(device)
+        or is_sm110a_supported(device)
+        or is_sm120a_supported(device)
+        or is_sm121a_supported(device)
+    ):
         return gen_fmha_cutlass_sm100a_module(
             dtype_q,
             dtype_kv,
@@ -183,8 +191,8 @@ def get_trtllm_gen_prefill_module():
         seq_lens: torch.Tensor,
         max_q_len: int,
         max_kv_len: int,
-        bmm1_scale: float,
-        bmm2_scale: float,
+        bmm1_scale: Union[float, torch.Tensor],
+        bmm2_scale: Union[float, torch.Tensor],
         batch_size: int,
         cum_seq_lens_q: torch.Tensor,
         cum_seq_lens_kv: torch.Tensor,
@@ -197,6 +205,11 @@ def get_trtllm_gen_prefill_module():
         sm_count = get_device_sm_count(query.device)
         if out is None:
             out = torch.empty_like(query)
+        if isinstance(bmm1_scale, torch.Tensor):
+            assert bmm1_scale.dtype == torch.float32
+            bmm1_scale = bmm1_scale * log2e
+        if isinstance(bmm2_scale, torch.Tensor):
+            assert bmm2_scale.dtype == torch.float32
         op.trtllm_paged_attention_context(
             out,
             None,  # fp4 output not supported in wrapper api yet.
@@ -245,7 +258,7 @@ def get_trtllm_gen_prefill_module():
 def get_single_prefill_module(backend, *args):
     uri = get_single_prefill_uri(backend, *args)
     module = gen_single_prefill_module(backend, *args).build_and_load()
-    run_func = module.run.default
+    run_func = module.run
 
     # torch library for single_prefill_with_kv_cache
 
@@ -359,9 +372,9 @@ def get_batch_prefill_module(backend, *args):
     else:
         uri = get_batch_prefill_uri(backend, *args)
         module = gen_batch_prefill_module(backend, *args).build_and_load()
-        plan_func = module.plan.default
-        ragged_run_func = module.ragged_run.default
-        paged_run_func = module.paged_run.default
+        plan_func = module.plan
+        ragged_run_func = module.ragged_run
+        paged_run_func = module.paged_run
 
     # torch library for ragged_run
 
@@ -713,9 +726,9 @@ def get_batch_prefill_module(backend, *args):
 
 @functools.cache
 def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
-    plan_func = jit_module.plan.default
-    ragged_run_func = jit_module.ragged_run.default
-    paged_run_func = jit_module.paged_run.default
+    plan_func = jit_module.plan
+    ragged_run_func = jit_module.ragged_run
+    paged_run_func = jit_module.paged_run
 
     # torch library for ragged_run
     @register_custom_op(
@@ -879,7 +892,7 @@ def single_prefill_with_kv_cache_with_jit_module(
     lse = None
     if return_lse:
         lse = torch.empty((q.size(0), q.size(1)), dtype=torch.float32, device=device)
-    jit_module.run.default(
+    jit_module.run(
         q,
         k,
         v,
@@ -1471,7 +1484,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._paged_kv_last_page_len_buf = paged_kv_last_page_len_buf
         self._custom_mask_buf = custom_mask_buf
         self._mask_indptr_buf = mask_indptr_buf
-        self._max_total_num_rows = None
+        self._max_total_num_rows: Optional[int] = None
         self._backend = backend
         self._plan_info = None
         self._cached_module = None
@@ -1540,6 +1553,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
         block_tables: Optional[torch.Tensor] = None,
         max_token_per_sequence: Optional[int] = None,
         max_sequence_kv: Optional[int] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
     ) -> None:
         r"""Plan batch prefill/append attention on Paged KV-Cache for given problem specification.
 
@@ -1550,7 +1565,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         paged_kv_indptr : torch.Tensor
             The indptr of the paged kv-cache, shape: ``[batch_size + 1]``.
         paged_kv_indices : torch.Tensor
-            The page indices of the paged kv-cache, shape: ``[qo_indptr[-1]]``.
+            The page indices of the paged kv-cache, shape: ``[paged_kv_indptr[-1]]``.
         paged_kv_last_page_len : torch.Tensor
             The number of entries in the last page of each request in the paged
             kv-cache, shape: ``[batch_size]``.
@@ -1639,6 +1654,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
             Required for cudnn backend. This is the scalar max token length of each sequence.
         max_sequence_kv: Optional[int],
             Required for cudnn backend. This is the scalar max sequence length of each sequence in kv cache.
+        fixed_split_size : Optional[int],
+            The fixed split size for FA2 split-kv prefill/decode in pages. Recommend setting to the average sequence length of your workload.
+            When enabled, will lead to deterministic softmax score reduction in the merge_states kernel, and therefore
+            batch-size invariant outputs. See https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/
+            Note that compatibility with CUDA graph is NOT guaranteed, as even when bs is fixed, kv seq len can change
+            and lead to a varied number of launched CTAs.
+        disable_split_kv : bool,
+            Whether to disable the split-kv for determinism in CUDA Graph, defaults to ``False``.
         Note
         ----
         The :meth:`plan` method should be called before any :meth:`run` or
@@ -1660,6 +1683,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             logits_soft_cap = 0.0
         if head_dim_vo is None:
             head_dim_vo = head_dim_qk
+        if fixed_split_size is None:
+            fixed_split_size = -1
 
         batch_size = len(qo_indptr) - 1
         self._batch_size = batch_size
@@ -1690,8 +1715,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._max_q_len = max_token_per_sequence
         else:
             qo_indptr_host = qo_indptr.to("cpu")
-            self._max_q_len = max(qo_indptr_host).item()
-            total_num_rows = qo_indptr_host[-1]
+            self._max_q_len = max(qo_indptr_host[1:] - qo_indptr_host[:-1]).item()
+            total_num_rows = int(qo_indptr_host[-1])
 
         if max_sequence_kv is not None:
             self._max_kv_len = max_sequence_kv
@@ -1832,7 +1857,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
 
         self._block_tables = block_tables
         if self._backend == "trtllm-gen":
-            assert self._kv_layout == "HND"
             assert logits_soft_cap == 0.0
             if self._block_tables is None:
                 blocks_per_seq = [
@@ -1857,7 +1881,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     block_id += num_blocks_needed
 
         if self._cached_module is not None:
-            self._plan_info = self._cached_module.plan(
+            args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
                 self._pin_memory_int_workspace_buffer,
@@ -1873,6 +1897,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 head_dim_qk,
                 head_dim_vo,
                 causal,
+                window_left,
+            ]
+            if self._backend == "fa2":
+                args.append(fixed_split_size or -1)  # fixed_split_size
+                args.append(disable_split_kv)  # disable_split_kv
+                args.append(0)  # num_colocated_ctas
+            self._plan_info = self._cached_module.plan(
+                *args,
             )
 
         self._causal = causal
@@ -2009,6 +2041,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         _check_cached_qkv_data_type(
             q, k_cache, self._cached_q_data_type, self._cached_kv_data_type
         )
+
         stride_block = k_cache.stride(0)
         if self._kv_layout == "NHD":
             page_size = k_cache.shape[1]
@@ -2055,6 +2088,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
             check_shape_dtype_device(
                 out, q.shape[:-1] + v_cache.shape[-1:], q.dtype, q.device, "out"
             )
+
+        # Convert NHD layout to HND for trtllm-gen backend
+        if self._backend == "trtllm-gen" and self._kv_layout == "NHD":
+            # For NHD: [..., N, H, D] -> HND: [..., H, N, D]
+            k_cache = k_cache.transpose(-3, -2)
+            v_cache = v_cache.transpose(-3, -2)
 
         if self._custom_mask_buf is not None:
             mask_mode = MaskMode.CUSTOM.value
@@ -2422,7 +2461,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._kv_indptr_buf = kv_indptr_buf
         self._custom_mask_buf = custom_mask_buf
         self._mask_indptr_buf = mask_indptr_buf
-        self._max_total_num_rows = None
+        self._max_total_num_rows: Optional[int] = None
         self._backend = backend
         self._cached_module = None
 
@@ -2479,6 +2518,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         token_pos_in_items_ptr: Optional[torch.Tensor] = None,
         token_pos_in_items_len: int = 0,
         max_item_len_ptr: Optional[torch.Tensor] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
     ) -> None:
         r"""Plan batch prefill/append attention on Ragged KV-Cache for given problem specification.
 
@@ -2562,7 +2603,14 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             with 7 padded zeros. (note there're 8 zeros in the end where the first one is the delimiter token 0 in the end of the prompt)
         max_item_len_ptr : Optional[float]
             a uint16 vector contains the max token length of all items for each prompt
-
+        fixed_split_size : Optional[int],
+            The fixed split size for split-kv FA2 prefill/decode, in pages. Recommend setting to the average sequence length of your workload.
+            When enabled, will lead to deterministic softmax score reduction in the merge_states kernel, and therefore
+            batch-size invariant outputs. See https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/
+            Note that compatibility with CUDA graph is NOT guaranteed, as even when bs is fixed, kv seq len can change
+            and lead to a varied number of launched CTAs.
+        disable_split_kv : bool,
+            Whether to disable the split-kv for determinism in CUDA Graph, defaults to ``False``.
         Note
         ----
         The :meth:`plan` method should be called before any :meth:`run` or
@@ -2581,7 +2629,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         kv_data_type = canonicalize_torch_dtype(kv_data_type)
         if head_dim_vo is None:
             head_dim_vo = head_dim_qk
-
+        if fixed_split_size is None:
+            fixed_split_size = -1
         if logits_soft_cap is None:
             logits_soft_cap = 0.0
 
@@ -2604,7 +2653,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         qo_indptr_host = qo_indptr.to("cpu")
         kv_indptr_host = kv_indptr.to("cpu")
 
-        total_num_rows = qo_indptr_host[-1]
+        total_num_rows = int(qo_indptr_host[-1])
 
         if self.is_cuda_graph_enabled:
             if self._max_total_num_rows is None:
@@ -2700,7 +2749,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             self._max_qo_len = torch.max(qo_indptr[1:] - qo_indptr[:-1]).item()
         else:
             assert self._cached_module is not None, "cached module is not initialized"
-            self._plan_info = self._cached_module.plan(
+            args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
                 self._pin_memory_int_workspace_buffer,
@@ -2716,6 +2765,14 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 head_dim_qk,
                 head_dim_vo,
                 causal,
+                window_left,
+            ]
+            if self._backend == "fa2":
+                args.append(fixed_split_size or -1)  # fixed_split_size
+                args.append(disable_split_kv)  # disable_split_kv
+                args.append(0)  # num_colocated_ctas
+            self._plan_info = self._cached_module.plan(
+                *args,
             )
 
         self._causal = causal
@@ -3144,8 +3201,8 @@ def trtllm_ragged_attention_deepseek(
     seq_lens: torch.Tensor,
     max_q_len: int,
     max_kv_len: int,
-    bmm1_scale: float,
-    bmm2_scale: float,
+    bmm1_scale: Union[float, torch.Tensor],
+    bmm2_scale: Union[float, torch.Tensor],
     o_sf_scale: float,
     batch_size: int,
     window_left: int,
@@ -3175,10 +3232,12 @@ def trtllm_ragged_attention_deepseek(
         max query length
     max_kv_len : int
         max key/value length
-    bmm1_scale : float
+    bmm1_scale : Union[float, torch.Tensor]
         scale for bmm1, scale_q * scale_k * 1.0 / (head_dim_qk ** 0.5)
-    bmm2_scale : float
+        when using trtllm-gen backend, it can be a torch.Tensor with dtype torch.float32.
+    bmm2_scale : Union[float, torch.Tensor]
         scale for bmm2, scale_v
+        when using trtllm-gen backend, it can be a torch.Tensor with dtype torch.float32.
     o_sf_scale : float
         scale for output
     batch_size : int
@@ -3232,6 +3291,12 @@ def trtllm_ragged_attention_deepseek(
             dtype=torch.float32,
         )
 
+    if isinstance(bmm1_scale, torch.Tensor):
+        assert bmm1_scale.dtype == torch.float32
+        bmm1_scale = bmm1_scale * log2e
+    if isinstance(bmm2_scale, torch.Tensor):
+        assert bmm2_scale.dtype == torch.float32
+
     workspace_size = workspace_buffer.numel() * workspace_buffer.element_size()
     run_func(
         out,
@@ -3270,8 +3335,8 @@ def trtllm_batch_context_with_kv_cache(
     seq_lens: torch.Tensor,
     max_q_len: int,
     max_kv_len: int,
-    bmm1_scale: float,
-    bmm2_scale: float,
+    bmm1_scale: Union[float, torch.Tensor],
+    bmm2_scale: Union[float, torch.Tensor],
     batch_size: int,
     cum_seq_lens_q: torch.Tensor,
     cum_seq_lens_kv: torch.Tensor,
@@ -3280,6 +3345,7 @@ def trtllm_batch_context_with_kv_cache(
     out_dtype: Optional[Union[torch.dtype, str]] = None,
     o_sf_scale: Optional[float] = None,
     o_sf_vec_size: Optional[int] = None,
+    kv_layout: str = "HND",
     enable_pdl: Optional[bool] = None,
     sinks: Optional[List[torch.Tensor]] = None,
 ) -> Union[torch.Tensor, FP4Tensor]:
@@ -3289,8 +3355,11 @@ def trtllm_batch_context_with_kv_cache(
     query : torch.Tensor
         query tensor with shape [num_tokens, num_heads, head_dim]
     kv_cache : Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
-        If kv_cache is a single tensor, it should be a tensor with shape [num_pages, 1 or 2, num_kv_heads, page_size, head_dim]
-        If kv_cache is a tuple of two tensors, it should be a tuple of two tensors with shape [num_pages, num_kv_heads, page_size, head_dim]
+        If kv_cache is a single tensor, it should be a tensor with shape [num_pages, 1 or 2, num_kv_heads, page_size, head_dim] if :attr:`kv_layout` is "HND",
+        or [num_pages, 1 or 2, page_size, num_kv_heads, head_dim] if :attr:`kv_layout` is "NHD".
+        If kv_cache is a tuple of two tensors, it should be a tuple of two tensors with shape [num_pages, num_kv_heads, page_size, head_dim] if :attr:`kv_layout` is "HND",
+        or [num_pages, page_size, num_kv_heads, head_dim] if :attr:`kv_layout` is "NHD".
+        The first tensor is the key cache, the second tensor is the value cache.
     workspace_buffer : torch.Tensor. Must be initialized to 0 for its first use.
         workspace
     block_tables : torch.Tensor
@@ -3301,10 +3370,12 @@ def trtllm_batch_context_with_kv_cache(
         max sequence length for query
     max_kv_len : int
         max sequence length for kv_cache
-    bmm1_scale : float
+    bmm1_scale : Union[float, torch.Tensor]
         fused scale for bmm1 input.
-    bmm2_scale : float
+        when using trtllm-gen backend, it can be a torch.Tensor with dtype torch.float32.
+    bmm2_scale : Union[float, torch.Tensor]
         fused scale for bmm2 input.
+        when using trtllm-gen backend, it can be a torch.Tensor with dtype torch.float32.
     batch_size : int
         batch size
     cum_seq_lens_q : torch.Tensor
@@ -3322,6 +3393,11 @@ def trtllm_batch_context_with_kv_cache(
         scale for nvfp4 output tensor scale factor.
     o_sf_vec_size : Optional[int] = None
         vector size for nvfp4 output tensor scale factor.
+    enable_pdl : Optional[bool] = None
+        Whether to enable Programmatic Dependent Launch (PDL). See https://docs.nvidia.com/cuda/cuda-c-programming-guide/#programmatic-dependent-launch-and-synchronization
+        Defaults to ``None``, which means it will be enabled if the device supports PDL.
+    kv_layout : str = "HND"
+        Layout of kv-cache, can be "HND" or "NHD", default is "HND".
     sinks : Optional[List[torch.Tensor]] = None
         additional value per head in the denominator of the softmax.
 
@@ -3346,6 +3422,12 @@ def trtllm_batch_context_with_kv_cache(
             # NOTE(Zihao): unbind transforms [num_pages, 2, ...] to ([num_pages, ...], [num_pages, ...])
             # it doesn't change underlying storage
             k_cache, v_cache = kv_cache.unbind(dim=1)
+
+    # Convert NHD layout to HND if necessary (transpose only changes stride, not data)
+    if kv_layout == "NHD":
+        # For NHD: [..., N, H, D] -> HND: [..., H, N, D]
+        k_cache = k_cache.transpose(-3, -2)
+        v_cache = v_cache.transpose(-3, -2)
 
     run_func = get_trtllm_gen_fmha_module().trtllm_paged_attention_context
     sm_count = get_device_sm_count(query.device)
@@ -3422,6 +3504,11 @@ def trtllm_batch_context_with_kv_cache(
     else:
         raise ValueError(f"Invalid out_dtype: {out_dtype}")
 
+    if isinstance(bmm1_scale, torch.Tensor):
+        assert bmm1_scale.dtype == torch.float32
+        bmm1_scale = bmm1_scale * log2e
+    if isinstance(bmm2_scale, torch.Tensor):
+        assert bmm2_scale.dtype == torch.float32
     workspace_size = workspace_buffer.numel() * workspace_buffer.element_size()
     run_func(
         out,
