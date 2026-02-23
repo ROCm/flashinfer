@@ -56,12 +56,14 @@ aiter_mha_module = None
 
 if HAS_AITER:
     from .aiter_utils import get_aiter_mha_module
+
     aiter_mha_module = get_aiter_mha_module()
 
 # Page sizes natively supported by the AITER CK kernel in linear
 # (non-vectorized) paged KV layout.  For any other page size the AITER
 # backend flattens pages into a token-level (page_size=1) buffer first.
 _AITER_NATIVE_PAGE_SIZES = frozenset({1, 16})
+
 
 def make_hashable_cache(func):
     """
@@ -139,6 +141,7 @@ def get_customize_batch_prefill_module(
         fp8_enabled,
     ).build_and_load()
 
+
 def _get_aiter_single_prefill_module():
     """Return a module-like namespace for AITER single prefill.
 
@@ -180,8 +183,8 @@ def _get_aiter_single_prefill_module():
 
         # Normalise k/v to NHD flat layout: [kv_len, num_kv_heads, head_dim].
         # We use mha_batch_prefill_func with page_size=1 (flat 3D KV layout)
-        #The batch_prefill kernel with page_size=1 is the same "buffer allocation" 
-        # approach used by aiter_paged_run for non-native page sizes and correctly 
+        # The batch_prefill kernel with page_size=1 is the same "buffer allocation"
+        # approach used by aiter_paged_run for non-native page sizes and correctly
         # handles qo_len > kv_len (verified by AITER's test_batch_prefill with (1024, 1023) etc.).
         if layout == TensorLayout["NHD"].value:
             # k shape: [kv_len, num_kv_heads, head_dim]
@@ -237,6 +240,7 @@ def _get_aiter_single_prefill_module():
                 o.copy_(aiter_result)
 
     return SimpleNamespace(run=aiter_single_prefill_run)
+
 
 @functools.cache
 def get_single_prefill_module(backend, *args):
@@ -387,7 +391,7 @@ def _get_aiter_batch_prefill_module():
         aiter_flat_kv_lpl: Optional[torch.Tensor] = None,
         aiter_flat_kv_indices: Optional[torch.Tensor] = None,
     ) -> None:
-        logger.info(f"###### AITER backend is used for batch prefill ######")
+        logger.info("###### AITER backend is used for batch prefill ######")
         # Derive causal flag from mask_mode
         causal = mask_mode == MaskMode.CAUSAL.value
 
@@ -1180,9 +1184,7 @@ def single_prefill_with_kv_cache(
         )
     elif backend == "aiter":
         if not HAS_AITER:
-            raise ImportError(
-                "AITER is not available. Please install it first."
-            )
+            raise ImportError("AITER is not available. Please install it first.")
 
     # o_dtype should be provided for FP8 attention
     if o_dtype is None:
@@ -1229,6 +1231,7 @@ def single_prefill_with_kv_cache(
 single_prefill_with_kv_cache_return_lse = functools.partial(
     single_prefill_with_kv_cache, return_lse=True
 )
+
 
 def _compute_page_mask_indptr(
     qo_indptr: torch.Tensor,
@@ -1588,6 +1591,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
         block_tables: Optional[torch.Tensor] = None,
         max_token_per_sequence: Optional[int] = None,
         max_sequence_kv: Optional[int] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
     ) -> None:
         r"""Plan batch prefill/append attention on Paged KV-Cache for given problem specification.
 
@@ -1687,6 +1692,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
             Required for cudnn backend. This is the scalar max token length of each sequence.
         max_sequence_kv: Optional[int],
             Required for cudnn backend. This is the scalar max sequence length of each sequence in kv cache.
+        fixed_split_size: Optional[int]
+            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
+        disable_split_kv: bool
+            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
         Note
         ----
         The :meth:`plan` method should be called before any :meth:`run` or
@@ -1900,10 +1909,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # page size is not natively supported.  These are stored as GPU
         # tensors so that the ``run()`` path (which may be inside a CUDA graph
         # capture) can use them without any host-side operations.
-        if (
-            self._backend == "aiter"
-            and page_size not in _AITER_NATIVE_PAGE_SIZES
-        ):
+        if self._backend == "aiter" and page_size not in _AITER_NATIVE_PAGE_SIZES:
             kv_indptr_h = paged_kv_indptr.cpu()
             kv_indices_h = paged_kv_indices.cpu()
             kv_lpl_h = paged_kv_last_page_len.cpu()
@@ -1930,9 +1936,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             gather_t = torch.tensor(
                 gather_indices, dtype=torch.long, device=self.device
             )
-            flat_indptr = torch.zeros(
-                bs + 1, dtype=torch.int32, device=self.device
-            )
+            flat_indptr = torch.zeros(bs + 1, dtype=torch.int32, device=self.device)
             flat_indptr[1:] = torch.tensor(
                 token_counts, dtype=torch.int32, device=self.device
             ).cumsum(0)
@@ -1948,9 +1952,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 # possible size on the first call and pad unused positions
                 # with safe values (index 0).  Subsequent plan() calls
                 # overwrite the used portion via copy_().
-                max_flat_tokens = (
-                    self._paged_kv_indices_buf.numel() * page_size
-                )
+                max_flat_tokens = self._paged_kv_indices_buf.numel() * page_size
                 if self._aiter_flat_gather_idx is None:
                     # First plan() – allocate max-size buffers.
                     self._aiter_flat_gather_idx = torch.zeros(
@@ -2556,6 +2558,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         token_pos_in_items_ptr: Optional[torch.Tensor] = None,
         token_pos_in_items_len: int = 0,
         max_item_len_ptr: Optional[torch.Tensor] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
     ) -> None:
         r"""Plan batch prefill/append attention on Ragged KV-Cache for given problem specification.
 
@@ -2639,6 +2643,10 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             with 7 padded zeros. (note there're 8 zeros in the end where the first one is the delimiter token 0 in the end of the prompt)
         max_item_len_ptr : Optional[float]
             a uint16 vector contains the max token length of all items for each prompt
+        fixed_split_size: Optional[int]
+            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
+        disable_split_kv: bool
+            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
 
         Note
         ----

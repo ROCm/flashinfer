@@ -109,9 +109,11 @@
 #if defined(PLATFORM_CUDA_DEVICE)
 #define gpuGetErrorString cudaGetErrorString
 #define gpuSuccess cudaSuccess
+#define gpuErrorInvalidValue cudaErrorInvalidValue
 #elif defined(PLATFORM_HIP_DEVICE)
 #define gpuGetErrorString hipGetErrorString
 #define gpuSuccess hipSuccess
+#define gpuErrorInvalidValue hipErrorInvalidValue
 #endif
 
 #if defined(PLATFORM_CUDA_DEVICE)

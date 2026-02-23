@@ -1,32 +1,47 @@
 import dataclasses
+import functools
 import logging
 import os
 import warnings
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Union, Hashable
 
-import torch
 from filelock import FileLock
 
-from ..device_utils import IS_HIP, IS_CUDA
-
+from ..device_utils import IS_CUDA, IS_HIP
 from . import env as jit_env
-
-if IS_CUDA:
-    from .cpp_ext import generate_ninja_build_for_op, run_ninja
-elif IS_HIP:
-    from .cpp_ext_hip import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
 from .utils import write_if_different
 
-
 if IS_CUDA:
+    import tvm_ffi
     from ..compilation_context import CompilationContext
+    from .cpp_ext import generate_ninja_build_for_op, run_ninja
 elif IS_HIP:
-    from ..compilation_context_hip import CompilationContext
+    from ..compilation_context_hip import CompilationContext  # type: ignore[no-redef]
+    from .cpp_ext_hip import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
 os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
+
+
+class MissingJITCacheError(RuntimeError):
+    """
+    Exception raised when JIT compilation is disabled and the JIT cache
+    does not contain the required precompiled module.
+
+    This error indicates that a module needs to be added to the JIT cache
+    build configuration.
+
+    Attributes:
+        spec: JitSpec of the missing module
+        message: Error message
+    """
+
+    def __init__(self, message: str, spec: Optional["JitSpec"] = None):
+        self.spec = spec
+        super().__init__(message)
 
 
 class FlashInferJITLogger(logging.Logger):
@@ -53,6 +68,33 @@ class FlashInferJITLogger(logging.Logger):
             )
         )
 
+    def debug_once(self, msg: str, *args: Hashable) -> None:
+        """
+        As [`debug`][logging.Logger.debug], but subsequent calls with
+        the same message are silently dropped.
+        """
+        self._print_once(self.debug, msg, *args)
+
+    def info_once(self, msg: str, *args: Hashable) -> None:
+        """
+        As [`info`][logging.Logger.info], but subsequent calls with
+        the same message are silently dropped.
+        """
+        self._print_once(self.info, msg, *args)
+
+    def warning_once(self, msg: str, *args: Hashable) -> None:
+        """
+        As [`warning`][logging.Logger.warning], but subsequent calls with
+        the same message are silently dropped.
+        """
+        self._print_once(self.warning, msg, *args)
+
+    @functools.lru_cache(maxsize=None)
+    def _print_once(self, log_method, msg: str, *args: Hashable) -> None:
+        """Helper method to log messages only once per unique (msg, args) combination."""
+        # Note: stacklevel=3 to show the caller's location, not this helper method
+        log_method(msg, *args, stacklevel=3)
+
 
 logger = FlashInferJITLogger("flashinfer.jit")
 
@@ -76,12 +118,18 @@ if IS_CUDA:
         "-DFLASHINFER_ENABLE_FP8_E8M0",
         "-DFLASHINFER_ENABLE_FP4_E2M1",
     ]
+    sm89_nvcc_flags = [
+        "-gencode=arch=compute_89,code=sm_89",
+        "-DFLASHINFER_ENABLE_FP8_E8M0",
+    ]
     sm90a_nvcc_flags = ["-gencode=arch=compute_90a,code=sm_90a"] + common_nvcc_flags
     sm100a_nvcc_flags = ["-gencode=arch=compute_100a,code=sm_100a"] + common_nvcc_flags
     sm103a_nvcc_flags = ["-gencode=arch=compute_103a,code=sm_103a"] + common_nvcc_flags
+    sm100f_nvcc_flags = ["-gencode=arch=compute_100f,code=sm_100f"] + common_nvcc_flags
     sm110a_nvcc_flags = ["-gencode=arch=compute_110a,code=sm_110a"] + common_nvcc_flags
     sm120a_nvcc_flags = ["-gencode=arch=compute_120a,code=sm_120a"] + common_nvcc_flags
     sm121a_nvcc_flags = ["-gencode=arch=compute_121a,code=sm_121a"] + common_nvcc_flags
+
 elif IS_HIP:
 
     def check_rocm_arch():
@@ -97,15 +145,12 @@ elif IS_HIP:
         from ..hip_utils import validate_flashinfer_rocm_arch
 
         try:
-            # Let validate_flashinfer_rocm_arch handle all validation
-            # It will raise RuntimeError with detailed messages if validation fails
             validate_flashinfer_rocm_arch(
                 arch_list=None,  # Uses FLASHINFER_ROCM_ARCH_LIST env or defaults to gfx942
                 torch_cpp_ext_module=torch_cpp_ext,
                 verbose=False,
             )
         except RuntimeError as e:
-            # Re-raise with context about where the error occurred
             raise RuntimeError(f"ROCm architecture validation failed: {e}") from e
 
 
@@ -117,6 +162,82 @@ def clear_cache_dir():
 
 
 current_compilation_context = CompilationContext()
+
+
+@dataclasses.dataclass
+class JitSpecStatus:
+    """Status information for a JitSpec"""
+
+    name: str
+    created_at: datetime
+    is_compiled: bool
+    library_path: Optional[Path]
+    sources: List[Path]
+    needs_device_linking: bool
+
+    @property
+    def status(self) -> str:
+        if self.is_compiled:
+            return "Compiled"
+        else:
+            return "Not Compiled"
+
+
+class JitSpecRegistry:
+    """Global registry to track all JitSpecs"""
+
+    def __init__(self):
+        self._specs: Dict[str, "JitSpec"] = {}
+        self._creation_times: Dict[str, datetime] = {}
+
+    def register(self, spec: "JitSpec") -> None:
+        """Register a new JitSpec"""
+        if spec.name not in self._specs:
+            self._specs[spec.name] = spec
+            self._creation_times[spec.name] = datetime.now()
+
+    def get_all_specs(self) -> Dict[str, "JitSpec"]:
+        """Get all registered JitSpecs"""
+        return self._specs.copy()
+
+    def get_spec_status(self, name: str) -> Optional[JitSpecStatus]:
+        """Get status for a specific JitSpec"""
+        if name not in self._specs:
+            return None
+
+        spec = self._specs[name]
+        library_path = spec.get_library_path() if spec.is_compiled else None
+
+        return JitSpecStatus(
+            name=spec.name,
+            created_at=self._creation_times[name],
+            is_compiled=spec.is_compiled,
+            library_path=library_path,
+            sources=spec.sources,
+            needs_device_linking=spec.needs_device_linking,
+        )
+
+    def get_all_statuses(self) -> List[JitSpecStatus]:
+        """Get status for all registered JitSpecs"""
+        statuses = []
+        for name in self._specs:
+            status = self.get_spec_status(name)
+            if status:
+                statuses.append(status)
+        return statuses
+
+    def get_stats(self) -> Dict[str, int]:
+        """Get compilation statistics"""
+        statuses = self.get_all_statuses()
+        return {
+            "total": len(statuses),
+            "compiled": sum(1 for s in statuses if s.is_compiled),
+            "not_compiled": sum(1 for s in statuses if not s.is_compiled),
+        }
+
+
+# Global registry instance
+jit_spec_registry = JitSpecRegistry()
 
 
 @dataclasses.dataclass
@@ -143,6 +264,16 @@ class JitSpec:
             return self.aot_path
         return self.jit_library_path
 
+    def get_object_paths(self) -> List[Path]:
+        object_paths = []
+        jit_dir = self.jit_library_path.parent
+        for source in self.sources:
+            is_cuda = source.suffix == ".cu"
+            object_suffix = ".cuda.o" if is_cuda else ".o"
+            obj_name = source.with_suffix(object_suffix).name
+            object_paths.append(jit_dir / obj_name)
+        return object_paths
+
     @property
     def aot_path(self) -> Path:
         return jit_env.FLASHINFER_AOT_DIR / self.name / f"{self.name}.so"
@@ -150,6 +281,10 @@ class JitSpec:
     @property
     def is_aot(self) -> bool:
         return self.aot_path.exists()
+
+    @property
+    def is_compiled(self) -> bool:
+        return self.get_library_path().exists()
 
     @property
     def lock_path(self) -> Path:
@@ -169,21 +304,39 @@ class JitSpec:
         )
         write_if_different(ninja_path, content)
 
+    @property
+    def is_ninja_generated(self) -> bool:
+        return self.ninja_path.exists()
+
     def build(self, verbose: bool, need_lock: bool = True) -> None:
+        if os.environ.get("FLASHINFER_DISABLE_JIT"):
+            raise MissingJITCacheError(
+                "JIT compilation is disabled via FLASHINFER_DISABLE_JIT environment variable, "
+                "but the required module is not found in the JIT cache. "
+                "Please add the missing module to the JIT cache build configuration.",
+                spec=self,
+            )
         lock = (
             FileLock(self.lock_path, thread_local=False) if need_lock else nullcontext()
         )
         with lock:
+            # Write ninja file if it doesn't exist (deferred case)
+            if not self.is_ninja_generated:
+                self.write_ninja()
             run_ninja(jit_env.FLASHINFER_JIT_DIR, self.ninja_path, verbose)
 
     def load(self, so_path: Path, class_name: str = None):
-        load_class = class_name is not None
-        loader = torch.classes if load_class else torch.ops
-        loader.load_library(so_path)
-        if load_class:
-            cls = torch._C._get_custom_class_python_wrapper(self.name, class_name)
-            return cls
-        return getattr(loader, self.name)
+        if IS_HIP:
+            load_class = class_name is not None
+            import torch
+            loader = torch.classes if load_class else torch.ops
+            loader.load_library(so_path)
+            if load_class:
+                cls = torch._C._get_custom_class_python_wrapper(self.name, class_name)
+                return cls
+            return getattr(loader, self.name)
+        else:
+            return tvm_ffi.load_module(str(so_path))
 
     def build_and_load(self, class_name: str = None):
         if self.is_aot:
@@ -209,48 +362,65 @@ def gen_jit_spec(
     extra_include_paths: Optional[List[Union[str, Path]]] = None,
     needs_device_linking: bool = False,
 ) -> JitSpec:
-    check_rocm_arch() if IS_HIP else check_cuda_arch()
-    verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
-
-    cflags = ["-O3", "-std=c++17", "-Wno-switch-bool"]
-    if IS_HIP:
-        # Use dynamically-generated flags from CompilationContext (includes arch flags)
-        cflags += current_compilation_context.get_hipcc_flags_list()
-    cuda_cflags = [
-        "-O3",
-        "-std=c++17",
-        "-DFLASHINFER_ENABLE_F16",
-        "-DFLASHINFER_ENABLE_BF16",
-        "-DFLASHINFER_ENABLE_FP8_E4M3",
-        "-DFLASHINFER_ENABLE_FP8_E5M2",
-    ]
-    # Add CUDA-specific nvcc flags
     if IS_CUDA:
-        cuda_cflags += [
+        check_cuda_arch()
+        # Use FLASHINFER_JIT_DEBUG if set, otherwise use FLASHINFER_JIT_VERBOSE (for backward compatibility)
+        debug_env = os.environ.get("FLASHINFER_JIT_DEBUG")
+        verbose_env = os.environ.get("FLASHINFER_JIT_VERBOSE", "0")
+        debug = (debug_env if debug_env is not None else verbose_env) == "1"
+
+        cflags = ["-std=c++17", "-Wno-switch-bool"]
+        cuda_cflags = [
+            "-std=c++17",
             f"--threads={os.environ.get('FLASHINFER_NVCC_THREADS', '1')}",
             "-use_fast_math",
+            "-DFLASHINFER_ENABLE_F16",
+            "-DFLASHINFER_ENABLE_BF16",
+            "-DFLASHINFER_ENABLE_FP8_E4M3",
+            "-DFLASHINFER_ENABLE_FP8_E5M2",
         ]
+        if debug:
+            cflags += ["-O0", "-g"]
+            cuda_cflags += [
+                "-g",
+                "-O0",
+                "-G",
+                "-lineinfo",
+                "--ptxas-options=-v",
+                "-DCUTLASS_DEBUG_TRACE_LEVEL=2",
+            ]
+        else:
+            cuda_cflags += ["-DNDEBUG", "-O3"]
+            cflags += ["-O3"]
+
+        # useful for ncu
+        if os.environ.get("FLASHINFER_JIT_LINEINFO", "0") == "1":
+            cuda_cflags += ["-lineinfo"]
+
     elif IS_HIP:
-        cuda_cflags += [
-            "-ffast-math",  # HIP equivalent of -use_fast_math
+        check_rocm_arch()
+        verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
+
+        cflags = ["-O3", "-std=c++17", "-Wno-switch-bool"]
+        # Use dynamically-generated flags from CompilationContext (includes arch flags)
+        cflags += current_compilation_context.get_hipcc_flags_list()
+        cuda_cflags = [
+            "-O3",
+            "-std=c++17",
+            "-DFLASHINFER_ENABLE_F16",
+            "-DFLASHINFER_ENABLE_BF16",
+            "-DFLASHINFER_ENABLE_FP8_E4M3",
+            "-DFLASHINFER_ENABLE_FP8_E5M2",
+            "-ffast-math",         # HIP equivalent of -use_fast_math
             "-fno-finite-math-only",  # Re-enable inf/NaN: clang's -ffast-math includes
             # -ffinite-math-only which breaks kernels that use -inf
             # as a sentinel (e.g. online-softmax Map+Reduce path).
             # CUDA -use_fast_math does NOT enable finite-math-only.
         ]
-
-    if verbose:
-        if not IS_HIP:
-            cuda_cflags += [
-                "-g",
-                "-lineinfo",
-                "--ptxas-options=-v",
-                "--ptxas-options=--verbose,--register-usage-level=10,--warn-on-local-memory-usage",
-                "-DCUTLASS_DEBUG_TRACE_LEVEL=2",
-            ]
-    else:
-        # non debug mode
-        cuda_cflags += ["-DNDEBUG"]
+        if verbose:
+            pass  # HIP doesn't add debug-only NVCC-specific flags
+        else:
+            cuda_cflags += ["-DNDEBUG"]
 
     if extra_cflags is not None:
         cflags += extra_cflags
@@ -262,7 +432,7 @@ def gen_jit_spec(
 
     spec = JitSpec(
         name=name,
-        sources=[Path(x) for x in sources],
+        sources=sources,
         extra_cflags=cflags,
         extra_cuda_cflags=cuda_cflags,
         extra_ldflags=extra_ldflags,
@@ -273,7 +443,10 @@ def gen_jit_spec(
         ),
         needs_device_linking=needs_device_linking,
     )
-    spec.write_ninja()
+
+    # Register the spec in the global registry
+    jit_spec_registry.register(spec)
+
     return spec
 
 
@@ -295,6 +468,9 @@ def build_jit_specs(
         if skip_prebuilt and spec.aot_path.exists():
             continue
         lines.append(f"subninja {spec.ninja_path}")
+        if not spec.is_ninja_generated:
+            with FileLock(spec.lock_path, thread_local=False):
+                spec.write_ninja()
     if not lines:
         return
 
@@ -305,28 +481,3 @@ def build_jit_specs(
         ninja_path = tmpdir / "flashinfer_jit.ninja"
         write_if_different(ninja_path, "\n".join(lines))
         run_ninja(jit_env.FLASHINFER_JIT_DIR, ninja_path, verbose)
-
-
-def load_cuda_ops(
-    name: str,
-    sources: List[Union[str, Path]],
-    extra_cflags: Optional[List[str]] = None,
-    extra_cuda_cflags: Optional[List[str]] = None,
-    extra_ldflags=None,
-    extra_include_paths=None,
-):
-    # TODO(lequn): Remove this function and use JitSpec directly.
-    warnings.warn(
-        "load_cuda_ops is deprecated. Use JitSpec directly.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    spec = gen_jit_spec(
-        name=name,
-        sources=sources,
-        extra_cflags=extra_cflags,
-        extra_cuda_cflags=extra_cuda_cflags,
-        extra_ldflags=extra_ldflags,
-        extra_include_paths=extra_include_paths,
-    )
-    return spec.build_and_load()
