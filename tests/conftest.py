@@ -1,4 +1,3 @@
-import gc
 import json
 import os
 import types
@@ -204,27 +203,7 @@ def is_cuda_oom_error_str(e: str) -> bool:
     return "CUDA" in e and "out of memory" in e
 
 
-def clear_cuda_cache(device: torch.device) -> None:
-    total_memory = get_device_properties(device).total_memory
-    reserved_memory = torch.cuda.memory_reserved()
-
-    # FLASHINFER_TEST_MEMORY_THRESHOLD: threshold for PyTorch reserved memory usage (default: 0.75)
-    threshold = float(os.environ.get("FLASHINFER_TEST_MEMORY_THRESHOLD", "0.75"))
-
-    if reserved_memory > threshold * total_memory:
-        gc.collect()
-        torch.cuda.empty_cache()
-
-
-@pytest.fixture(autouse=True, scope="function")
-def clear_gpu_memory():
-    yield
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
-        clear_cuda_cache(device)  # Use the existing function
-
-
-@pytest.hookimpl(tryfirst=True)
+@pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item):
     # skip OOM error and missing JIT cache errors
     try:
