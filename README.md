@@ -163,6 +163,10 @@ pytest -k "test_decode_kernels_hip"
 
 # Verbose output
 pytest -v
+
+# if the system has multiple GPUs, run tests parallely on the multiple GPUS
+pytest -n auto # automatically select all available GPUs
+pytest -n 4 # Run on the specified number of GPUs
 ```
 
 The default test configuration is specified in [pyproject.toml](pyproject.toml) under the `testpaths` setting.

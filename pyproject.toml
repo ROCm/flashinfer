@@ -43,6 +43,7 @@ Documentation = "https://rocm.docs.amd.com/projects/install-on-linux/en/latest/i
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-xdist",
 ]
 
 [build-system]
