@@ -63,7 +63,7 @@ def pytest_xdist_auto_num_workers(config):
 
 def _maybe_clear_gpu_memory(device: torch.device) -> None:
     total_memory = torch.cuda.get_device_properties(device).total_memory
-    reserved_memory = torch.cuda.memory_reserved()
+    reserved_memory = torch.cuda.memory_reserved(device)
 
     # FLASHINFER_TEST_MEMORY_THRESHOLD: threshold for PyTorch reserved memory usage (default: 0.75)
     threshold = float(os.environ.get("FLASHINFER_TEST_MEMORY_THRESHOLD", "0.75"))
