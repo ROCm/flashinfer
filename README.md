@@ -21,12 +21,17 @@ Check our [v0.2 release blog](https://flashinfer.ai/2024/12/16/flashinfer-v02-re
 
 The core features of FlashInfer include:
 
-1. **Efficient Sparse/Dense Attention Kernels**: Efficient single/batch attention for sparse(paged)/dense KV-storage on CUDA Cores and Tensor Cores (both FA2 & FA3) templates. The vector-sparse attention can achieve 90% of the bandwidth of dense kernels with same problem size.
-2. **Load-Balanced Scheduling**: FlashInfer decouples `plan`/`run` stage of attention computation where we schedule the computation of variable-length inputs in `plan` stage to alleviate load-imbalance issue.
-3. **Memory Efficiency**: FlashInfer offers [Cascade Attention](https://docs.flashinfer.ai/api/cascade.html#flashinfer.cascade.MultiLevelCascadeAttentionWrapper) for hierarchical KV-Cache, and implements Head-Query fusion for accelerating Grouped-Query Attention, and efficient kernels for low-precision attention and fused-RoPE attention for compressed KV-Cache.
-4. **Customizable Attention**: Bring your own attention variants through JIT-compilation.
-5. **CUDAGraph and torch.compile Compatibility**: FlashInfer kernels can be captured by CUDAGraphs and torch.compile for low-latency inference.
-6. **Efficient LLM-specific Operators**: High-Performance [fused kernel for Top-P, Top-K/Min-P sampling](https://docs.flashinfer.ai/api/sampling.html) without the need to sorting.
+| Kernel Type | FP16 / BF16 | FP8 (E4M3, E5M2) | Has AITER backend | Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| **Decode Attention** | ✅ | ✅ | No | Supports MHA, GQA, and MQA |
+| **Prefill Attention** | ✅ | WIP | ✅ | Supports MHA, GQA, and MQA |
+| **Cascade Attention** | TBD | TBD | No |  Not Yet Ported |
+| **MLA** | TBD | TBD | No | Not Yet Ported |
+| **POD** | TBD | TBD | No | Not Yet Ported |
+| **Positional Encoding** | TBD | TBD | No | Not Yet Ported |
+| **Sampling** | ✅ | TBD | No | Supports Top-K/Top-P Sampling/OnlineSoftmax/SamplingFromLogits |
+| **Logits Processor** | ✅ | TBD | No |  |
+| **Normalization** | ✅ | TBD | No | Supports RMS-Norm/Layer-Norm |
 
 FlashInfer supports PyTorch, TVM and C++ (header-only) APIs, and can be easily integrated into existing projects.
 
@@ -134,7 +139,62 @@ This command displays:
 
 ### Trying it out
 
-Below is a minimal example of using FlashInfer's single-request decode/append/prefill attention kernels:
+```bash
+FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip install --no-build-isolation -ve.
+```
+
+**Note:** The `--no-deps` flag assumes dependencies are pre-installed. Omit it
+to download dependencies during build. AOT builds take longer and use more disk
+space but avoid JIT compilation at runtime.
+
+### Running Tests
+
+The Python tests suite can be run with pytest:
+
+```bash
+# Run default tests (configured in pyproject.toml)
+pytest
+
+# Run specific test file
+pytest tests/test_decode_kernels_hip.py
+
+# Run with pattern matching
+pytest -k "test_decode_kernels_hip"
+
+# Verbose output
+pytest -v
+```
+
+The default test configuration is specified in [pyproject.toml](pyproject.toml) under the `testpaths` setting.
+
+## AITER Support
+
+FlashInfer+ROCm has experimental support to use [AITER](https://github.com/ROCm/aiter) as a
+backend. The `aiter` backend currently is enabled for the `single_prefill` and `batch_prefill`
+kernels. To use AITER as the backend for these kernels, please set `backend=aiter` keyword
+argument when invoking the kernels. Additionally, AITER should also be installed on your system and
+you may follow one of the below ways to do so.
+
+**Install AITER by building from source**
+
+```bash
+git clone --recursive https://github.com/ROCm/aiter.git
+cd aiter
+python3 setup.py develop
+```
+**Install AITER wheel package from https://pypi.amd.com/simple/**
+
+```bash
+pip install amd-aiter --index-url https://pypi.amd.com/simple/
+```
+
+### Known Limitations:
+
+The AITER backed only supports `NHD` kv_layout.
+
+### Single Prefill Example
+
+This section provides an example on how to use Single Prefill with AITER
 
 ```python
 import torch
@@ -147,13 +207,40 @@ head_dim = 128
 k = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
 v = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
 
-# decode attention
+  # NHD Layout
+  k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0",dtype=torch.float16)
+  v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
 
 num_qo_heads = 32
 q = torch.randn(num_qo_heads, head_dim).half().to(0)
 
-o = flashinfer.single_decode_with_kv_cache(q, k, v) # decode attention without RoPE on-the-fly
-o_rope_on_the_fly = flashinfer.single_decode_with_kv_cache(q, k, v, pos_encoding_mode="ROPE_LLAMA") # decode with LLaMA style RoPE on-the-fly
+  # Call flashinfer API
+  logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
+  if return_lse:
+    o, lse = flashinfer.single_prefill_with_kv_cache_return_lse(
+        q,
+        k,
+        v,
+        causal=causal,
+        kv_layout=kv_layout,
+        pos_encoding_mode=pos_encoding_mode,
+        logits_soft_cap=logits_soft_cap,
+        backend="aiter" # Pass the backend = aiter flag to enable # AITER computation
+    )
+    print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
+
+  else:
+    o = flashinfer.single_prefill_with_kv_cache(
+        q,
+        k,
+        v,
+        causal=causal,
+        kv_layout=kv_layout,
+        pos_encoding_mode=pos_encoding_mode,
+        logits_soft_cap=logits_soft_cap,
+        backend="aiter" # Pass the backend = aiter flag to enable # AITER computation
+    )
+    print(f"  FlashInfer output shape: {o.shape}")
 
 # append attention
 append_qo_len = 128
@@ -165,58 +252,4 @@ o_rope_on_the_fly = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True
 qo_len = 2048
 q = torch.randn(qo_len, num_qo_heads, head_dim).half().to(0) # prefill attention
 o = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=False) # prefill attention without RoPE on-the-fly, do not apply causal mask
-```
-
-Check out [documentation](https://docs.flashinfer.ai/) for usage of batch decode/append/prefill kernels and shared-prefix cascading kernels.
-
-## Custom Attention Variants
-
-Starting from FlashInfer v0.2, users can customize their own attention variants with additional parameters. For more details, refer to our [JIT examples](https://github.com/flashinfer-ai/flashinfer/blob/main/tests/utils/test_jit_example.py).
-
-## GPU Support
-
-FlashInfer currently provides support for NVIDIA SM architectures 75 and higher and beta support for 103, 110, 120, and 121.
-
-## Adoption
-
-We are thrilled to share that FlashInfer is being adopted by many cutting-edge projects, including but not limited to:
-
-- [MLC-LLM](https://github.com/mlc-ai/mlc-llm)
-- [Punica](https://github.com/punica-ai/punica)
-- [SGLang](https://github.com/sgl-project/sglang)
-- [ScaleLLM](https://github.com/vectorch-ai/ScaleLLM)
-- [vLLM](https://github.com/vllm-project/vllm)
-- [TGI](https://github.com/huggingface/text-generation-inference)
-- [lorax](https://github.com/predibase/lorax)
-- [TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM)
-- [LightLLM](https://github.com/ModelTC/lightllm)
-
-## Acknowledgement
-
-FlashInfer is inspired by [FlashAttention 1&2](https://github.com/dao-AILab/flash-attention/), [vLLM](https://github.com/vllm-project/vllm), [stream-K](https://arxiv.org/abs/2301.03598), [cutlass](https://github.com/nvidia/cutlass) and [AITemplate](https://github.com/facebookincubator/AITemplate) projects.
-
-## Citation
-
-If you find FlashInfer helpful in your project or research, please consider citing our [paper](https://arxiv.org/abs/2501.01005):
-
-```bibtex
-@article{ye2025flashinfer,
-    title = {FlashInfer: Efficient and Customizable Attention Engine for LLM Inference Serving},
-    author = {
-      Ye, Zihao and
-      Chen, Lequn and
-      Lai, Ruihang and
-      Lin, Wuwei and
-      Zhang, Yineng and
-      Wang, Stephanie and
-      Chen, Tianqi and
-      Kasikci, Baris and
-      Grover, Vinod and
-      Krishnamurthy, Arvind and
-      Ceze, Luis
-    },
-    journal = {arXiv preprint arXiv:2501.01005},
-    year = {2025},
-    url = {https://arxiv.org/abs/2501.01005}
-}
 ```
