@@ -34,7 +34,15 @@ RUN curl -L micro.mamba.pm/install.sh | bash && \
     cd /root/flashinfer/ && \
     FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m build --no-isolation -v && \
     pip install dist/amd_flashinfer-*.whl && \
-    mkdir -p /tmp/flashinfer_tests && \
-    cp -R /root/flashinfer/tests/* /tmp/flashinfer_tests/ && \
     cp /root/flashinfer/dist/*.whl /tmp/ && \
     rm -rf /root/flashinfer/"
+
+# Activate the micromamba base env for all shell types:
+#   - ENV PATH: covers non-interactive shells (docker exec, entrypoints, scripts)
+#   - shell init + bashrc append: covers interactive bash sessions
+ENV MAMBA_ROOT_PREFIX=/root/micromamba
+ENV CONDA_PREFIX=/root/micromamba
+ENV CONDA_DEFAULT_ENV=${MAMBA_ENV_NAME}
+ENV PATH=/root/micromamba/bin:${PATH}
+RUN /root/.local/bin/micromamba shell init --shell bash --root-prefix /root/micromamba && \
+    echo "micromamba activate base" >> /root/.bashrc
