@@ -43,7 +43,7 @@ def is_therock_build() -> bool:
 
 def get_system_rocm_version_from_info_file():
     """
-    Try to get ROCm version from /opt/rocm/.info/version file.
+    Try to get ROCm version from .info/version file located in ROCM_HOME.
 
     Returns:
         str: ROCm version like "7.1.0" or None if not found
