@@ -30,7 +30,8 @@ def is_therock_build() -> bool:
     # First, try checking for rocm_sdk package
     try:
         import rocm_sdk
-        if hasattr(rocm_sdk, '__version__') and rocm_sdk.__version__:
+
+        if hasattr(rocm_sdk, "__version__") and rocm_sdk.__version__:
             return True
     except ImportError:
         pass
@@ -76,7 +77,7 @@ def get_system_rocm_version_from_hipconfig():
             capture_output=True,
             text=True,
             timeout=5,
-            check=False
+            check=False,
         )
         if result.returncode == 0:
             match = re.search(r"(\d+\.\d+\.\d+)", result.stdout)
@@ -100,11 +101,7 @@ def get_system_rocm_version_from_amd_smi():
 
     try:
         result = subprocess.run(
-            ["amd-smi"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False
+            ["amd-smi"], capture_output=True, text=True, timeout=5, check=False
         )
         if result.returncode == 0:
             match = re.search(r"ROCm version:\s*(\d+\.\d+\.\d+)", result.stdout)
@@ -200,8 +197,17 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     _ROCM_ARCH_GROUPS = [
         (
             ["7.3", "7.2", "7.1", "7.0"],
-            ["gfx950", "gfx1201", "gfx1200", "gfx1101", "gfx1100",
-             "gfx1030", "gfx942", "gfx90a", "gfx908"],
+            [
+                "gfx950",
+                "gfx1201",
+                "gfx1200",
+                "gfx1101",
+                "gfx1100",
+                "gfx1030",
+                "gfx942",
+                "gfx90a",
+                "gfx908",
+            ],
         ),
         (
             ["6.4", "6.3"],
@@ -211,9 +217,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     # Build the compatibility matrix
     ROCM_COMPAT_MATRIX = {
-        version: archs
-        for versions, archs in _ROCM_ARCH_GROUPS
-        for version in versions
+        version: archs for versions, archs in _ROCM_ARCH_GROUPS for version in versions
     }
 
     # Get architecture list from parameter, env var, or default
