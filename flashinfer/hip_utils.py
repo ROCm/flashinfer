@@ -20,7 +20,7 @@ def get_rocm_home():
 
 def is_therock_build() -> bool:
     """
-    Check if ROCm was built by using TheRock build system.
+    Check if ROCm was built using TheRock build system.
 
     Returns:
         bool: True if TheRock build is detected, False otherwise
