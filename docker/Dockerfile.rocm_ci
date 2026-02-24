@@ -27,7 +27,7 @@ RUN git config --global --add safe.directory /root/flashinfer
 
 RUN curl -L micro.mamba.pm/install.sh | bash && \
     ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} ~/.local/bin/micromamba install python=${PY_VERSION} -c conda-forge --override-channels -y && \
-    ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install cmake pybind11 build ninja scikit-build-core setuptools-scm numpy pytest && \
+    ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install cmake pybind11 build ninja scikit-build-core setuptools-scm numpy pytest pytest-xdist && \
     ~/.local/bin/micromamba run -n ${MAMBA_ENV_NAME} pip install torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
     /bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
     micromamba activate ${MAMBA_ENV_NAME} && \
