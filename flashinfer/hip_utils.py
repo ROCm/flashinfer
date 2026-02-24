@@ -23,10 +23,19 @@ def is_therock_build() -> bool:
     Check if ROCm was built by using TheRock build system.
 
     Returns:
-        bool: True if TheRock manifest exists, False otherwise
+        bool: True if TheRock build is detected, False otherwise
     """
     import os
 
+    # First, try checking for rocm_sdk package
+    try:
+        import rocm_sdk
+        if hasattr(rocm_sdk, '__version__') and rocm_sdk.__version__:
+            return True
+    except ImportError:
+        pass
+
+    # Fall back to checking for TheRock manifest file
     rocm_home = get_rocm_home()
     manifest_path = os.path.join(rocm_home, "share", "therock", "therock_manifest.json")
     return os.path.isfile(manifest_path)
