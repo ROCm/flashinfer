@@ -10,7 +10,6 @@ FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}-complete AS flashinfer_ba
 ARG ROCM_VERSION=7.1.1
 ARG PY_VERSION=3.12
 ARG TORCH_VERSION=2.8.0
-ARG GFX_ARCH=gfx942
 ARG MAMBA_ENV_NAME=base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -32,7 +31,7 @@ RUN curl -L micro.mamba.pm/install.sh | bash && \
     /bin/bash -c "eval \"\$(~/.local/bin/micromamba shell hook --shell bash)\" && \
     micromamba activate ${MAMBA_ENV_NAME} && \
     cd /root/flashinfer/ && \
-    FLASHINFER_HIP_ARCHITECTURES=${GFX_ARCH} python -m build --no-isolation -v && \
+    python -m build --no-isolation -v && \
     pip install dist/amd_flashinfer-*.whl && \
     cp /root/flashinfer/dist/*.whl /tmp/ && \
     rm -rf /root/flashinfer/"
