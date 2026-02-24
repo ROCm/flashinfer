@@ -5,6 +5,19 @@ from pathlib import Path
 from typing import Any, Dict, Set
 
 import pytest
+
+# Pin this worker to a dedicated GPU BEFORE torch initializes the ROCm/CUDA
+# runtime.  PYTEST_XDIST_WORKER is injected into each worker subprocess by
+# pytest-xdist before any Python code runs ("gw0", "gw1", ...).  Setting
+# HIP_VISIBLE_DEVICES here makes the ROCm runtime start up with exactly one
+# device so all device-0 references inside tests transparently route to the
+# assigned physical GPU.  This must happen before `import torch`.
+_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+if _xdist_worker.startswith("gw"):
+    _gpu_index = int(_xdist_worker[2:])
+    os.environ["HIP_VISIBLE_DEVICES"] = str(_gpu_index)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(_gpu_index)
+
 import torch
 from torch.torch_version import TorchVersion
 from torch.torch_version import __version__ as torch_version
