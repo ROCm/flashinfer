@@ -56,12 +56,14 @@ aiter_mha_module = None
 
 if HAS_AITER:
     from .aiter_utils import get_aiter_mha_module
+
     aiter_mha_module = get_aiter_mha_module()
 
 # Page sizes natively supported by the AITER CK kernel in linear
 # (non-vectorized) paged KV layout.  For any other page size the AITER
 # backend flattens pages into a token-level (page_size=1) buffer first.
 _AITER_NATIVE_PAGE_SIZES = frozenset({16, 1024})
+
 
 def make_hashable_cache(func):
     """
@@ -139,6 +141,7 @@ def get_customize_batch_prefill_module(
         fp8_enabled,
     ).build_and_load()
 
+
 def _get_aiter_single_prefill_module():
     """Return a module-like namespace for AITER single prefill.
 
@@ -215,7 +218,7 @@ def _get_aiter_single_prefill_module():
             window_size=(window_left, -1),
             return_lse=True,
             return_attn_probs=False,
-            out = o,
+            out=o,
         )
 
         # aiter_result is always (out, softmax_lse) because return_lse=True.
@@ -228,6 +231,7 @@ def _get_aiter_single_prefill_module():
             torch.div(aiter_result[1].t(), math.log(2), out=maybe_lse)
 
     return SimpleNamespace(run=aiter_single_prefill_run)
+
 
 @functools.cache
 def get_single_prefill_module(backend, *args):
@@ -378,7 +382,7 @@ def _get_aiter_batch_prefill_module():
         aiter_flat_kv_lpl: Optional[torch.Tensor] = None,
         aiter_flat_kv_indices: Optional[torch.Tensor] = None,
     ) -> None:
-        logger.info(f"###### AITER backend is used for batch prefill ######")
+        logger.info("###### AITER backend is used for batch prefill ######")
         # Derive causal flag from mask_mode
         causal = mask_mode == MaskMode.CAUSAL.value
 
@@ -1186,9 +1190,7 @@ def single_prefill_with_kv_cache(
         )
     elif backend == "aiter":
         if not HAS_AITER:
-            raise ImportError(
-                "AITER is not available. Please install it first."
-            )
+            raise ImportError("AITER is not available. Please install it first.")
 
     # o_dtype should be provided for FP8 attention
     if o_dtype is None:
@@ -1235,6 +1237,7 @@ def single_prefill_with_kv_cache(
 single_prefill_with_kv_cache_return_lse = functools.partial(
     single_prefill_with_kv_cache, return_lse=True
 )
+
 
 def _compute_page_mask_indptr(
     qo_indptr: torch.Tensor,
@@ -1906,10 +1909,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # page size is not natively supported.  These are stored as GPU
         # tensors so that the ``run()`` path (which may be inside a CUDA graph
         # capture) can use them without any host-side operations.
-        if (
-            self._backend == "aiter"
-            and page_size not in _AITER_NATIVE_PAGE_SIZES
-        ):
+        if self._backend == "aiter" and page_size not in _AITER_NATIVE_PAGE_SIZES:
             kv_indptr_h = paged_kv_indptr.cpu()
             kv_indices_h = paged_kv_indices.cpu()
             kv_lpl_h = paged_kv_last_page_len.cpu()
@@ -1936,9 +1936,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             gather_t = torch.tensor(
                 gather_indices, dtype=torch.long, device=self.device
             )
-            flat_indptr = torch.zeros(
-                bs + 1, dtype=torch.int32, device=self.device
-            )
+            flat_indptr = torch.zeros(bs + 1, dtype=torch.int32, device=self.device)
             flat_indptr[1:] = torch.tensor(
                 token_counts, dtype=torch.int32, device=self.device
             ).cumsum(0)
@@ -1954,9 +1952,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 # possible size on the first call and pad unused positions
                 # with safe values (index 0).  Subsequent plan() calls
                 # overwrite the used portion via copy_().
-                max_flat_tokens = (
-                    self._paged_kv_indices_buf.numel() * page_size
-                )
+                max_flat_tokens = self._paged_kv_indices_buf.numel() * page_size
                 if self._aiter_flat_gather_idx is None:
                     # First plan() – allocate max-size buffers.
                     self._aiter_flat_gather_idx = torch.zeros(

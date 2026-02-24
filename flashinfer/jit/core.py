@@ -2,7 +2,6 @@ import dataclasses
 import functools
 import logging
 import os
-import warnings
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -329,6 +328,7 @@ class JitSpec:
         if IS_HIP:
             load_class = class_name is not None
             import torch
+
             loader = torch.classes if load_class else torch.ops
             loader.load_library(so_path)
             if load_class:
@@ -411,7 +411,7 @@ def gen_jit_spec(
             "-DFLASHINFER_ENABLE_BF16",
             "-DFLASHINFER_ENABLE_FP8_E4M3",
             "-DFLASHINFER_ENABLE_FP8_E5M2",
-            "-ffast-math",         # HIP equivalent of -use_fast_math
+            "-ffast-math",  # HIP equivalent of -use_fast_math
             "-fno-finite-math-only",  # Re-enable inf/NaN: clang's -ffast-math includes
             # -ffinite-math-only which breaks kernels that use -inf
             # as a sentinel (e.g. online-softmax Map+Reduce path).
@@ -428,11 +428,11 @@ def gen_jit_spec(
         cuda_cflags += extra_cuda_cflags
     if extra_include_paths is not None:
         extra_include_paths = [Path(x) for x in extra_include_paths]
-    sources = [Path(x) for x in sources]
+    sources_paths: List[Path] = [Path(x) for x in sources]
 
     spec = JitSpec(
         name=name,
-        sources=sources,
+        sources=sources_paths,
         extra_cflags=cflags,
         extra_cuda_cflags=cuda_cflags,
         extra_ldflags=extra_ldflags,
