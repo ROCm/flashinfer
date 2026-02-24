@@ -175,7 +175,7 @@ if IS_CUDA:
 
 elif IS_HIP:
     from .._version import __version__ as flashinfer_version
-    from ..get_include_paths import _get_package_root_dir, get_csrc_dir, get_include
+    from ..get_include_paths import get_csrc_dir, get_include
 
     def _get_aot_dir_hip():
         """
@@ -229,9 +229,9 @@ elif IS_HIP:
         # e.g.: $HOME/.cache/flashinfer/0.5.3/gfx942/
         return FLASHINFER_CACHE_DIR / flashinfer_version / arch
 
-    FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir_hip()
-    FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()
-    FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"
-    FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"
-    FLASHINFER_INCLUDE_DIR: pathlib.Path = pathlib.Path(get_include())
-    FLASHINFER_CSRC_DIR: pathlib.Path = pathlib.Path(get_csrc_dir())
+    FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir_hip()  # type: ignore[no-redef]
+    FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()  # type: ignore[no-redef]
+    FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"  # type: ignore[no-redef]
+    FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"  # type: ignore[no-redef]
+    FLASHINFER_INCLUDE_DIR: pathlib.Path = pathlib.Path(get_include())  # type: ignore[no-redef]
+    FLASHINFER_CSRC_DIR: pathlib.Path = pathlib.Path(get_csrc_dir())  # type: ignore[no-redef]

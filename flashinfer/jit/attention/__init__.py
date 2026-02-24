@@ -61,13 +61,13 @@ elif IS_HIP:
     from .modules_hip import (
         gen_customize_batch_decode_module as gen_customize_batch_decode_module,
     )
-    from .modules_hip import (
+    from .modules_hip import (  # type: ignore[assignment]
         gen_customize_batch_prefill_module as gen_customize_batch_prefill_module,
     )
     from .modules_hip import (
         gen_customize_single_decode_module as gen_customize_single_decode_module,
     )
-    from .modules_hip import (
+    from .modules_hip import (  # type: ignore[assignment]
         gen_customize_single_prefill_module as gen_customize_single_prefill_module,
     )
     from .modules_hip import gen_single_decode_module as gen_single_decode_module
