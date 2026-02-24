@@ -18,7 +18,7 @@ if IS_CUDA:
     from ..compilation_context import CompilationContext
     from .cpp_ext import generate_ninja_build_for_op, run_ninja
 elif IS_HIP:
-    from ..compilation_context_hip import CompilationContext  # type: ignore[no-redef]
+    from ..compilation_context_hip import CompilationContext  # type: ignore[assignment]
     from .cpp_ext_hip import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
@@ -403,7 +403,7 @@ def gen_jit_spec(
 
         cflags = ["-O3", "-std=c++17", "-Wno-switch-bool"]
         # Use dynamically-generated flags from CompilationContext (includes arch flags)
-        cflags += current_compilation_context.get_hipcc_flags_list()
+        cflags += current_compilation_context.get_hipcc_flags_list()  # type: ignore[attr-defined]
         cuda_cflags = [
             "-O3",
             "-std=c++17",
