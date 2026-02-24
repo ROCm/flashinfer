@@ -81,4 +81,3 @@ def get_backend_name() -> str:
     elif IS_CUDA:
         return "CUDA"
     return "CPU"
-    
