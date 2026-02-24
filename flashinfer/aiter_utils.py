@@ -8,15 +8,16 @@ AITER utilities for ROCm.
 This module provides utilities for AITER, a library for efficient attention operations.
 """
 
-HAS_AITER = False
+import importlib
 
-try:
-    import aiter
+if importlib.util.find_spec("aiter") is not None:
     HAS_AITER = True
-except ImportError:
-    pass
+else:
+    HAS_AITER = False
 
 if HAS_AITER:
+
     def get_aiter_mha_module():
         from aiter.ops import mha as aiter_mha_module
+
         return aiter_mha_module

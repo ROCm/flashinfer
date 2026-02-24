@@ -95,7 +95,6 @@ def gen_attention(
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
 ) -> Iterator:
-
     # FA2 MHA / MQA / GQA
     for (
         (head_dim_qk, head_dim_vo),

@@ -182,15 +182,15 @@ elif IS_HIP:
     from .activation import gelu_and_mul as gelu_and_mul
     from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
     from .activation import silu_and_mul as silu_and_mul
-    from .decode_rocm import (
+    from .decode_rocm import (  # type: ignore[assignment]
         BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
-    )  # type: ignore[no-redef]
-    from .decode_rocm import (
+    )
+    from .decode_rocm import (  # type: ignore[assignment]
         CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
-    )  # type: ignore[no-redef]
-    from .decode_rocm import (
+    )
+    from .decode_rocm import (  # type: ignore[no-redef]
         single_decode_with_kv_cache as single_decode_with_kv_cache,
-    )  # type: ignore[no-redef]
+    )
     from .get_include_paths import get_csrc_dir, get_include
     from .norm import fused_add_rmsnorm as fused_add_rmsnorm
     from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
@@ -200,13 +200,13 @@ elif IS_HIP:
     from .page import append_paged_kv_cache as append_paged_kv_cache
     from .page import get_batch_indices_positions as get_batch_indices_positions
     from .page import get_seq_lens as get_seq_lens
-    from .prefill_rocm import (
+    from .prefill_rocm import (  # type: ignore[assignment]
         BatchPrefillWithPagedKVCacheWrapper as BatchPrefillWithPagedKVCacheWrapper,
     )
-    from .prefill_rocm import (
+    from .prefill_rocm import (  # type: ignore[assignment]
         BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
     )
-    from .prefill_rocm import (
+    from .prefill_rocm import (  # type: ignore[no-redef]
         single_prefill_with_kv_cache as single_prefill_with_kv_cache,
     )
     from .prefill_rocm import (
