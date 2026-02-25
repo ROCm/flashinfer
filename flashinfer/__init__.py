@@ -253,6 +253,11 @@ elif IS_HIP:
     from . import decode_rocm as decode
     from . import prefill_rocm as prefill
 
+    import sys
+
+    sys.modules["flashinfer.prefill"] = sys.modules["flashinfer.prefill_rocm"]
+    sys.modules["flashinfer.decode"] = sys.modules["flashinfer.decode_rocm"]
+
     from .utils import next_positive_power_of_2 as next_positive_power_of_2
 else:
     # CPU-only torch (no CUDA or HIP)
