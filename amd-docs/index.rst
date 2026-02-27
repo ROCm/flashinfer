@@ -32,7 +32,7 @@ operators, with easy integration through PyTorch, and C++ APIs.
   `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository.
 
 FlashInfer is part of the `ROCm-LLMExt toolkit
-<https://rocm.docs.amd.com/projects/rocm-llmext/en/latest/>`__.
+<https://rocm.docs.amd.com/projects/rocm-llmext/en/docs-26.02/>`__.
 
 The FlashInfer public repository is located at `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__.
 
