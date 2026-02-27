@@ -62,8 +62,8 @@ ROCm, and other dependencies.
 Build your own Docker image
 --------------------------------------------------------------------------------------
 
-FlashInfer supports the ROCm platform and can be run directly by setting up a Docker container from scratch. 
-A Dockerfile is provided in the `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository to help you get started.
+FlashInfer on ROCm can be run directly by setting up a Docker container from scratch. 
+A Dockerfile is provided in the `https://github.com/ROCm/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile <https://github.com/ROCm/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile>`__ repository to help you get started.
 
 1. Clone the `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository:
 
@@ -84,7 +84,7 @@ A Dockerfile is provided in the `https://github.com/ROCm/flashinfer <https://git
       
       docker run -it --device=/dev/kfd --device=/dev/dri --group-add video rocm/flashinfer:flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7
 
-4. The above step will create a Docker container with FlashInfer pre-installed. During this process, the Dockerfile will have pre-installed and setup a micromamba environment named ``flashinfer-py3.12-torch2.7.1-rocm6.4.1``.
+4. The above step will create a Docker container with FlashInfer pre-installed. During this process, the Dockerfile will have pre-installed and configured a micromamba environment named ``flashinfer-py3.12-torch2.7.1-rocm6.4.1``.
 
 .. _flashinfer-pip-install:
 
