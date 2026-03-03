@@ -13,7 +13,7 @@ System requirements
 
 To use FlashInfer `0.2.5 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5>`__, you need the following prerequisites:
 
-- **ROCm version:** `6.4.1 <https://repo.radeon.com/rocm/apt/6.4.1/>`__
+- **ROCm version:** `6.4.1 <https://rocm.docs.amd.com/en/docs-6.4.1/>`__
 - **Operating system:** Ubuntu 24.04
 - **GPU platform:** AMD Instinct™ MI300X
 - **PyTorch:** `2.7.1 <https://github.com/ROCm/pytorch/releases/tag/v2.7.1>`__
