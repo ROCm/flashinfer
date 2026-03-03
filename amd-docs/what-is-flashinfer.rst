@@ -79,7 +79,7 @@ Kernel support matrix
      - Supports MHA, GQA, and MQA
    * - Prefill Attention
      - ✅
-     - WIP
+     - —
      - ✅
      - Supports MHA, GQA, and MQA
    * - Cascade Attention
