@@ -83,38 +83,38 @@ Kernel support matrix
      - ✅
      - Supports MHA, GQA, and MQA
    * - Cascade Attention
-     - -
-     - -
+     - —
+     - —
      - No
      - Not Yet Ported
    * - MLA
-     - -
-     - -
+     - —
+     - —
      - No
      - Not Yet Ported
    * - POD
-     - -
-     - -
+     - —
+     - —
      - No
      - Not Yet Ported
    * - Positional Encoding
-     - -
-     - -
+     - —
+     - —
      - No
      - Not Yet Ported
    * - Sampling
      - ✅
-     - -
+     - —
      - No
      - Supports Top-K/Top-P Sampling/OnlineSoftmax/SamplingFromLogits
    * - Logits Processor
      - ✅
-     - -
+     - —
      - No
      - 
    * - Normalization
      - ✅
-     - -
+     - —
      - No
      - Supports RMS-Norm/Layer-Norm
 
