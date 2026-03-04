@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
+
 # AMDGPU archs supported by amd-flashinfer
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942"]
 
@@ -247,13 +249,31 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
             f"See compatibility matrix: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html"
         )
 
-    # Check each requested arch is supported
+    # Check each requested arch is supported; filter out unsupported ones rather than
+    # failing hard so that a system with a mix of supported dGPUs and unsupported
+    # integrated GPUs still works.
     unsupported = [arch for arch in requested_archs if arch not in supported_archs]
     if unsupported:
-        raise RuntimeError(
-            f"ROCm version {system_rocm_version} does not support the provided arch: {', '.join(unsupported)}.\n"
-            f"See compatibility matrix: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html"
+        supported_in_request = [
+            arch for arch in requested_archs if arch in supported_archs
+        ]
+        if not supported_in_request:
+            raise RuntimeError(
+                f"ROCm version {system_rocm_version} does not support any of the provided "
+                f"architectures: {', '.join(unsupported)}.\n"
+                f"See compatibility matrix: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html"
+            )
+        import warnings
+
+        warnings.warn(
+            f"ROCm version {system_rocm_version} does not support the following "
+            f"architecture(s): {', '.join(unsupported)}. "
+            f"They will be excluded from compilation. "
+            f"Supported architecture(s) found: {', '.join(supported_in_request)}.",
+            UserWarning,
+            stacklevel=2,
         )
+        arch_list = ",".join(supported_in_request)
 
     if verbose:
         print(f"Validated ROCm {system_rocm_version} with architecture(s): {arch_list}")
@@ -295,15 +315,33 @@ def validate_flashinfer_rocm_arch(
     validated_arch_list = validate_rocm_arch(arch_list=arch_list, verbose=verbose)
     requested_archs = [arch.strip() for arch in validated_arch_list.split(",")]
 
-    # Step 2: Validate against AMD-ported FlashInfer architectures
+    # Step 2: Validate against AMD-ported FlashInfer architectures.
+    # Filter out unsupported archs rather than failing hard so that a system with a mix
+    # of supported dGPUs and unsupported integrated GPUs (e.g. gfx942 + gfx1035) still works.
     unsupported_by_flashinfer = [
         arch for arch in requested_archs if arch not in FLASHINFER_SUPPORTED_ROCM_ARCHS
     ]
     if unsupported_by_flashinfer:
-        raise RuntimeError(
-            f"FlashInfer does not support the following ROCm architectures: {', '.join(unsupported_by_flashinfer)}.\n"
-            f"Currently supported by FlashInfer: {', '.join(FLASHINFER_SUPPORTED_ROCM_ARCHS)}"
+        supported_in_request = [
+            arch for arch in requested_archs if arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
+        ]
+        if not supported_in_request:
+            raise RuntimeError(
+                f"FlashInfer does not support any of the requested ROCm architectures: "
+                f"{', '.join(unsupported_by_flashinfer)}.\n"
+                f"Currently supported by FlashInfer: {', '.join(FLASHINFER_SUPPORTED_ROCM_ARCHS)}"
+            )
+        import warnings
+
+        warnings.warn(
+            f"FlashInfer does not support the following ROCm architecture(s): "
+            f"{', '.join(unsupported_by_flashinfer)}. "
+            f"They will be excluded from JIT compilation. "
+            f"Supported architecture(s) found: {', '.join(supported_in_request)}.",
+            UserWarning,
+            stacklevel=2,
         )
+        requested_archs = supported_in_request
 
     # Step 3: Validate against PyTorch's available architectures (if module provided)
     arch_flags = [f"--offload-arch={arch}" for arch in requested_archs]
@@ -340,6 +378,61 @@ def get_available_gpu_count() -> int:
     import torch
 
     return torch.cuda.device_count()
+
+
+@functools.cache
+def get_supported_device_indices() -> tuple:
+    """
+    Return the indices of AMD GPUs whose architecture is supported by FlashInfer.
+
+    Uses rocminfo (subprocess) rather than torch.cuda so this function is safe
+    to call before the HIP runtime is initialized (e.g. before HIP_VISIBLE_DEVICES
+    is set in xdist workers).  rocminfo enumerates GPU agents in the same order as
+    the HIP runtime, so the Nth GPU agent = HIP device index N.
+
+    The result is cached so rocminfo is invoked at most once per process.
+
+    Returns:
+        tuple[int, ...]: Device indices of supported GPUs. Empty tuple if none
+                         found or rocminfo is unavailable.
+    """
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["rocminfo"], capture_output=True, text=True, timeout=10, check=False
+        )
+        if result.returncode != 0:
+            return ()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ()
+
+    supported = []
+    gpu_index = 0
+    current_name = None
+    current_is_gpu = False
+
+    def _commit():
+        nonlocal gpu_index
+        if current_is_gpu:
+            if current_name in FLASHINFER_SUPPORTED_ROCM_ARCHS:
+                supported.append(gpu_index)
+            gpu_index += 1
+
+    for line in result.stdout.splitlines():
+        s = line.strip()
+        if re.match(r"^Agent \d+", s):
+            _commit()
+            current_name = None
+            current_is_gpu = False
+        elif s.startswith("Name:") and current_name is None:
+            current_name = s.split(":", 1)[1].strip()
+        elif s.startswith("Device Type:") and "GPU" in s:
+            current_is_gpu = True
+    _commit()  # process last agent
+
+    return tuple(supported)
 
 
 def check_torch_rocm_compatibility() -> None:
