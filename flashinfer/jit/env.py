@@ -224,6 +224,22 @@ elif IS_HIP:
                     if flag.startswith("--offload-arch=")
                 ]
                 arch = archs[0] if archs else "noarch"
+
+            # Validate that the current device is supported by FlashInfer.
+            # Setting the current device is the caller's responsibility; we
+            # detect a misconfiguration early with a clear error message.
+            from ..hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
+
+            if arch != "noarch" and arch not in FLASHINFER_SUPPORTED_ROCM_ARCHS:
+                raise RuntimeError(
+                    f"torch.cuda.current_device() is device {torch.cuda.current_device()} "
+                    f"with unsupported ROCm architecture '{arch}'. "
+                    f"Please set the current device to a supported GPU before importing "
+                    f"flashinfer (e.g. torch.cuda.set_device(<device_index>)). "
+                    f"Supported architectures: {', '.join(FLASHINFER_SUPPORTED_ROCM_ARCHS)}"
+                )
+        except RuntimeError:
+            raise
         except Exception:
             arch = "noarch"
         # e.g.: $HOME/.cache/flashinfer/0.5.3/gfx942/

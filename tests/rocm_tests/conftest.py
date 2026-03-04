@@ -12,19 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from flashinfer.hip_utils import get_available_gpu_count
+from flashinfer.hip_utils import get_supported_device_indices
 
 
-def pytest_xdist_auto_num_workers(config):
-    """Return the number of available AMD GPUs for 'pytest -n auto'.
+# pytest_xdist_auto_num_workers is only available when pytest-xdist is installed
+# and loaded (i.e. when -n / --dist is passed). Guard the definition so that
+# running without xdist does not produce an "unknown hook" PluginValidationError.
+try:
+    import xdist  # noqa: F401
 
-    Raises RuntimeError if no GPUs are detected so the failure is explicit
-    rather than silently falling back to single-process execution.
-    """
-    n = get_available_gpu_count()
-    if n == 0:
-        raise RuntimeError(
-            "pytest -n auto: no AMD GPUs detected (torch.cuda.device_count() == 0). "
-            "Check HIP_VISIBLE_DEVICES or ROCm installation."
-        )
-    return n
+    def pytest_xdist_auto_num_workers(config):
+        """Return the number of FlashInfer-supported AMD GPUs for 'pytest -n auto'.
+
+        Only devices whose architecture is in FLASHINFER_SUPPORTED_ROCM_ARCHS are
+        counted so that xdist does not spawn workers for unsupported integrated GPUs.
+        Raises RuntimeError if no supported GPUs are detected so the failure is
+        explicit rather than silently falling back to single-process execution.
+        """
+        n = len(get_supported_device_indices())
+        if n == 0:
+            raise RuntimeError(
+                "pytest -n auto: no FlashInfer-supported AMD GPUs detected. "
+                "Check HIP_VISIBLE_DEVICES or ROCm installation."
+            )
+        return n
+
+except ImportError:
+    pass

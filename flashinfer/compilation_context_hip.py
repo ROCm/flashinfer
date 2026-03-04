@@ -64,22 +64,22 @@ class CompilationContext:
         )
 
     def _auto_detect_archs(self) -> str:
-        """Auto-detect ROCm architectures from system devices."""
-        try:
-            detected_archs = set()
-            for device in range(torch.cuda.device_count()):
-                # Get gcnArchName which returns something like "gfx942:sramecc+:xnack-"
-                props = torch.cuda.get_device_properties(device)
-                if hasattr(props, "gcnArchName"):
-                    # Extract base gfx architecture (e.g., "gfx942" from "gfx942:sramecc+:xnack-")
-                    arch_name = props.gcnArchName.split(":")[0]
-                    detected_archs.add(arch_name)
+        """Auto-detect ROCm architectures from supported system devices.
 
-            if detected_archs:
-                return ",".join(sorted(detected_archs))
-            else:
-                logger.warning("No ROCm devices detected, defaulting to gfx942")
-                return "gfx942"
+        Only devices whose gcnArchName is in FLASHINFER_SUPPORTED_ROCM_ARCHS are
+        considered, so unsupported integrated GPUs are silently ignored here rather
+        than being passed on to validate_flashinfer_rocm_arch for filtering.
+        """
+        try:
+            indices = hip_utils.get_supported_device_indices()
+            if indices:
+                archs = {
+                    torch.cuda.get_device_properties(i).gcnArchName.split(":")[0]
+                    for i in indices
+                }
+                return ",".join(sorted(archs))
+            logger.warning("No supported ROCm devices detected, defaulting to gfx942")
+            return "gfx942"
         except Exception as e:
             logger.warning(f"Failed to auto-detect ROCm device architectures: {e}")
             return "gfx942"

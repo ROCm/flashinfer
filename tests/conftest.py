@@ -6,15 +6,26 @@ from typing import Any, Dict, Set
 
 import pytest
 
-# Pin this worker to a dedicated GPU BEFORE torch initializes the ROCm/CUDA
+# Pin this worker to a dedicated supported GPU BEFORE torch initializes the ROCm/CUDA
 # runtime.  PYTEST_XDIST_WORKER is injected into each worker subprocess by
-# pytest-xdist before any Python code runs ("gw0", "gw1", ...).  Setting
-# HIP_VISIBLE_DEVICES here makes the ROCm runtime start up with exactly one
+# pytest-xdist before any Python code runs ("gw0", "gw1", ...).  We map the worker
+# index through get_supported_device_indices() so that workers are pinned only to
+# FlashInfer-supported GPUs and unsupported integrated GPUs are never assigned.
+# Setting HIP_VISIBLE_DEVICES here makes the ROCm runtime start up with exactly one
 # device so all device-0 references inside tests transparently route to the
 # assigned physical GPU.  This must happen before `import torch`.
 _xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
 if _xdist_worker.startswith("gw"):
-    _gpu_index = int(_xdist_worker[2:])
+    from flashinfer.hip_utils import get_supported_device_indices
+
+    _worker_idx = int(_xdist_worker[2:])
+    _supported_devices = get_supported_device_indices()
+    if _worker_idx >= len(_supported_devices):
+        raise RuntimeError(
+            f"xdist worker {_xdist_worker} has no corresponding supported GPU "
+            f"(only {len(_supported_devices)} supported device(s) found)."
+        )
+    _gpu_index = _supported_devices[_worker_idx]
     os.environ["HIP_VISIBLE_DEVICES"] = str(_gpu_index)
     os.environ["CUDA_VISIBLE_DEVICES"] = str(_gpu_index)
 
