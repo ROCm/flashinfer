@@ -254,7 +254,9 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     # integrated GPUs still works.
     unsupported = [arch for arch in requested_archs if arch not in supported_archs]
     if unsupported:
-        supported_in_request = [arch for arch in requested_archs if arch in supported_archs]
+        supported_in_request = [
+            arch for arch in requested_archs if arch in supported_archs
+        ]
         if not supported_in_request:
             raise RuntimeError(
                 f"ROCm version {system_rocm_version} does not support any of the provided "

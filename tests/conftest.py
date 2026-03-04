@@ -21,7 +21,9 @@ if _xdist_worker.startswith("gw"):
     from flashinfer.hip_utils import get_supported_device_indices
 
     _supported = get_supported_device_indices()
-    _gpu_index = _supported[_worker_idx] if _worker_idx < len(_supported) else _worker_idx
+    _gpu_index = (
+        _supported[_worker_idx] if _worker_idx < len(_supported) else _worker_idx
+    )
     os.environ["HIP_VISIBLE_DEVICES"] = str(_gpu_index)
 
 import torch
