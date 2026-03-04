@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
+
 # AMDGPU archs supported by amd-flashinfer
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942"]
 
@@ -252,9 +254,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     # integrated GPUs still works.
     unsupported = [arch for arch in requested_archs if arch not in supported_archs]
     if unsupported:
-        supported_in_request = [
-            arch for arch in requested_archs if arch in supported_archs
-        ]
+        supported_in_request = [arch for arch in requested_archs if arch in supported_archs]
         if not supported_in_request:
             raise RuntimeError(
                 f"ROCm version {system_rocm_version} does not support any of the provided "
@@ -378,29 +378,59 @@ def get_available_gpu_count() -> int:
     return torch.cuda.device_count()
 
 
-def get_supported_device_indices() -> list:
+@functools.cache
+def get_supported_device_indices() -> tuple:
     """
-    Return the indices of visible AMD GPUs whose architecture is supported by FlashInfer.
+    Return the indices of AMD GPUs whose architecture is supported by FlashInfer.
 
-    Iterates over all torch-visible devices and keeps only those whose gcnArchName
-    base (e.g. "gfx942") appears in FLASHINFER_SUPPORTED_ROCM_ARCHS.  Devices whose
-    architecture is not in the supported list (e.g. an integrated GPU) are silently
-    skipped.
+    Uses rocminfo (subprocess) rather than torch.cuda so this function is safe
+    to call before the HIP runtime is initialized (e.g. before HIP_VISIBLE_DEVICES
+    is set in xdist workers).  rocminfo enumerates GPU agents in the same order as
+    the HIP runtime, so the Nth GPU agent = HIP device index N.
+
+    The result is cached so rocminfo is invoked at most once per process.
 
     Returns:
-        list[int]: Ordered list of device indices that FlashInfer can target.
-                   Empty list if no supported devices are found.
+        tuple[int, ...]: Device indices of supported GPUs. Empty tuple if none
+                         found or rocminfo is unavailable.
     """
-    import torch
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["rocminfo"], capture_output=True, text=True, timeout=10, check=False
+        )
+        if result.returncode != 0:
+            return ()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ()
 
     supported = []
-    for i in range(torch.cuda.device_count()):
-        props = torch.cuda.get_device_properties(i)
-        if hasattr(props, "gcnArchName"):
-            arch = props.gcnArchName.split(":")[0]
-            if arch in FLASHINFER_SUPPORTED_ROCM_ARCHS:
-                supported.append(i)
-    return supported
+    gpu_index = 0
+    current_name = None
+    current_is_gpu = False
+
+    def _commit():
+        nonlocal gpu_index
+        if current_is_gpu:
+            if current_name in FLASHINFER_SUPPORTED_ROCM_ARCHS:
+                supported.append(gpu_index)
+            gpu_index += 1
+
+    for line in result.stdout.splitlines():
+        s = line.strip()
+        if re.match(r"^Agent \d+", s):
+            _commit()
+            current_name = None
+            current_is_gpu = False
+        elif s.startswith("Name:") and current_name is None:
+            current_name = s.split(":", 1)[1].strip()
+        elif s.startswith("Device Type:") and "GPU" in s:
+            current_is_gpu = True
+    _commit()  # process last agent
+
+    return tuple(supported)
 
 
 def check_torch_rocm_compatibility() -> None:
