@@ -124,12 +124,12 @@ struct vec_cast<half, float> {
   }
 };
 
-// On gfx950/gfx1200/gfx1201, HIP_FP8_TYPE_FNUZ=0, so operator float() on
-// __hip_fp8_e4m3_fnuz and __hip_fp8_e5m2_fnuz is __FP8_HOST__ only (not device-accessible).
+// On gfx950, HIP_FP8_TYPE_FNUZ=0, so operator float() on
+// __hip_fp8_e4m3_fnuz and __hip_fp8_e5m2_fnuz resorts to __FP8_HOST__ only.
 // The hardware cvt builtins on these arches convert OCP FP8 (bias=7), NOT FNUZ (bias=8),
 // so we must use software bit-manipulation conversion for FNUZ types.
 #if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
-// E4M3 FNUZ -> float32 software conversion (for gfx950/gfx1200/gfx1201).
+// E4M3 FNUZ to float32 software conversion for gfx950.
 // Format: 1 sign | 4 exp (bias=8) | 3 mantissa, NaN=0x80, no -0, no inf.
 FLASHINFER_INLINE float __flashinfer_fp8_e4m3_fnuz_to_float(uint8_t x) {
   if (x == 0x80u) {
@@ -161,7 +161,7 @@ FLASHINFER_INLINE float __flashinfer_fp8_e4m3_fnuz_to_float(uint8_t x) {
   __builtin_memcpy(&result, &f32, sizeof(float));
   return result;
 }
-// E5M2 FNUZ -> float32 software conversion (for gfx950/gfx1200/gfx1201).
+// E5M2 FNUZ to float32 software conversion for gfx950.
 // Format: 1 sign | 5 exp (bias=16) | 2 mantissa, NaN=0x80, no -0, no inf.
 FLASHINFER_INLINE float __flashinfer_fp8_e5m2_fnuz_to_float(uint8_t x) {
   if (x == 0x80u) {
@@ -201,10 +201,10 @@ struct vec_cast<float, __hip_fp8_e4m3_fnuz> {
 #pragma unroll
     for (size_t i = 0; i < vec_size; ++i) {
 #if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
-      // gfx950/gfx1200/gfx1201: operator float() is __FP8_HOST__ only; use software conversion.
+      // gfx950: operator float() is __FP8_HOST__ only; use software conversion.
       dst[i] = __flashinfer_fp8_e4m3_fnuz_to_float(src[i].__x);
 #else
-      // Other arches: HIP_FP8_TYPE_FNUZ=1, operator float() is __device__-accessible.
+      // Other arches: HIP_FP8_TYPE_FNUZ=1, operator float() is __device__ accessible.
       dst[i] = (float)src[i];
 #endif
     }
@@ -480,30 +480,6 @@ __device__ uint16_t convert_f16x2_to_e5m2x2(uint32_t x) {
   const float min_e5m2 = -8.0f;
   // Maximum representable value for e5m2
   const float max_e5m2 = 7.75f;
-
-  // // Helper lambda for conversion
-  // auto f32_to_e5m2 = [min_e5m2, max_e5m2](float val) -> uint8_t {
-  //   // Saturate the val
-  //   val = fminf(fmaxf(val, min_e5m2), max_e5m2);
-
-  //   // Decompose into mantissa and exponent
-  //   int exp;
-  //   float mantissa = frexpf(val, &exp);
-
-  //   // Encode sign bit
-  //   uint8_t sign = (mantissa < 0) ? 0x10 : 0x00;  // Sign in bit 4
-  //   mantissa = fabsf(mantissa);
-
-  //   // Normalize mantissa and encode exponent
-  //   mantissa *= 4.0f;                                  // Scale for 2-bit mantissa
-  //   uint8_t exponent = static_cast<uint8_t>(exp + 7);  // Apply bias for e5m2
-
-  //   // Apply round-to-nearest-even
-  //   uint8_t quant_mantissa = static_cast<uint8_t>(roundf(mantissa)) & 0x03;
-
-  //   // Combine into 5 bits: [sign][exponent][mantissa]
-  //   return sign | (exponent << 2) | quant_mantissa;
-  // };
 
   // Convert the two __half values to e5m2
   uint8_t e5m2_1 = convert_f32_to_e5m2(__half2float(h1));
