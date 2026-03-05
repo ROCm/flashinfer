@@ -141,7 +141,7 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
 template <typename T, mma::MMAMode mma_mode = mma::MMAMode::kInplaceUpdate>
 __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, uint32_t* A,
                                                                      uint32_t* B) {
-#if defined(__HIP_DEVICE_COMPILE__) && (__gfx90a__ || __gfx908__ || __gfx942__)
+#if defined(__HIP_DEVICE_COMPILE__) && (__gfx90a__ || __gfx908__ || __gfx942__ || __gfx950__)
   // Ensure T is either __half or __hip_bfloat16
   static_assert(std::is_same_v<T, __half> || std::is_same_v<T, __hip_bfloat16>,
                 "T must be __half or __hip_bfloat16");
