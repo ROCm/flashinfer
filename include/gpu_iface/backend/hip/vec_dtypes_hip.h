@@ -124,6 +124,108 @@ struct vec_cast<half, float> {
   }
 };
 
+// On gfx950, HIP_FP8_TYPE_FNUZ=0, so operator float() on
+// __hip_fp8_e4m3_fnuz and __hip_fp8_e5m2_fnuz resorts to __FP8_HOST__ only.
+// The hardware cvt builtins on these arches convert OCP FP8 (bias=7), NOT FNUZ (bias=8),
+// so we must use software bit-manipulation conversion for FNUZ types.
+#if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+// E4M3 FNUZ to float32 software conversion for gfx950.
+// Format: 1 sign | 4 exp (bias=8) | 3 mantissa, NaN=0x80, no -0, no inf.
+FLASHINFER_INLINE float __flashinfer_fp8_e4m3_fnuz_to_float(uint8_t x) {
+  if (x == 0x80u) {
+    float nan;
+    uint32_t nan_bits = 0x7FC00000u;
+    __builtin_memcpy(&nan, &nan_bits, sizeof(float));
+    return nan;
+  }
+  uint32_t sign = (uint32_t)(x >> 7) & 1u;
+  uint32_t exp8 = (uint32_t)(x >> 3) & 0xFu;
+  uint32_t mant8 = (uint32_t)(x) & 0x7u;
+  uint32_t f32;
+  if (exp8 == 0u) {
+    if (mant8 == 0u) {
+      f32 = sign << 31u;  // +/-0
+    } else {
+      // Denormal: value = (-1)^sign * mant8 * 2^(-10)
+      // Normalize: find leading bit position p of mant8
+      uint32_t p = 31u - __builtin_clz(mant8);
+      // f32 exp = p - 10 + 127 = p + 117; f32 mant strips the implicit leading 1
+      f32 = (sign << 31u) | ((p + 117u) << 23u) | ((mant8 ^ (1u << p)) << (23u - p));
+    }
+  } else {
+    // Normal: value = (-1)^sign * 2^(exp8-8) * (1 + mant8/8)
+    // f32 exp = exp8 - 8 + 127 = exp8 + 119
+    f32 = (sign << 31u) | ((exp8 + 119u) << 23u) | (mant8 << 20u);
+  }
+  float result;
+  __builtin_memcpy(&result, &f32, sizeof(float));
+  return result;
+}
+// E5M2 FNUZ to float32 software conversion for gfx950.
+// Format: 1 sign | 5 exp (bias=16) | 2 mantissa, NaN=0x80, no -0, no inf.
+FLASHINFER_INLINE float __flashinfer_fp8_e5m2_fnuz_to_float(uint8_t x) {
+  if (x == 0x80u) {
+    float nan;
+    uint32_t nan_bits = 0x7FC00000u;
+    __builtin_memcpy(&nan, &nan_bits, sizeof(float));
+    return nan;
+  }
+  uint32_t sign = (uint32_t)(x >> 7) & 1u;
+  uint32_t exp8 = (uint32_t)(x >> 2) & 0x1Fu;
+  uint32_t mant8 = (uint32_t)(x) & 0x3u;
+  uint32_t f32;
+  if (exp8 == 0u) {
+    if (mant8 == 0u) {
+      f32 = sign << 31u;  // +/-0
+    } else {
+      // Denormal: value = (-1)^sign * mant8 * 2^(-17)
+      uint32_t p = 31u - __builtin_clz(mant8);
+      // f32 exp = p - 17 + 127 = p + 110
+      f32 = (sign << 31u) | ((p + 110u) << 23u) | ((mant8 ^ (1u << p)) << (23u - p));
+    }
+  } else {
+    // Normal: value = (-1)^sign * 2^(exp8-16) * (1 + mant8/4)
+    // f32 exp = exp8 - 16 + 127 = exp8 + 111
+    f32 = (sign << 31u) | ((exp8 + 111u) << 23u) | (mant8 << 21u);
+  }
+  float result;
+  __builtin_memcpy(&result, &f32, sizeof(float));
+  return result;
+}
+#endif  // HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+
+template <>
+struct vec_cast<float, __hip_fp8_e4m3_fnuz> {
+  template <size_t vec_size>
+  FLASHINFER_INLINE static void cast(float* dst, const __hip_fp8_e4m3_fnuz* src) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+#if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+      // gfx950: operator float() is __FP8_HOST__ only; use software conversion.
+      dst[i] = __flashinfer_fp8_e4m3_fnuz_to_float(src[i].__x);
+#else
+      // Other arches: HIP_FP8_TYPE_FNUZ=1, operator float() is __device__ accessible.
+      dst[i] = (float)src[i];
+#endif
+    }
+  }
+};
+
+template <>
+struct vec_cast<float, __hip_fp8_e5m2_fnuz> {
+  template <size_t vec_size>
+  FLASHINFER_INLINE static void cast(float* dst, const __hip_fp8_e5m2_fnuz* src) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+#if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+      dst[i] = __flashinfer_fp8_e5m2_fnuz_to_float(src[i].__x);
+#else
+      dst[i] = (float)src[i];
+#endif
+    }
+  }
+};
+
 template <typename T>
 constexpr FLASHINFER_INLINE int get_exponent_bits() {
   if constexpr (std::is_same_v<T, __hip_fp8_e4m3_fnuz>) {
@@ -306,7 +408,9 @@ struct vec_cast<__hip_fp8_e4m3_fnuz, half> {
   FLASHINFER_INLINE static void cast(__hip_fp8_e4m3_fnuz* dst, const half* src) {
 #ifdef FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
     if constexpr (vec_size == 1) {
-      dst[0] = __hip_fp8_e4m3_fnuz(src[0]);
+      float x = __half2float(src[0]);
+      // dst[0] = convert_f32_to_e4m3(x);
+      *(uint8_t*)&dst[0] = convert_f32_to_e4m3(x);
     } else {
 #pragma unroll
       for (size_t i = 0; i < vec_size / 2; ++i) {
@@ -326,6 +430,35 @@ struct vec_cast<__hip_fp8_e4m3_fnuz, half> {
 #endif  // FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
   }
 };
+
+__device__ uint8_t convert_f32_to_e5m2(float val) {
+  // Define the range of e5m2
+  // Minimum representable value for e5m2
+  const float min_e5m2 = -8.0f;
+  // Maximum representable value for e5m2
+  const float max_e5m2 = 7.75f;
+
+  // Saturate the val
+  val = fminf(fmaxf(val, min_e5m2), max_e5m2);
+
+  // Decompose into mantissa and exponent
+  int exp;
+  float mantissa = frexpf(val, &exp);
+
+  // Encode sign bit
+  uint8_t sign = (mantissa < 0) ? 0x10 : 0x00;  // Sign in bit 4
+  mantissa = fabsf(mantissa);
+
+  // Normalize mantissa and encode exponent
+  mantissa *= 4.0f;                                  // Scale for 2-bit mantissa
+  uint8_t exponent = static_cast<uint8_t>(exp + 7);  // Apply bias for e5m2
+
+  // Apply round-to-nearest-even
+  uint8_t quant_mantissa = static_cast<uint8_t>(roundf(mantissa)) & 0x03;
+
+  // Combine into 5 bits: [sign][exponent][mantissa]
+  return sign | (exponent << 2) | quant_mantissa;
+}
 
 __device__ uint16_t convert_f16x2_to_e5m2x2(uint32_t x) {
   // Unpack the two 16-bit half-precision floats from the input
@@ -348,33 +481,9 @@ __device__ uint16_t convert_f16x2_to_e5m2x2(uint32_t x) {
   // Maximum representable value for e5m2
   const float max_e5m2 = 7.75f;
 
-  // Helper lambda for conversion
-  auto f32_to_e5m2 = [min_e5m2, max_e5m2](float val) -> uint8_t {
-    // Saturate the val
-    val = fminf(fmaxf(val, min_e5m2), max_e5m2);
-
-    // Decompose into mantissa and exponent
-    int exp;
-    float mantissa = frexpf(val, &exp);
-
-    // Encode sign bit
-    uint8_t sign = (mantissa < 0) ? 0x10 : 0x00;  // Sign in bit 4
-    mantissa = fabsf(mantissa);
-
-    // Normalize mantissa and encode exponent
-    mantissa *= 4.0f;                                  // Scale for 2-bit mantissa
-    uint8_t exponent = static_cast<uint8_t>(exp + 7);  // Apply bias for e5m2
-
-    // Apply round-to-nearest-even
-    uint8_t quant_mantissa = static_cast<uint8_t>(roundf(mantissa)) & 0x03;
-
-    // Combine into 5 bits: [sign][exponent][mantissa]
-    return sign | (exponent << 2) | quant_mantissa;
-  };
-
   // Convert the two __half values to e5m2
-  uint8_t e5m2_1 = f32_to_e5m2(__half2float(h1));
-  uint8_t e5m2_2 = f32_to_e5m2(__half2float(h2));
+  uint8_t e5m2_1 = convert_f32_to_e5m2(__half2float(h1));
+  uint8_t e5m2_2 = convert_f32_to_e5m2(__half2float(h2));
 
   // Pack the two e5m2 values into a single 16-bit output
   return (e5m2_2 << 8) | e5m2_1;
@@ -387,7 +496,9 @@ struct vec_cast<__hip_fp8_e5m2_fnuz, half> {
   FLASHINFER_INLINE static void cast(__hip_fp8_e5m2_fnuz* dst, const half* src) {
 #ifdef FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
     if constexpr (vec_size == 1) {
-      dst[0] = __hip_fp8_e5m2_fnuz(src[0]);
+      float x = __half2float(src[0]);
+      // dst[0] = __hip_fp8_e5m2_fnuz(src[0]);
+      *(uint8_t*)&dst[0] = convert_f32_to_e5m2(x);
     } else {
 #pragma unroll
       for (size_t i = 0; i < vec_size / 2; ++i) {
