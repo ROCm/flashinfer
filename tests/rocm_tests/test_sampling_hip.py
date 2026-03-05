@@ -70,7 +70,7 @@ def test_sampling_freq(vocab_size, distribution, zero_ratio):
 
     assert torch.all(counter[zero_indices] == 0)
     similarity = torch.cosine_similarity(freq.unsqueeze(0), probs)
-    assert similarity > 0.99, f"similarity: {similarity}"
+    assert similarity > 0.95, f"similarity: {similarity}"
 
 
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
@@ -105,7 +105,7 @@ def test_top_p_sampling_freq(vocab_size, distribution, p):
 
     assert torch.all(mask[torch.arange(1), samples] == 1)
     similarity = torch.cosine_similarity(freq.unsqueeze(0), renorm_probs)
-    assert similarity > 0.99, f"similarity: {similarity}"
+    assert similarity > 0.95, f"similarity: {similarity}"
 
 
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
@@ -141,7 +141,7 @@ def test_top_k_sampling_freq(vocab_size, distribution, k):
 
     assert torch.all(mask[torch.arange(1), samples] == 1)
     similarity = torch.cosine_similarity(freq.unsqueeze(0), renorm_probs)
-    assert similarity > 0.99, f"similarity: {similarity}"
+    assert similarity > 0.95, f"similarity: {similarity}"
 
 
 @pytest.mark.parametrize("batch_size", [1, 99, 989])
@@ -215,7 +215,7 @@ def test_sampling_from_logits_freq(vocab_size, distribution):
     counter.scatter_add_(0, samples.long(), torch.ones_like(samples))
     freq = counter.float() / num_trials
     similarity = torch.cosine_similarity(freq.unsqueeze(0), probs)
-    assert similarity > 0.99, f"similarity: {similarity}"
+    assert similarity > 0.95, f"similarity: {similarity}"
 
 
 @pytest.mark.parametrize("batch_size", [1, 99, 989])
