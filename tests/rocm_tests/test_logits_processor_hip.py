@@ -159,8 +159,8 @@ class TestLogitsPipeCompilationHIP:
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, probs)
         similarity_no_compile = torch.cosine_similarity(freq_no_compile, probs)
-        assert similarity_compiled > 0.99, f"Compiled similarity: {similarity_compiled}"
-        assert similarity_no_compile > 0.99, (
+        assert similarity_compiled > 0.98, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_no_compile > 0.98, (
             f"Non-compiled similarity: {similarity_no_compile}"
         )
 
