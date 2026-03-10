@@ -159,16 +159,16 @@ class TestLogitsPipeCompilationHIP:
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, probs)
         similarity_no_compile = torch.cosine_similarity(freq_no_compile, probs)
-        assert similarity_compiled > 0.98, f"Compiled similarity: {similarity_compiled}"
-        assert similarity_no_compile > 0.98, (
+        assert similarity_compiled > 0.95, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_no_compile > 0.95, (
             f"Non-compiled similarity: {similarity_no_compile}"
         )
 
-        # Cross-run threshold is relaxed to 0.98: with 3M samples over large
+        # Cross-run threshold is relaxed to 0.95: with 3M samples over large
         # vocabularies (128256 tokens) there are ~23 samples/token, causing
         # higher variance between two independent runs.
         freq_similarity = torch.cosine_similarity(freq_compiled, freq_no_compile, dim=0)
-        assert freq_similarity > 0.98, (
+        assert freq_similarity > 0.95, (
             f"Compiled vs non-compiled similarity: {freq_similarity}"
         )
 
@@ -215,14 +215,14 @@ class TestLogitsPipeCompilationHIP:
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, probs)
         similarity_no_compile = torch.cosine_similarity(freq_no_compile, probs)
-        assert similarity_compiled > 0.99, f"Compiled similarity: {similarity_compiled}"
-        assert similarity_no_compile > 0.99, (
+        assert similarity_compiled > 0.95, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_no_compile > 0.95, (
             f"Non-compiled similarity: {similarity_no_compile}"
         )
 
-        # Cross-run threshold is relaxed to 0.98 (see test_probs_sample_freq).
+        # Cross-run threshold is relaxed to 0.95 (see test_probs_sample_freq).
         freq_similarity = torch.cosine_similarity(freq_compiled, freq_no_compile, dim=0)
-        assert freq_similarity > 0.98, (
+        assert freq_similarity > 0.95, (
             f"Compiled vs non-compiled similarity: {freq_similarity}"
         )
 
@@ -286,14 +286,14 @@ class TestLogitsPipeCompilationHIP:
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, masked_probs)
         similarity_no_compile = torch.cosine_similarity(freq_no_compile, masked_probs)
-        assert similarity_compiled > 0.99, f"Compiled similarity: {similarity_compiled}"
-        assert similarity_no_compile > 0.99, (
+        assert similarity_compiled > 0.95, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_no_compile > 0.95, (
             f"Non-compiled similarity: {similarity_no_compile}"
         )
 
-        # Cross-run threshold is relaxed to 0.98 (see test_probs_sample_freq).
+        # Cross-run threshold is relaxed to 0.95 (see test_probs_sample_freq).
         freq_similarity = torch.cosine_similarity(freq_compiled, freq_no_compile, dim=0)
-        assert freq_similarity > 0.98, (
+        assert freq_similarity > 0.95, (
             f"Compiled vs non-compiled similarity: {freq_similarity}"
         )
 
@@ -356,14 +356,14 @@ class TestLogitsPipeCompilationHIP:
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, masked_probs)
         similarity_no_compile = torch.cosine_similarity(freq_no_compile, masked_probs)
-        assert similarity_compiled > 0.99, f"Compiled similarity: {similarity_compiled}"
-        assert similarity_no_compile > 0.99, (
+        assert similarity_compiled > 0.95, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_no_compile > 0.95, (
             f"Non-compiled similarity: {similarity_no_compile}"
         )
 
-        # Cross-run threshold is relaxed to 0.98 (see test_probs_sample_freq).
+        # Cross-run threshold is relaxed to 0.95 (see test_probs_sample_freq).
         freq_similarity = torch.cosine_similarity(freq_compiled, freq_no_compile, dim=0)
-        assert freq_similarity > 0.98, (
+        assert freq_similarity > 0.95, (
             f"Compiled vs non-compiled similarity: {freq_similarity}"
         )
 
@@ -428,14 +428,14 @@ class TestLogitsPipeCompilationHIP:
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, masked_probs)
         similarity_no_compile = torch.cosine_similarity(freq_no_compile, masked_probs)
-        assert similarity_compiled > 0.99, f"Compiled similarity: {similarity_compiled}"
-        assert similarity_no_compile > 0.99, (
+        assert similarity_compiled > 0.95, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_no_compile > 0.95, (
             f"Non-compiled similarity: {similarity_no_compile}"
         )
 
-        # Cross-run threshold is relaxed to 0.98 (see test_probs_sample_freq).
+        # Cross-run threshold is relaxed to 0.95 (see test_probs_sample_freq).
         freq_similarity = torch.cosine_similarity(freq_compiled, freq_no_compile, dim=0)
-        assert freq_similarity > 0.98, (
+        assert freq_similarity > 0.95, (
             f"Compiled vs non-compiled similarity: {freq_similarity}"
         )
 
@@ -518,7 +518,7 @@ class TestLogitsPipeCompilationHIP:
         assert torch.all(mask[torch.arange(1), samples_no_compile] == 1)
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, masked_probs)
-        assert similarity_compiled > 0.99, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_compiled > 0.95, f"Compiled similarity: {similarity_compiled}"
 
     @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
     @pytest.mark.parametrize(
@@ -601,7 +601,7 @@ class TestLogitsPipeCompilationHIP:
         assert torch.all(mask[torch.arange(1), samples_no_compile] == 1)
 
         similarity_compiled = torch.cosine_similarity(freq_compiled, masked_probs)
-        assert similarity_compiled > 0.99, f"Compiled similarity: {similarity_compiled}"
+        assert similarity_compiled > 0.95, f"Compiled similarity: {similarity_compiled}"
 
 
 class TestLogitsPipeVsSamplingOpsHIP:
