@@ -205,6 +205,41 @@
     }                                                                      \
   }
 
+#define DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, ...)           \
+  switch (rope_dim) {                                        \
+    case 16: {                                               \
+      constexpr uint32_t ROPE_DIM = 16;                      \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 32: {                                               \
+      constexpr uint32_t ROPE_DIM = 32;                      \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 64: {                                               \
+      constexpr uint32_t ROPE_DIM = 64;                      \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 128: {                                              \
+      constexpr uint32_t ROPE_DIM = 128;                     \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    case 256: {                                              \
+      constexpr uint32_t ROPE_DIM = 256;                     \
+      __VA_ARGS__                                            \
+      break;                                                 \
+    }                                                        \
+    default: {                                               \
+      std::ostringstream err_msg;                            \
+      err_msg << "Unsupported ROPE_DIM: " << rope_dim;       \
+      err_msg << ". Supported values: 16, 32, 64, 128, 256"; \
+      FLASHINFER_ERROR(err_msg.str());                       \
+    }                                                        \
+  }
+
 #define DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, NUM_STAGES_SMEM, ...) \
   if (compute_capacity.first >= 8) {                                                        \
     constexpr uint32_t NUM_STAGES_SMEM = 2;                                                 \

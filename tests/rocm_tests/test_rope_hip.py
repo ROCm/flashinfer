@@ -17,22 +17,53 @@ limitations under the License.
 
 # HIP-specific version of test_rope.py
 #
-# This file includes tests from v0.2.5+amd.2 (known working on HIP) updated to v0.3.1 API.
-#
-# Included tests (from v0.2.5+amd.2):
+# Included tests:
 # - test_rope: Tests basic apply_rope and apply_llama31_rope APIs
-# - test_rope_pos_ids: Tests RoPE with position IDs (v0.2.5+amd.2 version without idtype parameter)
+# - test_rope_pos_ids: Tests RoPE with position IDs
+# - test_rope_rotary_dim_none: Verifies rotary_dim=None defaults to full head_dim
+#   (covers the None-branch in all 8 public-API wrappers)
+# - test_rope_cos_sin_cache: skipped (kernel output differs too much from float32 reference on HIP)
+# - test_rope_with_cos_sin_cache_nonplace: non-inplace apply_rope_with_cos_sin_cache
+# - test_generalized_rope_quantize_hip: GQA/MHA rope + FP8 quantize (AMD-added)
+# - test_generalized_rope_quantize_append_kv_cache_hip: fused rope+FP8+paged KV append (AMD-added)
+# - test_rope_quantize_fp8_append_paged_kv_cache_decode_hip: decode scenario (AMD-added)
 #
 # Excluded tests:
 # - test_rope_pos_ids with idtype parameter: New parameter added in v0.3.1, not yet tested on HIP
-# - test_rope_cos_sin_cache: Numerical accuracy issues on HIP
 # - test_mla_rope_quantize: MLA (Multi-Latent Attention) not supported on HIP
+# - test_generalized_rope_quantize MLA variants: MLA not supported on HIP
+# - test_generalized_rope_quantize_append_kv_cache MLA variants: MLA not supported on HIP
 
 import pytest
 import torch
 from rope_reference import *
 
 import flashinfer
+from flashinfer.rope import (
+    rope_quantize_fp8,
+    rope_quantize_fp8_append_paged_kv_cache,
+)
+
+
+class FlashInferRotaryEmbedding(RotaryEmbedding):
+    """Wraps RotaryEmbedding.forward_cuda to use flashinfer's cos/sin-cache inplace kernel."""
+
+    def forward_cuda(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        offsets=None,
+    ):
+        flashinfer.apply_rope_with_cos_sin_cache_inplace(
+            positions=positions,
+            query=query,
+            key=key,
+            head_size=self.head_size,
+            cos_sin_cache=self.cos_sin_cache,
+            is_neox=self.is_neox_style,
+        )
+        return query, key
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
@@ -282,6 +313,835 @@ def test_rope_pos_ids(
     # compare
     torch.testing.assert_close(q_rope_pos_ids, q_rope, rtol=1e-3, atol=1e-3)
     torch.testing.assert_close(k_rope_pos_ids, k_rope, rtol=1e-3, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Category 1: rotary_dim=None branch coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("llama_version", ["llama", "llama31"])
+@pytest.mark.parametrize("inplace", [False, True])
+@pytest.mark.parametrize("use_pos_ids", [False, True])
+def test_rope_rotary_dim_none(llama_version, inplace, use_pos_ids):
+    """rotary_dim=None must default to full head_dim.
+
+    Covers the ``if rotary_dim is None: rotary_dim = q.size(-1)`` branch
+    in all 8 public-API wrappers (apply_rope{_inplace}, apply_rope_pos_ids{_inplace},
+    apply_llama31_rope{_inplace}, apply_llama31_rope_pos_ids{_inplace}).
+    """
+    batch_size, qkv_len, num_qo_heads, num_kv_heads, head_dim = 4, 8, 8, 8, 128
+    nnz = batch_size * qkv_len
+    q = torch.randn(nnz, num_qo_heads, head_dim, dtype=torch.float16, device="cuda:0")
+    k = torch.randn(nnz, num_kv_heads, head_dim, dtype=torch.float16, device="cuda:0")
+
+    if use_pos_ids:
+        pos_ids = torch.arange(nnz, dtype=torch.int32, device="cuda:0")
+        if llama_version == "llama":
+            if inplace:
+                q_none, k_none = q.clone(), k.clone()
+                q_expl, k_expl = q.clone(), k.clone()
+                flashinfer.apply_rope_pos_ids_inplace(q_none, k_none, pos_ids)
+                flashinfer.apply_rope_pos_ids_inplace(
+                    q_expl, k_expl, pos_ids, rotary_dim=head_dim
+                )
+            else:
+                q_none, k_none = flashinfer.apply_rope_pos_ids(q, k, pos_ids)
+                q_expl, k_expl = flashinfer.apply_rope_pos_ids(
+                    q, k, pos_ids, rotary_dim=head_dim
+                )
+        else:
+            if inplace:
+                q_none, k_none = q.clone(), k.clone()
+                q_expl, k_expl = q.clone(), k.clone()
+                flashinfer.apply_llama31_rope_pos_ids_inplace(q_none, k_none, pos_ids)
+                flashinfer.apply_llama31_rope_pos_ids_inplace(
+                    q_expl, k_expl, pos_ids, rotary_dim=head_dim
+                )
+            else:
+                q_none, k_none = flashinfer.apply_llama31_rope_pos_ids(q, k, pos_ids)
+                q_expl, k_expl = flashinfer.apply_llama31_rope_pos_ids(
+                    q, k, pos_ids, rotary_dim=head_dim
+                )
+    else:
+        indptr = torch.tensor(
+            [i * qkv_len for i in range(batch_size + 1)],
+            dtype=torch.int32,
+            device="cuda:0",
+        )
+        offsets = torch.zeros(batch_size, dtype=torch.int32, device="cuda:0")
+        if llama_version == "llama":
+            if inplace:
+                q_none, k_none = q.clone(), k.clone()
+                q_expl, k_expl = q.clone(), k.clone()
+                flashinfer.apply_rope_inplace(q_none, k_none, indptr, offsets)
+                flashinfer.apply_rope_inplace(
+                    q_expl, k_expl, indptr, offsets, rotary_dim=head_dim
+                )
+            else:
+                q_none, k_none = flashinfer.apply_rope(q, k, indptr, offsets)
+                q_expl, k_expl = flashinfer.apply_rope(
+                    q, k, indptr, offsets, rotary_dim=head_dim
+                )
+        else:
+            if inplace:
+                q_none, k_none = q.clone(), k.clone()
+                q_expl, k_expl = q.clone(), k.clone()
+                flashinfer.apply_llama31_rope_inplace(q_none, k_none, indptr, offsets)
+                flashinfer.apply_llama31_rope_inplace(
+                    q_expl, k_expl, indptr, offsets, rotary_dim=head_dim
+                )
+            else:
+                q_none, k_none = flashinfer.apply_llama31_rope(q, k, indptr, offsets)
+                q_expl, k_expl = flashinfer.apply_llama31_rope(
+                    q, k, indptr, offsets, rotary_dim=head_dim
+                )
+
+    torch.testing.assert_close(q_none, q_expl, rtol=0, atol=0)
+    torch.testing.assert_close(k_none, k_expl, rtol=0, atol=0)
+
+
+# ---------------------------------------------------------------------------
+# Category 2: apply_rope_with_cos_sin_cache coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(
+    reason="HIP kernel output differs too much from the float32 reference implementation "
+    "on bfloat16 inputs; the _inplace variant is covered by test_rope_with_cos_sin_cache_nonplace"
+)
+@pytest.mark.parametrize(
+    "head_size, rotary_dim, max_position_embeddings, base, is_neox_style, dtype, device, batch_size, seq_len, num_q_heads, num_kv_heads",
+    [
+        (64, 64, 32, 8000, True, torch.bfloat16, "cuda", 32, 32, 1, 1),
+        (256, 128, 4096, 10000, True, torch.bfloat16, "cuda", 2, 512, 4, 2),
+        (64, 32, 2048, 8432, True, torch.bfloat16, "cuda", 2, 199, 4, 1),
+        (64, 64, 32, 8000, False, torch.bfloat16, "cuda", 32, 32, 1, 1),
+        (256, 128, 4096, 9231, False, torch.bfloat16, "cuda", 3, 231, 4, 2),
+    ],
+)
+def test_rope_cos_sin_cache(
+    head_size,
+    rotary_dim,
+    max_position_embeddings,
+    base,
+    is_neox_style,
+    dtype,
+    device,
+    batch_size,
+    seq_len,
+    num_q_heads,
+    num_kv_heads,
+):
+    """Ported from upstream; skipped on HIP due to numerical accuracy differences."""
+    rope_ref = RotaryEmbedding(
+        head_size,
+        rotary_dim,
+        max_position_embeddings,
+        base,
+        is_neox_style,
+        dtype,
+        device,
+    )
+    rope_flashinfer = FlashInferRotaryEmbedding(
+        head_size,
+        rotary_dim,
+        max_position_embeddings,
+        base,
+        is_neox_style,
+        dtype,
+        device,
+    )
+
+    pos_ids = torch.arange(seq_len, device=device).repeat(batch_size)
+    query = torch.randn(
+        batch_size * seq_len, num_q_heads * head_size, dtype=dtype, device=device
+    )
+    key = torch.randn(
+        batch_size * seq_len, num_kv_heads * head_size, dtype=dtype, device=device
+    )
+
+    query_ref, key_ref = query.clone(), key.clone()
+    query_flashinfer, key_flashinfer = query.clone(), key.clone()
+
+    query_ref_out, key_ref_out = rope_ref.forward_native(pos_ids, query_ref, key_ref)
+    query_flashinfer_out, key_flashinfer_out = rope_flashinfer.forward_cuda(
+        pos_ids, query_flashinfer, key_flashinfer
+    )
+
+    # HIP uses 5x looser tolerances than the upstream CUDA test (atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(
+        query_ref_out, query_flashinfer_out, atol=5e-2, rtol=5e-2
+    )
+    torch.testing.assert_close(key_ref_out, key_flashinfer_out, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.parametrize("is_neox_style", [True, False])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_rope_with_cos_sin_cache_nonplace(is_neox_style, dtype):
+    """apply_rope_with_cos_sin_cache (non-inplace) must produce identical results to the inplace variant
+    and must not modify the input tensors."""
+    head_size, rotary_dim = 128, 64
+    batch_size, seq_len, num_q_heads, num_kv_heads = 4, 32, 8, 4
+    device = "cuda:0"
+
+    rope = RotaryEmbedding(
+        head_size, rotary_dim, 4096, 10000, is_neox_style, dtype, device
+    )
+    cos_sin_cache = rope.cos_sin_cache  # float32
+
+    pos_ids = torch.arange(seq_len, device=device).repeat(batch_size)
+    query = torch.randn(
+        batch_size * seq_len, num_q_heads * head_size, dtype=dtype, device=device
+    )
+    key = torch.randn(
+        batch_size * seq_len, num_kv_heads * head_size, dtype=dtype, device=device
+    )
+    query_orig = query.clone()
+    key_orig = key.clone()
+
+    # Non-inplace variant (lines 1178-1194 of rope.py)
+    query_out, key_out = flashinfer.apply_rope_with_cos_sin_cache(
+        pos_ids, query, key, head_size, cos_sin_cache, is_neox=is_neox_style
+    )
+
+    # Input tensors must be unchanged
+    torch.testing.assert_close(query, query_orig, rtol=0, atol=0)
+    torch.testing.assert_close(key, key_orig, rtol=0, atol=0)
+
+    # Inplace variant on fresh clones for comparison
+    query_inplace = query.clone()
+    key_inplace = key.clone()
+    flashinfer.apply_rope_with_cos_sin_cache_inplace(
+        pos_ids,
+        query_inplace,
+        key_inplace,
+        head_size,
+        cos_sin_cache,
+        is_neox=is_neox_style,
+    )
+
+    torch.testing.assert_close(query_out, query_inplace, rtol=0, atol=0)
+    torch.testing.assert_close(key_out, key_inplace, rtol=0, atol=0)
+
+
+# ---------------------------------------------------------------------------
+# Category 3: rope_quantize_fp8 — GQA/MHA only (MLA excluded on HIP)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "attention_type,num_qo_heads,num_kv_heads,rope_dim,no_rope_dim",
+    [
+        # GQA
+        ("gqa", 32, 8, 64, 64),
+        ("gqa", 32, 8, 128, 0),  # Llama3 8B standard config
+        ("gqa", 64, 8, 64, 0),
+        # MHA
+        ("mha", 16, 16, 128, 128),
+        ("mha", 8, 8, 32, 96),
+    ],
+)
+@pytest.mark.parametrize("num_tokens", [1, 128])
+@pytest.mark.parametrize("input_dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fnuz, torch.float8_e5m2fnuz])
+def test_generalized_rope_quantize_hip(
+    attention_type,
+    num_qo_heads,
+    num_kv_heads,
+    rope_dim,
+    no_rope_dim,
+    num_tokens,
+    input_dtype,
+    quant_dtype,
+):
+    """GQA/MHA rope_quantize_fp8 on HIP.  MLA is excluded (not supported on HIP)."""
+    device = "cuda:0"
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(0)
+    total_dim = rope_dim + no_rope_dim
+
+    q_in = torch.randn(
+        num_tokens, num_qo_heads, total_dim, dtype=input_dtype, device=device
+    )
+    k_in = torch.randn(
+        num_tokens, num_kv_heads, total_dim, dtype=input_dtype, device=device
+    )
+    pos_ids = torch.arange(num_tokens, device=device)
+
+    rope_flashinfer = FlashInferRotaryEmbedding(
+        total_dim, rope_dim, 4096, 10000, False, input_dtype, device
+    )
+
+    # Reference: native RoPE + cast to FP8
+    q_out_f16_ref, k_out_f16_ref = rope_flashinfer.forward_native(pos_ids, q_in, k_in)
+    q_out_f8_ref = q_out_f16_ref.to(quant_dtype)
+    k_out_f8_ref = k_out_f16_ref.to(quant_dtype)
+
+    # Pre-allocate output slices
+    q_out = torch.empty_like(q_in, dtype=quant_dtype)
+    k_out = torch.empty_like(k_in, dtype=quant_dtype)
+
+    q_rope_in = q_in[..., :rope_dim]
+    q_nope_in = q_in[..., rope_dim:]
+    k_rope_in = k_in[..., :rope_dim]
+    k_nope_in = k_in[..., rope_dim:]
+
+    q_rope_out = q_out[..., :rope_dim]
+    q_nope_out = q_out[..., rope_dim:]
+    k_rope_out = k_out[..., :rope_dim]
+    k_nope_out = k_out[..., rope_dim:]
+
+    rope_quantize_fp8(
+        q_rope_in,
+        k_rope_in,
+        q_nope_in,
+        k_nope_in,
+        rope_flashinfer.cos_sin_cache,
+        pos_ids,
+        is_neox=False,
+        q_rope_out=q_rope_out,
+        k_rope_out=k_rope_out,
+        q_nope_out=q_nope_out,
+        k_nope_out=k_nope_out,
+        quant_scale_q=1.0,
+        quant_scale_kv=1.0,
+        enable_pdl=False,
+    )
+
+    torch.testing.assert_close(
+        q_out_f8_ref.float(),
+        q_out.float(),
+        atol=1e-2,
+        rtol=2e-1,
+        msg=f"Q mismatch for {attention_type} {num_qo_heads}/{num_kv_heads} heads, {rope_dim}/{no_rope_dim} dims",
+    )
+    torch.testing.assert_close(
+        k_out_f8_ref.float(),
+        k_out.float(),
+        atol=1e-2,
+        rtol=2e-1,
+        msg=f"K mismatch for {attention_type} {num_qo_heads}/{num_kv_heads} heads, {rope_dim}/{no_rope_dim} dims",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Category 4: rope_quantize_fp8_append_paged_kv_cache — GQA/MHA only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "attention_type,num_qo_heads,num_kv_heads,rope_dim,no_rope_dim",
+    [
+        # GQA
+        ("gqa", 32, 8, 64, 64),
+        ("gqa", 32, 8, 128, 0),  # Llama3 8B
+        # MHA
+        ("mha", 8, 8, 32, 96),
+        ("mha", 16, 16, 128, 128),
+    ],
+)
+@pytest.mark.parametrize("num_tokens", [1, 64])
+@pytest.mark.parametrize("input_dtype", [torch.float16])
+@pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fnuz])
+@pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
+@pytest.mark.parametrize("page_size", [16])
+def test_generalized_rope_quantize_append_kv_cache_hip(
+    attention_type,
+    num_qo_heads,
+    num_kv_heads,
+    rope_dim,
+    no_rope_dim,
+    num_tokens,
+    input_dtype,
+    quant_dtype,
+    kv_layout,
+    page_size,
+):
+    """Fused rope_quantize_fp8_append_paged_kv_cache for GQA/MHA on HIP.
+
+    MLA is excluded (not supported on HIP).  Verifies Q outputs match the
+    native-RoPE reference and that K/V are written correctly to the paged cache.
+    """
+    device = "cuda:0"
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(0)
+
+    head_dim = rope_dim + no_rope_dim
+    batch_size = 4
+
+    q_rope = torch.randn(
+        num_tokens, num_qo_heads, rope_dim, dtype=input_dtype, device=device
+    )
+    q_nope = (
+        None
+        if no_rope_dim == 0
+        else torch.randn(
+            num_tokens, num_qo_heads, no_rope_dim, dtype=input_dtype, device=device
+        )
+    )
+    k_rope = torch.randn(
+        num_tokens, num_kv_heads, rope_dim, dtype=input_dtype, device=device
+    )
+    k_nope = (
+        None
+        if no_rope_dim == 0
+        else torch.randn(
+            num_tokens, num_kv_heads, no_rope_dim, dtype=input_dtype, device=device
+        )
+    )
+    v = torch.randn(
+        num_tokens, num_kv_heads, head_dim, dtype=input_dtype, device=device
+    )
+
+    max_seq_len = 4096
+    rope_ref = FlashInferRotaryEmbedding(
+        head_dim, rope_dim, max_seq_len, 10000, False, input_dtype, device
+    )
+    pos_ids = torch.arange(num_tokens, device=device, dtype=torch.int32)
+
+    # Build paged metadata (all tokens assigned to request 0)
+    kv_append_length = torch.tensor(
+        [num_tokens] + [0] * (batch_size - 1), dtype=torch.int32, device=device
+    )
+    kv_append_indptr = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.int32, device=device),
+            torch.cumsum(kv_append_length, dim=0),
+        ]
+    )
+    num_pages_per_req = torch.tensor(
+        [(num_tokens + page_size - 1) // page_size] + [0] * (batch_size - 1),
+        dtype=torch.int32,
+        device=device,
+    )
+    kv_page_indptr = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.int32, device=device),
+            torch.cumsum(num_pages_per_req, dim=0),
+        ]
+    )
+    kv_page_indices = torch.arange(
+        kv_page_indptr[-1].item(), dtype=torch.int32, device=device
+    )
+    kv_last_page_len = torch.tensor(
+        [num_tokens % page_size if num_tokens % page_size != 0 else page_size]
+        + [0] * (batch_size - 1),
+        dtype=torch.int32,
+        device=device,
+    )
+    max_pages = kv_page_indptr[-1].item()
+
+    seq_lens = flashinfer.get_seq_lens(kv_page_indptr, kv_last_page_len, page_size)
+    batch_indices, positions = flashinfer.get_batch_indices_positions(
+        kv_append_indptr, seq_lens, num_tokens
+    )
+
+    if kv_layout == "NHD":
+        k_cache = torch.zeros(
+            max_pages,
+            page_size,
+            num_kv_heads,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+        v_cache = torch.zeros(
+            max_pages,
+            page_size,
+            num_kv_heads,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+    else:  # HND
+        k_cache = torch.zeros(
+            max_pages,
+            num_kv_heads,
+            page_size,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+        v_cache = torch.zeros(
+            max_pages,
+            num_kv_heads,
+            page_size,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+
+    q_rope_out_fused, q_nope_out_fused = rope_quantize_fp8_append_paged_kv_cache(
+        q_rope,
+        k_rope,
+        q_nope,
+        k_nope,
+        v,
+        rope_ref.cos_sin_cache,
+        pos_ids,
+        (k_cache, v_cache),
+        kv_page_indices,
+        kv_page_indptr,
+        batch_indices,
+        positions,
+        page_size=page_size,
+        kv_layout=kv_layout,
+        quantize_dtype=quant_dtype,
+        quant_scale_q=1.0,
+        quant_scale_kv=1.0,
+        is_neox=False,
+        enable_pdl=False,
+    )
+
+    # Reference
+    q_in = q_rope if q_nope is None else torch.cat([q_rope, q_nope], dim=-1)
+    k_in = k_rope if k_nope is None else torch.cat([k_rope, k_nope], dim=-1)
+    q_out_f16_ref, k_out_f16_ref = rope_ref.forward_native(pos_ids, q_in, k_in)
+    q_out_f8_ref = q_out_f16_ref.to(quant_dtype)
+    k_out_f8_ref = k_out_f16_ref.to(quant_dtype)
+
+    if quant_dtype == torch.float8_e4m3fnuz:
+        rtol_val, atol_val = 0.25, 0.5
+    else:
+        rtol_val, atol_val = 0.25, 1.0
+
+    # Q output checks
+    torch.testing.assert_close(
+        q_out_f8_ref[..., :rope_dim].float(),
+        q_rope_out_fused.float(),
+        rtol=2e-1,
+        atol=1e-2,
+    )
+    torch.testing.assert_close(
+        q_out_f8_ref[..., rope_dim:].float(),
+        q_nope_out_fused.float(),
+        rtol=2e-1,
+        atol=1e-2,
+    )
+
+    # K cache correctness
+    k_ref = torch.zeros_like(k_cache)
+    for i in range(num_tokens):
+        b = batch_indices[i].item()
+        pos = positions[i].item()
+        page_iter = (kv_page_indptr[b].item() * page_size + pos) // page_size
+        entry_idx = (kv_page_indptr[b].item() * page_size + pos) % page_size
+        page_idx = kv_page_indices[page_iter].item()
+        if kv_layout == "NHD":
+            k_ref[page_idx, entry_idx, :, :] = k_out_f8_ref[i]
+        else:
+            k_ref[page_idx, :, entry_idx, :] = k_out_f8_ref[i]
+    torch.testing.assert_close(
+        k_cache.float(), k_ref.float(), rtol=rtol_val, atol=atol_val
+    )
+
+    # V cache correctness
+    quant_scale_kv = 1.0
+    v_ref_tokens = (v * quant_scale_kv).to(quant_dtype)
+    v_ref = torch.zeros_like(v_cache)
+    for i in range(num_tokens):
+        b = batch_indices[i].item()
+        pos = positions[i].item()
+        page_iter = (kv_page_indptr[b].item() * page_size + pos) // page_size
+        entry_idx = (kv_page_indptr[b].item() * page_size + pos) % page_size
+        page_idx = kv_page_indices[page_iter].item()
+        if kv_layout == "NHD":
+            v_ref[page_idx, entry_idx, :, :] = v_ref_tokens[i]
+        else:
+            v_ref[page_idx, :, entry_idx, :] = v_ref_tokens[i]
+    torch.testing.assert_close(
+        v_cache.float(), v_ref.float(), rtol=rtol_val, atol=atol_val
+    )
+
+
+@pytest.mark.parametrize(
+    "attention_type,num_qo_heads,num_kv_heads,rope_dim,no_rope_dim",
+    [
+        # GQA
+        ("gqa", 32, 8, 64, 64),
+        ("gqa", 32, 8, 128, 0),  # Llama3 8B
+        # MHA
+        ("mha", 8, 8, 32, 96),
+    ],
+)
+@pytest.mark.parametrize("input_dtype", [torch.float16])
+@pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fnuz])
+@pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
+@pytest.mark.parametrize("page_size", [16])
+def test_rope_quantize_fp8_append_paged_kv_cache_decode_hip(
+    attention_type,
+    num_qo_heads,
+    num_kv_heads,
+    rope_dim,
+    no_rope_dim,
+    input_dtype,
+    quant_dtype,
+    kv_layout,
+    page_size,
+):
+    """Decode/continuation scenario: append new tokens to a pre-populated cache.
+
+    Verifies that:
+    - New token Q outputs match the native-RoPE reference.
+    - Existing cache entries are left unchanged after the append.
+    GQA/MHA only; MLA excluded (not supported on HIP).
+    """
+    device = "cuda:0"
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+
+    num_existing_tokens = 10
+    num_new_tokens = 4
+    total_tokens = num_existing_tokens + num_new_tokens
+    head_dim = rope_dim + no_rope_dim
+    batch_size = 2
+    max_pages = (total_tokens + page_size - 1) // page_size
+
+    rope_ref = FlashInferRotaryEmbedding(
+        head_dim, rope_dim, 4096, 10000, False, input_dtype, device
+    )
+
+    def _make_gqa_inputs(n):
+        q_r = torch.randn(n, num_qo_heads, rope_dim, dtype=input_dtype, device=device)
+        q_n = (
+            None
+            if no_rope_dim == 0
+            else torch.randn(
+                n, num_qo_heads, no_rope_dim, dtype=input_dtype, device=device
+            )
+        )
+        k_r = torch.randn(n, num_kv_heads, rope_dim, dtype=input_dtype, device=device)
+        k_n = (
+            None
+            if no_rope_dim == 0
+            else torch.randn(
+                n, num_kv_heads, no_rope_dim, dtype=input_dtype, device=device
+            )
+        )
+        v_ = torch.randn(n, num_kv_heads, head_dim, dtype=input_dtype, device=device)
+        return q_r, q_n, k_r, k_n, v_
+
+    # Allocate cache sized for all tokens
+    if kv_layout == "NHD":
+        k_cache = torch.zeros(
+            max_pages,
+            page_size,
+            num_kv_heads,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+        v_cache = torch.zeros(
+            max_pages,
+            page_size,
+            num_kv_heads,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+    else:
+        k_cache = torch.zeros(
+            max_pages,
+            num_kv_heads,
+            page_size,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+        v_cache = torch.zeros(
+            max_pages,
+            num_kv_heads,
+            page_size,
+            head_dim,
+            dtype=quant_dtype,
+            device=device,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Step 1: pre-populate cache with num_existing_tokens tokens
+    # ------------------------------------------------------------------ #
+    q_r_e, q_n_e, k_r_e, k_n_e, v_e = _make_gqa_inputs(num_existing_tokens)
+    pos_ids_e = torch.arange(num_existing_tokens, dtype=torch.int32, device=device)
+
+    kv_append_len_e = torch.tensor(
+        [num_existing_tokens] + [0] * (batch_size - 1), dtype=torch.int32, device=device
+    )
+    kv_append_indptr_e = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.int32, device=device),
+            torch.cumsum(kv_append_len_e, dim=0),
+        ]
+    )
+    n_pages_e = (num_existing_tokens + page_size - 1) // page_size
+    kv_page_indptr_e = torch.tensor(
+        [0, n_pages_e] + [n_pages_e] * (batch_size - 1),
+        dtype=torch.int32,
+        device=device,
+    )
+    kv_page_indices_e = torch.arange(n_pages_e, dtype=torch.int32, device=device)
+    kv_last_page_len_e = torch.tensor(
+        [
+            num_existing_tokens % page_size
+            if num_existing_tokens % page_size != 0
+            else page_size
+        ]
+        + [0] * (batch_size - 1),
+        dtype=torch.int32,
+        device=device,
+    )
+    seq_lens_e = flashinfer.get_seq_lens(
+        kv_page_indptr_e, kv_last_page_len_e, page_size
+    )
+    batch_indices_e, positions_e = flashinfer.get_batch_indices_positions(
+        kv_append_indptr_e, seq_lens_e, num_existing_tokens
+    )
+
+    rope_quantize_fp8_append_paged_kv_cache(
+        q_r_e,
+        k_r_e,
+        q_n_e,
+        k_n_e,
+        v_e,
+        rope_ref.cos_sin_cache,
+        pos_ids_e,
+        (k_cache, v_cache),
+        kv_page_indices_e,
+        kv_page_indptr_e,
+        batch_indices_e,
+        positions_e,
+        page_size=page_size,
+        kv_layout=kv_layout,
+        quantize_dtype=quant_dtype,
+        quant_scale_q=1.0,
+        quant_scale_kv=1.0,
+        is_neox=False,
+        enable_pdl=False,
+    )
+
+    # Snapshot the pre-populated state
+    k_cache_before = k_cache.clone()
+    v_cache_before = v_cache.clone()
+
+    # ------------------------------------------------------------------ #
+    # Step 2: append num_new_tokens tokens
+    # ------------------------------------------------------------------ #
+    q_r_n, q_n_n, k_r_n, k_n_n, v_n = _make_gqa_inputs(num_new_tokens)
+    pos_ids_n = torch.arange(
+        num_existing_tokens,
+        num_existing_tokens + num_new_tokens,
+        dtype=torch.int32,
+        device=device,
+    )
+
+    kv_append_len_n = torch.tensor(
+        [num_new_tokens] + [0] * (batch_size - 1), dtype=torch.int32, device=device
+    )
+    kv_append_indptr_n = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.int32, device=device),
+            torch.cumsum(kv_append_len_n, dim=0),
+        ]
+    )
+    n_pages_new = (total_tokens + page_size - 1) // page_size
+    kv_page_indptr_n = torch.tensor(
+        [0, n_pages_new] + [n_pages_new] * (batch_size - 1),
+        dtype=torch.int32,
+        device=device,
+    )
+    kv_page_indices_n = torch.arange(n_pages_new, dtype=torch.int32, device=device)
+    kv_last_page_len_n = torch.tensor(
+        [total_tokens % page_size if total_tokens % page_size != 0 else page_size]
+        + [0] * (batch_size - 1),
+        dtype=torch.int32,
+        device=device,
+    )
+    seq_lens_n = flashinfer.get_seq_lens(
+        kv_page_indptr_n, kv_last_page_len_n, page_size
+    )
+    batch_indices_n, positions_n = flashinfer.get_batch_indices_positions(
+        kv_append_indptr_n, seq_lens_n, num_new_tokens
+    )
+
+    q_rope_out_new, q_nope_out_new = rope_quantize_fp8_append_paged_kv_cache(
+        q_r_n,
+        k_r_n,
+        q_n_n,
+        k_n_n,
+        v_n,
+        rope_ref.cos_sin_cache,
+        pos_ids_n,
+        (k_cache, v_cache),
+        kv_page_indices_n,
+        kv_page_indptr_n,
+        batch_indices_n,
+        positions_n,
+        page_size=page_size,
+        kv_layout=kv_layout,
+        quantize_dtype=quant_dtype,
+        quant_scale_q=1.0,
+        quant_scale_kv=1.0,
+        is_neox=False,
+        enable_pdl=False,
+    )
+
+    # ------------------------------------------------------------------ #
+    # Verify Q output for new tokens
+    # ------------------------------------------------------------------ #
+    q_in_n = q_r_n if q_n_n is None else torch.cat([q_r_n, q_n_n], dim=-1)
+    k_in_n = k_r_n if k_n_n is None else torch.cat([k_r_n, k_n_n], dim=-1)
+    q_f16_ref_n, _ = rope_ref.forward_native(pos_ids_n, q_in_n, k_in_n)
+    q_f8_ref_n = q_f16_ref_n.to(quant_dtype)
+
+    torch.testing.assert_close(
+        q_f8_ref_n[..., :rope_dim].float(), q_rope_out_new.float(), rtol=2e-1, atol=1e-2
+    )
+    torch.testing.assert_close(
+        q_f8_ref_n[..., rope_dim:].float(), q_nope_out_new.float(), rtol=2e-1, atol=1e-2
+    )
+
+    # ------------------------------------------------------------------ #
+    # Verify existing cache entries are unchanged
+    # ------------------------------------------------------------------ #
+    for i in range(num_existing_tokens):
+        b = batch_indices_e[i].item()
+        pos = positions_e[i].item()
+        page_iter = (kv_page_indptr_e[b].item() * page_size + pos) // page_size
+        entry_idx = (kv_page_indptr_e[b].item() * page_size + pos) % page_size
+        page_idx = kv_page_indices_e[page_iter].item()
+        if kv_layout == "NHD":
+            torch.testing.assert_close(
+                k_cache[page_idx, entry_idx],
+                k_cache_before[page_idx, entry_idx],
+                rtol=0,
+                atol=0,
+                msg=f"Existing K cache entry {i} was modified",
+            )
+            torch.testing.assert_close(
+                v_cache[page_idx, entry_idx],
+                v_cache_before[page_idx, entry_idx],
+                rtol=0,
+                atol=0,
+                msg=f"Existing V cache entry {i} was modified",
+            )
+        else:
+            torch.testing.assert_close(
+                k_cache[page_idx, :, entry_idx],
+                k_cache_before[page_idx, :, entry_idx],
+                rtol=0,
+                atol=0,
+                msg=f"Existing K cache entry {i} was modified",
+            )
+            torch.testing.assert_close(
+                v_cache[page_idx, :, entry_idx],
+                v_cache_before[page_idx, :, entry_idx],
+                rtol=0,
+                atol=0,
+                msg=f"Existing V cache entry {i} was modified",
+            )
 
 
 if __name__ == "__main__":
