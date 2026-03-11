@@ -239,6 +239,14 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
 
   TORCH_CHECK(q_rope_in.scalar_type() == at::kHalf || q_rope_in.scalar_type() == at::kBFloat16,
               "Input dtype must be float16 or bfloat16");
+  TORCH_CHECK(k_rope_in.scalar_type() == q_rope_in.scalar_type(),
+              "k_rope_in dtype must match q_rope_in dtype");
+  TORCH_CHECK(q_nope_in.scalar_type() == q_rope_in.scalar_type(),
+              "q_nope_in dtype must match q_rope_in dtype");
+  TORCH_CHECK(k_nope_in.scalar_type() == q_rope_in.scalar_type(),
+              "k_nope_in dtype must match q_rope_in dtype");
+  TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
+  TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
   TORCH_CHECK(is_float8_tensor(q_rope_out), "Output dtype must be float8");
 
   const uint32_t q_rope_in_stride_n = q_rope_in.stride(0);
@@ -314,6 +322,16 @@ void rope_quantize_append_paged_kv_cache(
 
   TORCH_CHECK(q_rope_in.scalar_type() == at::kHalf || q_rope_in.scalar_type() == at::kBFloat16,
               "Input dtype must be float16 or bfloat16");
+  TORCH_CHECK(k_rope_in.scalar_type() == q_rope_in.scalar_type(),
+              "k_rope_in dtype must match q_rope_in dtype");
+  TORCH_CHECK(q_nope_in.scalar_type() == q_rope_in.scalar_type(),
+              "q_nope_in dtype must match q_rope_in dtype");
+  TORCH_CHECK(k_nope_in.scalar_type() == q_rope_in.scalar_type(),
+              "k_nope_in dtype must match q_rope_in dtype");
+  TORCH_CHECK(v_in.scalar_type() == q_rope_in.scalar_type(),
+              "v_in dtype must match q_rope_in dtype");
+  TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
+  TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
   TORCH_CHECK(is_float8_tensor(q_rope_out), "Output dtype must be float8");
 
   bool has_gqa_caches =
