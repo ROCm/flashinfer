@@ -526,6 +526,54 @@ def test_rope_with_cos_sin_cache_nonplace(is_neox_style, dtype):
 
 
 # ---------------------------------------------------------------------------
+# Helper: float32 RoPE reference for quantisation tests
+# ---------------------------------------------------------------------------
+
+
+def _rope_apply_interleave_f32(
+    q_in: torch.Tensor,
+    k_in: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    pos_ids: torch.Tensor,
+    rope_dim: int,
+):
+    """Compute GPT-J (interleave / is_neox=False) RoPE entirely in float32.
+
+    Unlike RotaryEmbedding.forward_native(), this never rounds through
+    float16/bfloat16 before the caller quantises to FP8.  That matches
+    what the kernel does:
+        cast_load(fp16 → float32) → RoPE in float32 → cast_store(float32 → FP8)
+
+    Args:
+        q_in: (N, num_qo_heads, total_dim) float16/bfloat16
+        k_in: (N, num_kv_heads, total_dim) float16/bfloat16
+        cos_sin_cache: (max_seq_len, rope_dim) float32, first half cos / second sin
+        pos_ids: (N,) position indices
+        rope_dim: number of dimensions to rotate
+
+    Returns:
+        (q_out_f32, k_out_f32) – same shape as inputs, dtype float32
+    """
+    cos_sin = cos_sin_cache.index_select(0, pos_ids.long())  # (N, rope_dim)
+    cos, sin = cos_sin.chunk(2, dim=-1)  # (N, rope_dim//2) each
+    cos = cos.unsqueeze(-2)  # (N, 1, rope_dim//2)
+    sin = sin.unsqueeze(-2)  # (N, 1, rope_dim//2)
+
+    def _rot(x):
+        x_f = x.float()
+        x_r = x_f[..., :rope_dim]
+        x_n = x_f[..., rope_dim:]
+        x1 = x_r[..., ::2]  # even-indexed dims
+        x2 = x_r[..., 1::2]  # odd-indexed dims
+        o1 = x1 * cos - x2 * sin
+        o2 = x2 * cos + x1 * sin
+        x_r_out = torch.stack([o1, o2], dim=-1).flatten(-2)
+        return torch.cat([x_r_out, x_n], dim=-1)
+
+    return _rot(q_in), _rot(k_in)
+
+
+# ---------------------------------------------------------------------------
 # Category 3: rope_quantize_fp8 — GQA/MHA only (MLA excluded on HIP)
 # ---------------------------------------------------------------------------
 
@@ -574,10 +622,16 @@ def test_generalized_rope_quantize_hip(
         total_dim, rope_dim, 4096, 10000, False, input_dtype, device
     )
 
-    # Reference: native RoPE + cast to FP8
-    q_out_f16_ref, k_out_f16_ref = rope_flashinfer.forward_native(pos_ids, q_in, k_in)
-    q_out_f8_ref = q_out_f16_ref.to(quant_dtype)
-    k_out_f8_ref = k_out_f16_ref.to(quant_dtype)
+    # Reference: RoPE in float32, then cast to FP8 directly.
+    # Using _rope_apply_interleave_f32 instead of forward_native() avoids the
+    # intermediate fp16/bf16 rounding that forward_native() introduces before FP8
+    # quantisation.  The kernel does: cast_load(fp16→f32) → RoPE → cast_store(f32→FP8),
+    # so this reference matches that path exactly.
+    q_out_f32_ref, k_out_f32_ref = _rope_apply_interleave_f32(
+        q_in, k_in, rope_flashinfer.cos_sin_cache, pos_ids, rope_dim
+    )
+    q_out_f8_ref = q_out_f32_ref.to(quant_dtype)
+    k_out_f8_ref = k_out_f32_ref.to(quant_dtype)
 
     # Pre-allocate output slices
     q_out = torch.empty_like(q_in, dtype=quant_dtype)
@@ -796,12 +850,14 @@ def test_generalized_rope_quantize_append_kv_cache_hip(
         enable_pdl=False,
     )
 
-    # Reference
+    # Reference: RoPE in float32, then cast directly to FP8 (no fp16 intermediate).
     q_in = q_rope if q_nope is None else torch.cat([q_rope, q_nope], dim=-1)
     k_in = k_rope if k_nope is None else torch.cat([k_rope, k_nope], dim=-1)
-    q_out_f16_ref, k_out_f16_ref = rope_ref.forward_native(pos_ids, q_in, k_in)
-    q_out_f8_ref = q_out_f16_ref.to(quant_dtype)
-    k_out_f8_ref = k_out_f16_ref.to(quant_dtype)
+    q_out_f32_ref, k_out_f32_ref = _rope_apply_interleave_f32(
+        q_in, k_in, rope_ref.cos_sin_cache, pos_ids, rope_dim
+    )
+    q_out_f8_ref = q_out_f32_ref.to(quant_dtype)
+    k_out_f8_ref = k_out_f32_ref.to(quant_dtype)
 
     if quant_dtype == torch.float8_e4m3fnuz:
         rtol_val, atol_val = 0.25, 0.5
@@ -1091,10 +1147,13 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode_hip(
     # ------------------------------------------------------------------ #
     # Verify Q output for new tokens
     # ------------------------------------------------------------------ #
+    # Reference: RoPE in float32, then cast directly to FP8 (no fp16 intermediate).
     q_in_n = q_r_n if q_n_n is None else torch.cat([q_r_n, q_n_n], dim=-1)
     k_in_n = k_r_n if k_n_n is None else torch.cat([k_r_n, k_n_n], dim=-1)
-    q_f16_ref_n, _ = rope_ref.forward_native(pos_ids_n, q_in_n, k_in_n)
-    q_f8_ref_n = q_f16_ref_n.to(quant_dtype)
+    q_f32_ref_n, _ = _rope_apply_interleave_f32(
+        q_in_n, k_in_n, rope_ref.cos_sin_cache, pos_ids_n, rope_dim
+    )
+    q_f8_ref_n = q_f32_ref_n.to(quant_dtype)
 
     torch.testing.assert_close(
         q_f8_ref_n[..., :rope_dim].float(), q_rope_out_new.float(), rtol=2e-1, atol=1e-2

@@ -1401,6 +1401,11 @@ def rope_quantize_fp8(
         else torch.empty_like(k_nope, dtype=quantize_dtype)
     )
 
+    # The ROCm C++ binding uses int32_t for IdType; coerce here so callers
+    # that pass the default int64 torch.arange() tensor still work correctly.
+    if pos_ids.dtype != torch.int32:
+        pos_ids = pos_ids.to(torch.int32)
+
     _rope_quantize(
         q_rope,
         k_rope,
@@ -1626,6 +1631,11 @@ def rope_quantize_fp8_append_paged_kv_cache(
     from .utils import TensorLayout
 
     kv_layout_code = TensorLayout[kv_layout].value
+
+    # The ROCm C++ binding uses int32_t for IdType; coerce here so callers
+    # that pass the default int64 torch.arange() tensor still work correctly.
+    if pos_ids.dtype != torch.int32:
+        pos_ids = pos_ids.to(torch.int32)
 
     # Call custom op
     _rope_quantize_fp8_append_paged_kv_cache(
