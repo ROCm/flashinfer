@@ -180,7 +180,7 @@
 - Update rocm+torch versions in Dev Dockerfile (#118) @Debasis Mandal
 - Update Dockerfile (#116) @rtmadduri
 - Update Dockerfile.rocm_ci (#78) @diptorupd
-- Fix Fockerfile.rocm_ci (#77) @diptorupd
+- Fix Dockerfile.rocm_ci (#77) @diptorupd
 - Removes hardcoded mamba env name from Docker image (#71) @diptorupd
 - Fix/dockerfile rocm.ci (#70) @diptorupd
 - Change base image to rocm/dev-ubuntu (#69) @diptorupd
