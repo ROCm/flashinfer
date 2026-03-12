@@ -53,22 +53,17 @@ from .utils import (
 )
 
 aiter_mha_module = None
+_AITER_NATIVE_PAGE_SIZES: frozenset[int] = frozenset()
 
 if HAS_AITER:
     from .aiter_utils import get_aiter_mha_module
+    from importlib.metadata import version
 
+    if version("amd-aiter") == "0.1.10":
+        _AITER_NATIVE_PAGE_SIZES = frozenset({128, 256, 1024})
+    else:
+        _AITER_NATIVE_PAGE_SIZES = frozenset({16, 1024})
     aiter_mha_module = get_aiter_mha_module()
-
-# Page sizes natively supported by the AITER CK kernel in linear
-# (non-vectorized) paged KV layout.  For any other page size the AITER
-# backend flattens pages into a token-level (page_size=1) buffer first.
-
-from importlib.metadata import version
-
-if version("amd-aiter") == "0.1.10":
-    _AITER_NATIVE_PAGE_SIZES = frozenset({128, 256, 1024})
-else:
-    _AITER_NATIVE_PAGE_SIZES = frozenset({16, 1024})
 
 
 def make_hashable_cache(func):
