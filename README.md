@@ -40,7 +40,7 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 
 **Supported GPU:** gfx942 (CDNA3 architecture), gfx950 (CDNA4 architecture)
 
-**Supported ROCm versions:** 7.0.2, 7.2.0
+**Supported ROCm versions:** 7.0.2, 7.1.1, 7.2
 
 ## Torch Version Support
 
@@ -135,7 +135,7 @@ docker build \
   --build-arg USERNAME=$USER \
   --build-arg USER_UID=$(id -u) \
   --build-arg USER_GID=$(id -g) \
-  -t flashinfer-0.5.3_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 \
+  -t flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 \
   -f .devcontainer/rocm/Dockerfile .
 ```
 
@@ -163,7 +163,7 @@ docker run -it \
   --group-add video --group-add render \
   -v $PWD:/workspace \
   --name flashinfer-dev-container \
-  flashinfer-0.5.3_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
+  flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
 ```
 
 <!-- markdownlint-disable MD033 -->
@@ -233,7 +233,7 @@ pytest -k "test_decode_kernels_hip"
 pytest -v
 
 # To run tests parallely on multiple GPUs
-pytest -n auto # Uses all availabel GPUs
+pytest -n auto # Uses all available GPUs
 pytest -n 2 # Use only two GPUs
 ```
 
@@ -262,7 +262,7 @@ pip install amd-aiter --index-url https://pypi.amd.com/simple/
 
 ### Known Limitations:
 
-The AITER backed only supports `NHD` kv_layout.
+The AITER backend only supports `NHD` kv_layout.
 
 ### Single Prefill Example
 
@@ -302,7 +302,7 @@ def single_prefill_with_kv_cache_aiter_example():
         kv_layout=kv_layout,
         pos_encoding_mode=pos_encoding_mode,
         logits_soft_cap=logits_soft_cap,
-        backend="aiter" # Pass the backend = aiter flag to enable # AITER computation
+        backend="aiter" # Pass the backend = aiter flag to enable AITER computation
     )
     print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
 
@@ -315,7 +315,7 @@ def single_prefill_with_kv_cache_aiter_example():
         kv_layout=kv_layout,
         pos_encoding_mode=pos_encoding_mode,
         logits_soft_cap=logits_soft_cap,
-        backend="aiter" # Pass the backend = aiter flag to enable # AITER computation
+        backend="aiter" # Pass the backend = aiter flag to enable AITER computation
     )
     print(f"  FlashInfer output shape: {o.shape}")
 
