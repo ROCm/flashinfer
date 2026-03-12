@@ -130,7 +130,7 @@
 ## Changed
 
 - Updated changelog @diptorupd
-- Update REAMDE Wheel installation section (#112) @diptorupd
+- Update README Wheel installation section (#112) @diptorupd
 - Change pyproject.toml to generate revised whl name (#113) @rtmadduri
 - Update README with clearer usage guide (#72) @diptorupd
 - Change Swizzle mode from kLinear to k128B for prefill (#103) @Debasis Mandal
