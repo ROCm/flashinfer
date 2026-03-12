@@ -41,7 +41,7 @@
 - Update dev Dockerfile to install AITER (#194) @diptorupd
 - Infra: improve dockerfile.rocm ci (#186) @diptorupd
 - Fix linter issues identified by pre-commit (#184) @diptorupd
-- chore: Update coverage include list (#182)
+- chore: Update coverage include list (#182) @diptorupd
 - Fix the coverage include list workflow (#178) @diptorupd
 
 ---
@@ -161,7 +161,7 @@
 - Fix datatypes for HIP when using customized attention kernels (#111) @Debasis Mandal
 - Fix partition-kv=True case and memory allocation issues in batch prefill (#89) @Debasis Mandal
 - Fixes the single prefill kernel dispatch for HEAD_DIM_QK values gt. 64 (#86) @diptorupd
-- Fix/threadblock sync mdo (#62) @diptorupd
+- Fix/threadblock_sync_mdo (#62) @diptorupd
 - Fix batch prefill example script for ragged kv cache (#73) @Debasis Mandal
 - Fixes to the single prefill dispatch for HIP devices (#64) @diptorupd
 - Skip failing C++ tests and fix mma_debug_utils (#59) @diptorupd
