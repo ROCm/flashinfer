@@ -38,15 +38,15 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 
 ## GPU and ROCm Support
 
-**Supported GPU:** gfx942 (CDNA3 architecture)
+**Supported GPU:** gfx942 (CDNA3 architecture), gfx950 (CDNA4 architecture)
 
-**Supported ROCm versions:** 6.4.1, 7.1.1
+**Supported ROCm versions:** 7.0.2, 7.2.0
 
 ## Torch Version Support
 
-**Torch+ROCm:** 2.7.1, 2.8.0
+**Torch+ROCm:** 2.8.0, 2.9.1
 
-**Note**: Other versions may work but have not been tested. Refer to <https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm-version}/> (replacing `{rocm-version}` with the desired ROCm version, e.g., `6.4.1`) for available versions.
+**Note**: Other versions may work but have not been tested. Refer to <https://pypi.amd.com/rocm-${rocm-version}/simple> (replacing `{rocm-version}` with the desired ROCm version, e.g., `7.0.2`) for available versions.
 
 ## Getting Started
 
@@ -58,8 +58,10 @@ inventories represent the latest available FlashInfer version from the official 
 
 | Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
 | ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
+| rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 | [7.2.0](https://repo.radeon.com/rocm/apt/7.2) | [v0.5.3](https://github.com/ROCm/flashinfer/releases/tag/v0.5.3%2Bamd.1) | [2.9.1](https://github.com/ROCm/pytorch/releases/tag/v2.9.0-rc4) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI355x, MI325X, MI300X |
+| rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1 | [7.0.2](https://repo.radeon.com/rocm/apt/7.0.2/) | [v0.5.3](https://github.com/ROCm/flashinfer/releases/tag/v0.5.3%2Bamd.1) | [2.9.1](https://github.com/ROCm/pytorch/releases/tag/v2.9.0-rc4) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI355x, MI325X, MI300X |
 | rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8 | [7.1.1](https://repo.radeon.com/rocm/apt/7.1.1/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.8.0](https://github.com/ROCm/pytorch/releases/tag/v2.8.0) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI325X, MI300X |
-| rocm/flashinfer:flashinfer-0.2.5_rocm6.4_ubuntu24.04_py3.12_pytorch2.7 | [6.4.1](https://repo.radeon.com/rocm/apt/6.4.1/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.7.1](https://github.com/ROCm/pytorch/releases/tag/v2.7.1) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI300X |
+
 
 **Start a container:**
 
@@ -79,7 +81,7 @@ micromamba activate base
 python -c "import flashinfer; print(flashinfer.__version__)"
 ```
 
-Expected output: `0.2.5+amd.2` (with a possible JIT backend message)
+Expected output: `0.5.3+amd.1` (with a possible JIT backend message)
 
 ### Option 2: Install from a Wheel Package
 
@@ -92,7 +94,7 @@ pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
 Install the needed ROCm-enabled torch package from <https://repo.radeon.com>:
 
 ```bash
-pip install torch==2.8.0 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1.1
+pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2
 ```
 
 **NOTE**: The torch version should be exactly as available on repo.radeon.com otherwise a non-ROCm
@@ -127,13 +129,13 @@ Build the development Docker image with the repository's Dockerfile:
 
 ```bash
 docker build \
-  --build-arg ROCM_VERSION=7.1.1 \
+  --build-arg ROCM_VERSION=7.2 \
   --build-arg PY_VERSION=3.12 \
-  --build-arg TORCH_VERSION=2.8.0 \
+  --build-arg TORCH_VERSION=2.9.1 \
   --build-arg USERNAME=$USER \
   --build-arg USER_UID=$(id -u) \
   --build-arg USER_GID=$(id -g) \
-  -t flashinfer-0.2.5_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8.0 \
+  -t flashinfer-0.5.3_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 \
   -f .devcontainer/rocm/Dockerfile .
 ```
 
@@ -141,9 +143,9 @@ docker build \
 <details>
 <summary>Build argument descriptions</summary>
 
-* `ROCM_VERSION`: ROCm version (default: 7.1.1)
+* `ROCM_VERSION`: ROCm version (default: 7.2)
 * `PY_VERSION`: Python version (default: 3.12)
-* `TORCH_VERSION`: PyTorch version (default: 2.8.0)
+* `TORCH_VERSION`: PyTorch version (default: 2.9.1)
 * `USERNAME`: Username inside container (default: devuser)
 * `USER_UID`: User ID for matching host permissions
 * `USER_GID`: Group ID for matching host permissions
@@ -161,7 +163,7 @@ docker run -it \
   --group-add video --group-add render \
   -v $PWD:/workspace \
   --name flashinfer-dev-container \
-  flashinfer-0.2.5_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8.0
+  flashinfer-0.5.3_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
 ```
 
 <!-- markdownlint-disable MD033 -->
@@ -185,10 +187,12 @@ docker run -it \
 
 ### Building and Installing a Wheel Package
 
+For `CDNA3` builds, replace `<gfx-arch>` with `gfx942` and for `CDNA4`, use `gfx950`.
+
 **Build with AOT (Ahead-of-Time) compiled kernels:**
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 FLASHINFER_AOT_TORCH_EXTS=ON \
+FLASHINFER_HIP_ARCHITECTURES=<gfx-arch> FLASHINFER_AOT_TORCH_EXTS=ON \
   python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
 cd dist && pip install amd_flashinfer-*.whl
 ```
@@ -196,7 +200,7 @@ cd dist && pip install amd_flashinfer-*.whl
 **Build with JIT (Just-in-Time) compilation only:**
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 \
+FLASHINFER_HIP_ARCHITECTURES=<gfx-arch> \
   python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
 cd dist && pip install amd_flashinfer-*.whl
 ```
@@ -204,7 +208,7 @@ cd dist && pip install amd_flashinfer-*.whl
 **Editable install for development:**
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip install --no-build-isolation -ve.
+FLASHINFER_HIP_ARCHITECTURES=<gfx-arch> python -m pip install --no-build-isolation -ve.
 ```
 
 **Note:** The `--no-deps` flag assumes dependencies are pre-installed. Omit it
