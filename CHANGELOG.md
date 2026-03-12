@@ -142,7 +142,7 @@
 - Decode feature chunking logic and shared mem optimization (#25) @rtmadduri
 - Update hyperlinks in the TOC of README (#33) @Debasis Mandal
 - Update build instructions for C++ tests in README.md (#27) @Debasis Mandal
-- Incoporate gpu_iface changes needed for prefill (#14) @diptorupd
+- Incorporate gpu_iface changes needed for prefill (#14) @diptorupd
 - Update CMake infra to run HIP CXX tests using top-level cmake (#10) @diptorupd
 - Updates to permuted_smem.cuh (#8) @diptorupd
 
