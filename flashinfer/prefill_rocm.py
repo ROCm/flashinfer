@@ -53,11 +53,12 @@ from .utils import (
 )
 
 aiter_mha_module = None
-_AITER_NATIVE_PAGE_SIZES = frozenset()
+_AITER_NATIVE_PAGE_SIZES: frozenset[int] = frozenset()
 
 if HAS_AITER:
     from .aiter_utils import get_aiter_mha_module
     from importlib.metadata import version
+
     if version("amd-aiter") == "0.1.10":
         _AITER_NATIVE_PAGE_SIZES = frozenset({128, 256, 1024})
     else:

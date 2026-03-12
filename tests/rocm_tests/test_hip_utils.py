@@ -11,11 +11,10 @@ installation, GPU hardware, or external tools are required.
 
 import subprocess
 import warnings
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-import flashinfer.hip_utils as hip_utils
 from flashinfer.hip_utils import (
     FLASHINFER_SUPPORTED_ROCM_ARCHS,
     check_torch_rocm_compatibility,
@@ -64,17 +63,21 @@ class TestIsTheRockBuild:
         manifest = tmp_path / "share" / "therock" / "therock_manifest.json"
         manifest.parent.mkdir(parents=True)
         manifest.touch()
-        with patch.dict("sys.modules", {"rocm_sdk": rocm_sdk_mock}):
-            with patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)):
-                assert is_therock_build() is True
+        with (
+            patch.dict("sys.modules", {"rocm_sdk": rocm_sdk_mock}),
+            patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)),
+        ):
+            assert is_therock_build() is True
 
     def test_falls_through_when_rocm_sdk_version_is_empty(self, tmp_path):
         rocm_sdk_mock = MagicMock()
         rocm_sdk_mock.__version__ = ""
-        with patch.dict("sys.modules", {"rocm_sdk": rocm_sdk_mock}):
-            with patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)):
-                # no manifest → False
-                assert is_therock_build() is False
+        with (
+            patch.dict("sys.modules", {"rocm_sdk": rocm_sdk_mock}),
+            patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)),
+        ):
+            # no manifest → False
+            assert is_therock_build() is False
 
     def test_manifest_file_exists(self, tmp_path):
         manifest = tmp_path / "share" / "therock" / "therock_manifest.json"
@@ -85,7 +88,9 @@ class TestIsTheRockBuild:
             import sys
 
             sys.modules.pop("rocm_sdk", None)
-            with patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)):
+            with patch(
+                "flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)
+            ):
                 assert is_therock_build() is True
 
     def test_manifest_file_missing_and_no_rocm_sdk(self, tmp_path):
@@ -95,10 +100,13 @@ class TestIsTheRockBuild:
         with patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)):
             assert is_therock_build() is False
 
+
 # validate_rocm_arch
 class TestValidateRocmArch:
     def _patch_rocm_version(self, version):
-        return patch("flashinfer.hip_utils.get_system_rocm_version", return_value=version)
+        return patch(
+            "flashinfer.hip_utils.get_system_rocm_version", return_value=version
+        )
 
     def test_valid_arch_returns_arch_list(self):
         with self._patch_rocm_version("7.1.0"):
@@ -111,20 +119,26 @@ class TestValidateRocmArch:
             assert result == "gfx942,gfx950"
 
     def test_raises_when_rocm_not_detected(self):
-        with self._patch_rocm_version(None):
-            with pytest.raises(RuntimeError, match="Could not detect ROCm installation"):
-                validate_rocm_arch(arch_list="gfx942")
+        with (
+            self._patch_rocm_version(None),
+            pytest.raises(RuntimeError, match="Could not detect ROCm installation"),
+        ):
+            validate_rocm_arch(arch_list="gfx942")
 
     def test_raises_for_unknown_rocm_version(self):
-        with self._patch_rocm_version("5.0.0"):
-            with pytest.raises(RuntimeError, match="not recognized in the ROCm"):
-                validate_rocm_arch(arch_list="gfx942")
+        with (
+            self._patch_rocm_version("5.0.0"),
+            pytest.raises(RuntimeError, match="not recognized in the ROCm"),
+        ):
+            validate_rocm_arch(arch_list="gfx942")
 
     def test_raises_when_all_archs_unsupported(self):
-        with self._patch_rocm_version("6.4.0"):
-            # gfx950 is only supported from ROCm 7.x
-            with pytest.raises(RuntimeError, match="does not support any"):
-                validate_rocm_arch(arch_list="gfx950")
+        # gfx950 is only supported from ROCm 7.x
+        with (
+            self._patch_rocm_version("6.4.0"),
+            pytest.raises(RuntimeError, match="does not support any"),
+        ):
+            validate_rocm_arch(arch_list="gfx950")
 
     def test_warns_and_filters_partially_unsupported_archs(self):
         with self._patch_rocm_version("6.4.0"):
@@ -162,10 +176,13 @@ class TestValidateRocmArch:
             with pytest.raises(RuntimeError):
                 validate_rocm_arch(arch_list="gfx950")
 
+
 # validate_flashinfer_rocm_arch
 class TestValidateFlashinferRocmArch:
     def _patch_validate_rocm_arch(self, return_value):
-        return patch("flashinfer.hip_utils.validate_rocm_arch", return_value=return_value)
+        return patch(
+            "flashinfer.hip_utils.validate_rocm_arch", return_value=return_value
+        )
 
     def test_returns_flags_and_set_for_supported_arch(self):
         with self._patch_validate_rocm_arch("gfx942"):
@@ -181,15 +198,19 @@ class TestValidateFlashinferRocmArch:
 
     def test_raises_when_no_flashinfer_supported_arch(self):
         # gfx90a passes system ROCm check but is not in FLASHINFER_SUPPORTED_ROCM_ARCHS
-        with self._patch_validate_rocm_arch("gfx90a"):
-            with pytest.raises(RuntimeError, match="FlashInfer does not support any"):
-                validate_flashinfer_rocm_arch(arch_list="gfx90a")
+        with (
+            self._patch_validate_rocm_arch("gfx90a"),
+            pytest.raises(RuntimeError, match="FlashInfer does not support any"),
+        ):
+            validate_flashinfer_rocm_arch(arch_list="gfx90a")
 
     def test_warns_and_filters_when_some_archs_unsupported_by_flashinfer(self):
         # gfx942 supported, gfx90a not supported by FlashInfer
-        with self._patch_validate_rocm_arch("gfx942,gfx90a"):
-            with pytest.warns(UserWarning, match="FlashInfer does not support"):
-                flags, arch_set = validate_flashinfer_rocm_arch(arch_list="gfx942,gfx90a")
+        with (
+            self._patch_validate_rocm_arch("gfx942,gfx90a"),
+            pytest.warns(UserWarning, match="FlashInfer does not support"),
+        ):
+            flags, arch_set = validate_flashinfer_rocm_arch(arch_list="gfx942,gfx90a")
         assert flags == ["--offload-arch=gfx942"]
         assert arch_set == {"gfx942"}
 
@@ -208,11 +229,13 @@ class TestValidateFlashinferRocmArch:
     def test_pytorch_validation_raises_when_flag_missing(self):
         torch_cpp_ext = MagicMock()
         torch_cpp_ext._get_rocm_arch_flags.return_value = ["--offload-arch=gfx950"]
-        with self._patch_validate_rocm_arch("gfx942"):
-            with pytest.raises(RuntimeError, match="PyTorch does not support"):
-                validate_flashinfer_rocm_arch(
-                    arch_list="gfx942", torch_cpp_ext_module=torch_cpp_ext
-                )
+        with (
+            self._patch_validate_rocm_arch("gfx942"),
+            pytest.raises(RuntimeError, match="PyTorch does not support"),
+        ):
+            validate_flashinfer_rocm_arch(
+                arch_list="gfx942", torch_cpp_ext_module=torch_cpp_ext
+            )
 
     def test_reads_arch_from_env_when_none_given(self, monkeypatch):
         monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
@@ -285,9 +308,7 @@ def _make_rocminfo_output(*gpu_names, cpu_first=True):
         lines.append(_ROCMINFO_CPU_AGENT.replace("Agent 1", f"Agent {agent_idx}"))
         agent_idx += 1
     for name in gpu_names:
-        lines.append(
-            _ROCMINFO_GPU_AGENT_TEMPLATE.format(idx=agent_idx, name=name)
-        )
+        lines.append(_ROCMINFO_GPU_AGENT_TEMPLATE.format(idx=agent_idx, name=name))
         agent_idx += 1
     return "".join(lines)
 
@@ -394,73 +415,77 @@ def _make_torch_mock(hip=None):
 class TestCheckTorchRocmCompatibility:
     def test_raises_when_hip_is_none(self):
         torch_mock, _ = _make_torch_mock(hip=None)
-        with patch.dict("sys.modules", {"torch": torch_mock}):
-            with pytest.raises(RuntimeError, match="does NOT have ROCm support"):
-                check_torch_rocm_compatibility()
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}),
+            pytest.raises(RuntimeError, match="does NOT have ROCm support"),
+        ):
+            check_torch_rocm_compatibility()
 
     def test_raises_when_hip_attribute_missing(self):
         torch_mock = MagicMock()
         # version object with no 'hip' attribute at all
         torch_mock.version = MagicMock(spec=[])
-        with patch.dict("sys.modules", {"torch": torch_mock}):
-            with pytest.raises(RuntimeError, match="does NOT have ROCm support"):
-                check_torch_rocm_compatibility()
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}),
+            pytest.raises(RuntimeError, match="does NOT have ROCm support"),
+        ):
+            check_torch_rocm_compatibility()
 
     def test_no_warning_when_system_rocm_undetectable(self):
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
-        with patch.dict("sys.modules", {"torch": torch_mock}):
-            with patch(
-                "flashinfer.hip_utils.get_system_rocm_version", return_value=None
-            ):
-                with warnings.catch_warnings(record=True) as w:
-                    warnings.simplefilter("always")
-                    check_torch_rocm_compatibility()
-                assert len(w) == 0
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}),
+            patch("flashinfer.hip_utils.get_system_rocm_version", return_value=None),
+        ):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                check_torch_rocm_compatibility()
+            assert len(w) == 0
 
     def test_no_warning_when_versions_match(self):
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
-        with patch.dict("sys.modules", {"torch": torch_mock}):
-            with patch(
-                "flashinfer.hip_utils.get_system_rocm_version", return_value="6.4.2"
-            ):
-                with warnings.catch_warnings(record=True) as w:
-                    warnings.simplefilter("always")
-                    check_torch_rocm_compatibility()
-                assert len(w) == 0
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}),
+            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="6.4.2"),
+        ):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                check_torch_rocm_compatibility()
+            assert len(w) == 0
 
     def test_warns_on_major_minor_mismatch(self):
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
-        with patch.dict("sys.modules", {"torch": torch_mock}):
-            with patch(
-                "flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"
-            ):
-                with pytest.warns(RuntimeWarning, match="version mismatch"):
-                    check_torch_rocm_compatibility()
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}),
+            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+            pytest.warns(RuntimeWarning, match="version mismatch"),
+        ):
+            check_torch_rocm_compatibility()
 
     def test_warning_contains_both_versions(self):
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
-        with patch.dict("sys.modules", {"torch": torch_mock}):
-            with patch(
-                "flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"
-            ):
-                with pytest.warns(RuntimeWarning) as record:
-                    check_torch_rocm_compatibility()
-                message = str(record[0].message)
-                assert "7.1.0" in message
-                assert "6.4" in message
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}),
+            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+        ):
+            with pytest.warns(RuntimeWarning) as record:
+                check_torch_rocm_compatibility()
+            message = str(record[0].message)
+            assert "7.1.0" in message
+            assert "6.4" in message
 
     def test_patch_version_difference_does_not_warn(self):
         # Same major.minor but different patch: 6.4.0 vs 6.4.2 → no warning
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
-        with patch.dict("sys.modules", {"torch": torch_mock}):
-            with patch(
-                "flashinfer.hip_utils.get_system_rocm_version", return_value="6.4.2"
-            ):
-                with warnings.catch_warnings(record=True) as w:
-                    warnings.simplefilter("always")
-                    check_torch_rocm_compatibility()
-                runtime_warns = [x for x in w if issubclass(x.category, RuntimeWarning)]
-                assert len(runtime_warns) == 0
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}),
+            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="6.4.2"),
+        ):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                check_torch_rocm_compatibility()
+            runtime_warns = [x for x in w if issubclass(x.category, RuntimeWarning)]
+            assert len(runtime_warns) == 0
 
     def test_error_message_contains_install_instructions(self):
         torch_mock, _ = _make_torch_mock(hip=None)
