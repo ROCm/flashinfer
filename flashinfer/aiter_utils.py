@@ -10,9 +10,9 @@ This module provides utilities for AITER, a library for efficient attention oper
 
 import importlib
 
-if importlib.util.find_spec("aiter") is not None:
-    HAS_AITER = True
-else:
+try:
+    HAS_AITER = importlib.util.find_spec("aiter.ops") is not None
+except (ModuleNotFoundError, ValueError):
     HAS_AITER = False
 
 if HAS_AITER:
