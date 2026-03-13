@@ -46,7 +46,7 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 
 **Torch+ROCm:** 2.8.0, 2.9.1
 
-**Note**: Other versions may work but have not been tested. Refer to <https://pypi.amd.com/rocm-${rocm-version}/simple> (replacing `{rocm-version}` with the desired ROCm version, e.g., `7.0.2`) for available versions.
+**Note**: Other versions may work but have not been tested. Refer to <https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm-version}/> (replacing `{rocm-version}` with the desired ROCm version, e.g., `7.0.2`) for available versions.
 
 ## Getting Started
 
@@ -187,28 +187,17 @@ docker run -it \
 
 ### Building and Installing a Wheel Package
 
-For `CDNA3` builds, replace `<gfx-arch>` with `gfx942` and for `CDNA4`, use `gfx950`.
-
-**Build with AOT (Ahead-of-Time) compiled kernels:**
-
-```bash
-FLASHINFER_HIP_ARCHITECTURES=<gfx-arch> FLASHINFER_AOT_TORCH_EXTS=ON \
-  python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist && pip install amd_flashinfer-*.whl
-```
-
 **Build with JIT (Just-in-Time) compilation only:**
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=<gfx-arch> \
-  python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
+python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
 cd dist && pip install amd_flashinfer-*.whl
 ```
 
 **Editable install for development:**
 
 ```bash
-FLASHINFER_HIP_ARCHITECTURES=<gfx-arch> python -m pip install --no-build-isolation -ve.
+python -m pip install --no-build-isolation -ve.
 ```
 
 **Note:** The `--no-deps` flag assumes dependencies are pre-installed. Omit it
