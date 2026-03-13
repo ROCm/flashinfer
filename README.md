@@ -58,9 +58,9 @@ inventories represent the latest available FlashInfer version from the official 
 
 | Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
 | ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
-| rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 | [7.2.0](https://repo.radeon.com/rocm/apt/7.2) | [v0.5.3](https://github.com/ROCm/flashinfer/releases/tag/v0.5.3%2Bamd.1) | [2.9.1](https://github.com/ROCm/pytorch/releases/tag/v2.9.0-rc4) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI355x, MI325X, MI300X |
-| rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1 | [7.0.2](https://repo.radeon.com/rocm/apt/7.0.2/) | [v0.5.3](https://github.com/ROCm/flashinfer/releases/tag/v0.5.3%2Bamd.1) | [2.9.1](https://github.com/ROCm/pytorch/releases/tag/v2.9.0-rc4) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI355x, MI325X, MI300X |
-| rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8 | [7.1.1](https://repo.radeon.com/rocm/apt/7.1.1/) | [v0.2.5](https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.2.5) | [2.8.0](https://github.com/ROCm/pytorch/releases/tag/v2.8.0) | 24.04 | [3.12](https://www.python.org/downloads/release/python-3129/) | MI325X, MI300X |
+| rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 |7.2.0 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355x, MI325X, MI300X |
+| rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1 | 7.0.2 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355x, MI325X, MI300X |
+| rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8 | 7.1.1 | v0.2.5 | 2.8.0 | 24.04 | 3.12 | MI325X, MI300X |
 
 
 **Start a container:**
