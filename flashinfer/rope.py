@@ -68,7 +68,7 @@ def _fake_apply_rope(
     rope_scale: float,
     rope_theta: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op("flashinfer::apply_llama31_rope", mutates_args=("q_rope", "k_rope"))
@@ -120,7 +120,7 @@ def _fake_apply_llama31_rope(
     high_freq_factor: float,
     old_context_len: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op("flashinfer::apply_rope_pos_ids", mutates_args=("q_rope", "k_rope"))
@@ -160,7 +160,7 @@ def _fake_apply_rope_pos_ids(
     rope_scale: float,
     rope_theta: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -223,7 +223,7 @@ def _fake_rope_quantize(
     interleave: bool,
     enable_pdl: bool,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -322,7 +322,7 @@ def _fake_rope_quantize_fp8_append_paged_kv_cache(
     interleave: bool,
     enable_pdl: bool,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -359,7 +359,7 @@ def _fake_apply_rope_pos_ids_cos_sin_cache(
     pos_ids: torch.Tensor,
     interleave: bool,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -410,7 +410,7 @@ def _fake_apply_llama31_rope_pos_ids(
     high_freq_factor: float,
     old_context_len: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 def apply_rope_inplace(
@@ -1401,6 +1401,11 @@ def rope_quantize_fp8(
         else torch.empty_like(k_nope, dtype=quantize_dtype)
     )
 
+    # The ROCm C++ binding uses int32_t for IdType; coerce here so callers
+    # that pass the default int64 torch.arange() tensor still work correctly.
+    if pos_ids.dtype != torch.int32:
+        pos_ids = pos_ids.to(torch.int32)
+
     _rope_quantize(
         q_rope,
         k_rope,
@@ -1626,6 +1631,11 @@ def rope_quantize_fp8_append_paged_kv_cache(
     from .utils import TensorLayout
 
     kv_layout_code = TensorLayout[kv_layout].value
+
+    # The ROCm C++ binding uses int32_t for IdType; coerce here so callers
+    # that pass the default int64 torch.arange() tensor still work correctly.
+    if pos_ids.dtype != torch.int32:
+        pos_ids = pos_ids.to(torch.int32)
 
     # Call custom op
     _rope_quantize_fp8_append_paged_kv_cache(
