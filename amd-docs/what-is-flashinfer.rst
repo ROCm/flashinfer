@@ -1,0 +1,154 @@
+.. meta::
+  :description: What is FlashInfer?
+  :keywords: FlashInfer, documentation, deep learning, framework, GPU, AMD, ROCm, overview, introduction
+
+.. _what-is-flashinfer:
+
+********************************************************************
+What is FlashInfer?
+********************************************************************
+
+`FlashInfer <https://docs.flashinfer.ai/index.html>`__ is a library and kernel generator 
+for Large Language Models (LLMs) that provides a high-performance implementation of kernels
+for graphic processing units (GPUs). FlashInfer focuses on LLM serving and inference, as well 
+as advanced performance across diverse scenarios.
+
+FlashInfer features highly efficient attention kernels, load-balanced scheduling, and memory-optimized 
+techniques, while supporting customized attention variants. It’s compatible with ``torch.compile``, and 
+offers high-performance LLM-specific operators, with easy integration through PyTorch, and C++ APIs.
+
+FlashInfer on ROCm supports both stages of LLM inference:
+
+- **Prefill** – processes the input prompt to construct KV caches and activations.
+- **Decode** – generates tokens sequentially using previously computed states.
+
+Features and use cases
+====================================================================
+
+FlashInfer provides the following key features:
+
+- **High-Performance Attention Kernels:** Delivers optimized prefill and
+  decode kernels for transformer attention to minimize latency on ROCm GPUs.
+
+- **Paged KV Cache Management:** Implements efficient KV cache layouts and
+  eviction strategies to sustain long-context, high-throughput generation.
+
+- **Kernel Generator and Fusion:** Provides a flexible kernel generation
+  approach with fused operations to reduce memory transfers and overhead.
+
+- **Streaming and Batched Inference:** Supports both real-time streaming
+  generation and large-batch workloads with dynamic sequence handling.
+
+- **Model Compatibility:** Works with common attention variants (e.g., RoPE,
+  multi-query/group-query attention) to accelerate modern LLMs.
+
+FlashInfer on ROCm also includes performance-enhancing features:
+
+- Load balancing across GPU compute units
+- Sparse and dense attention optimizations
+- Batch and single‑sequence decode  
+- High‑throughput prefill optimized for AMD Instinct MI300X GPUs  
+
+FlashInfer is commonly used in the following scenarios:
+
+- **Real-Time Serving:** Power low-latency chat, agent, and code-completion
+  systems with optimized attention paths.
+
+- **Large-Scale Batch Generation:** Accelerate batched inference for content
+  creation, retrieval-augmented generation, and evaluation jobs.
+
+- **Throughput-Critical Pipelines:** Reduce end-to-end latency in model
+  serving stacks and microservices.
+
+- **Research on Kernel Efficiency:** Prototype new attention and cache
+  strategies to push inference performance on AMD Instinct GPUs.
+
+For currently supported use cases and recommendations, refer to the `AMD ROCm blog <https://rocm.blogs.amd.com/search.html?q=flashinfer>`__, 
+where you can search for examples and best practices to optimize your workloads on AMD GPUs.
+
+Kernel support matrix
+====================================================================
+
+Recommended attention modes available upstream:
+
+- Multi‑Head Attention (MHA)
+- Grouped‑Query Attention (GQA)
+- Multi‑Query Attention (MQA)
+
+.. note::
+
+  The ROCm port of FlashInfer is under active development, and some features are not yet available. 
+  For the most up-to-date feature support matrix, refer to the ``README`` in the 
+  `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository.
+
+.. list-table:: 
+   :header-rows: 1
+   :align: left
+
+   * - Kernel Type
+     - FP16 / BF16
+     - FP8 (E4M3, E5M2)
+     - Has AITER backend
+     - Notes
+   * - Decode Attention
+     - ✅
+     - ✅
+     - No
+     - Supports MHA, GQA, and MQA
+   * - Prefill Attention
+     - ✅
+     - —
+     - ✅
+     - Supports MHA, GQA, and MQA
+   * - Cascade Attention
+     - —
+     - —
+     - No
+     - Not Yet Ported
+   * - MLA
+     - —
+     - —
+     - No
+     - Not Yet Ported
+   * - POD
+     - —
+     - —
+     - No
+     - Not Yet Ported
+   * - Positional Encoding
+     - —
+     - —
+     - No
+     - Not Yet Ported
+   * - Sampling
+     - ✅
+     - —
+     - No
+     - Supports Top-K/Top-P Sampling/OnlineSoftmax/SamplingFromLogits
+   * - Logits Processor
+     - ✅
+     - —
+     - No
+     - 
+   * - Normalization
+     - ✅
+     - —
+     - No
+     - Supports RMS-Norm/Layer-Norm
+
+Why FlashInfer?
+====================================================================
+
+FlashInfer is well suited for LLM inference acceleration for the following reasons:
+
+- Its **specialized attention kernels** target the critical path of decoding
+  to deliver substantial latency and throughput gains.
+
+- **Paged cache and fused operations** reduce memory bandwidth pressure
+  and improve efficiency at long sequence lengths.
+
+- **Flexible integration** allows drop-in acceleration within existing
+  inference stacks and services.
+
+- **Optimized for GPUs** with ROCm builds to leverage AMD Instinct hardware
+  effectively in production environments.
