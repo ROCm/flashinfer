@@ -192,6 +192,128 @@ FLASHINFER_INLINE float __flashinfer_fp8_e5m2_fnuz_to_float(uint8_t x) {
   __builtin_memcpy(&result, &f32, sizeof(float));
   return result;
 }
+// Float32 to E4M3 FNUZ software conversion for gfx950.
+// Format: 1 sign | 4 exp (bias=8) | 3 mantissa, NaN=0x80, no -0, no inf.
+FLASHINFER_INLINE uint8_t __flashinfer_float_to_fp8_e4m3_fnuz(float val) {
+  uint32_t f32;
+  __builtin_memcpy(&f32, &val, sizeof(float));
+  uint32_t f32_sign = f32 >> 31;
+  int f32_exp = (int)((f32 >> 23) & 0xFFu);
+  uint32_t f32_mant = f32 & 0x7FFFFFu;
+
+  if (f32_exp == 255) return 0x80u;
+  if ((f32 & 0x7FFFFFFFu) == 0) return 0x00u;
+
+  int unbiased_exp;
+  if (f32_exp == 0) {
+    int lz = __builtin_clz(f32_mant) - 8;
+    f32_mant = (f32_mant << (lz + 1)) & 0x7FFFFFu;
+    unbiased_exp = -126 - lz;
+  } else {
+    unbiased_exp = f32_exp - 127;
+  }
+
+  int fp8_exp = unbiased_exp + 8;  // bias = 8
+
+  if (fp8_exp > 15) {
+    return (f32_sign << 7) | 0x7Fu;
+  }
+
+  uint8_t result;
+  if (fp8_exp >= 1) {
+    uint32_t trunc = f32_mant >> 20;
+    uint32_t rem = f32_mant & 0xFFFFFu;
+    uint32_t mid = 1u << 19;
+    if (rem > mid || (rem == mid && (trunc & 1u))) {
+      trunc++;
+      if (trunc == 8u) {
+        trunc = 0;
+        fp8_exp++;
+      }
+      if (fp8_exp > 15) return (f32_sign << 7) | 0x7Fu;
+    }
+    result = (f32_sign << 7) | ((uint32_t)fp8_exp << 3) | trunc;
+  } else {
+    int shift = 1 - fp8_exp;
+    if (shift > 24) return 0x00u;
+    uint32_t full = (1u << 23) | f32_mant;
+    int rshift = 20 + shift;
+    if (rshift >= 32) return 0x00u;
+    uint32_t trunc = full >> rshift;
+    uint32_t rem = full & ((1u << rshift) - 1u);
+    uint32_t mid = 1u << (rshift - 1);
+    if (rem > mid || (rem == mid && (trunc & 1u))) trunc++;
+    if (trunc == 0u) return 0x00u;
+    if (trunc >= 8u) {
+      result = (f32_sign << 7) | (1u << 3);
+    } else {
+      result = (f32_sign << 7) | trunc;
+    }
+  }
+  return (result == 0x80u) ? 0x00u : result;
+}
+
+// Float32 to E5M2 FNUZ software conversion for gfx950.
+// Format: 1 sign | 5 exp (bias=16) | 2 mantissa, NaN=0x80, no -0, no inf.
+FLASHINFER_INLINE uint8_t __flashinfer_float_to_fp8_e5m2_fnuz(float val) {
+  uint32_t f32;
+  __builtin_memcpy(&f32, &val, sizeof(float));
+  uint32_t f32_sign = f32 >> 31;
+  int f32_exp = (int)((f32 >> 23) & 0xFFu);
+  uint32_t f32_mant = f32 & 0x7FFFFFu;
+
+  if (f32_exp == 255) return 0x80u;
+  if ((f32 & 0x7FFFFFFFu) == 0) return 0x00u;
+
+  int unbiased_exp;
+  if (f32_exp == 0) {
+    int lz = __builtin_clz(f32_mant) - 8;
+    f32_mant = (f32_mant << (lz + 1)) & 0x7FFFFFu;
+    unbiased_exp = -126 - lz;
+  } else {
+    unbiased_exp = f32_exp - 127;
+  }
+
+  int fp8_exp = unbiased_exp + 16;  // bias = 16
+
+  if (fp8_exp > 31) {
+    return (f32_sign << 7) | 0x7Fu;
+  }
+
+  uint8_t result;
+  if (fp8_exp >= 1) {
+    uint32_t trunc = f32_mant >> 21;
+    uint32_t rem = f32_mant & 0x1FFFFFu;
+    uint32_t mid = 1u << 20;
+    if (rem > mid || (rem == mid && (trunc & 1u))) {
+      trunc++;
+      if (trunc == 4u) {
+        trunc = 0;
+        fp8_exp++;
+      }
+      if (fp8_exp > 31) return (f32_sign << 7) | 0x7Fu;
+    }
+    result = (f32_sign << 7) | ((uint32_t)fp8_exp << 2) | trunc;
+  } else {
+    int shift = 1 - fp8_exp;
+    if (shift > 24) return 0x00u;
+    uint32_t full = (1u << 23) | f32_mant;
+    int rshift = 21 + shift;
+    if (rshift >= 32) return 0x00u;
+    uint32_t trunc = full >> rshift;
+    uint32_t rem = full & ((1u << rshift) - 1u);
+    uint32_t mid = 1u << (rshift - 1);
+    if (rem > mid || (rem == mid && (trunc & 1u))) trunc++;
+    if (trunc == 0u) return 0x00u;
+    if (trunc >= 4u) {
+      result = (f32_sign << 7) | (1u << 2);
+    } else {
+      result = (f32_sign << 7) | trunc;
+    }
+  }
+  return (result == 0x80u) ? 0x00u : result;
+}
+
 #endif  // HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
 
 template <>
@@ -406,10 +528,14 @@ template <>
 struct vec_cast<__hip_fp8_e4m3_fnuz, half> {
   template <size_t vec_size>
   FLASHINFER_INLINE static void cast(__hip_fp8_e4m3_fnuz* dst, const half* src) {
-#ifdef FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
+#if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+      dst[i].__x = __flashinfer_float_to_fp8_e4m3_fnuz(__half2float(src[i]));
+    }
+#elif defined(FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED)
     if constexpr (vec_size == 1) {
       float x = __half2float(src[0]);
-      // dst[0] = convert_f32_to_e4m3(x);
       *(uint8_t*)&dst[0] = convert_f32_to_e4m3(x);
     } else {
 #pragma unroll
@@ -427,7 +553,7 @@ struct vec_cast<__hip_fp8_e4m3_fnuz, half> {
     for (size_t i = 0; i < vec_size; ++i) {
       dst[i] = __hip_fp8_e4m3_fnuz(src[i]);
     }
-#endif  // FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
+#endif
   }
 };
 
@@ -494,10 +620,14 @@ template <>
 struct vec_cast<__hip_fp8_e5m2_fnuz, half> {
   template <size_t vec_size>
   FLASHINFER_INLINE static void cast(__hip_fp8_e5m2_fnuz* dst, const half* src) {
-#ifdef FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
+#if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+      dst[i].__x = __flashinfer_float_to_fp8_e5m2_fnuz(__half2float(src[i]));
+    }
+#elif defined(FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED)
     if constexpr (vec_size == 1) {
       float x = __half2float(src[0]);
-      // dst[0] = __hip_fp8_e5m2_fnuz(src[0]);
       *(uint8_t*)&dst[0] = convert_f32_to_e5m2(x);
     } else {
 #pragma unroll
@@ -513,7 +643,43 @@ struct vec_cast<__hip_fp8_e5m2_fnuz, half> {
     for (size_t i = 0; i < vec_size; ++i) {
       dst[i] = __hip_fp8_e5m2_fnuz(src[i]);
     }
-#endif  // FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
+#endif
+  }
+};
+
+template <>
+struct vec_cast<__hip_fp8_e4m3_fnuz, float> {
+  template <size_t vec_size>
+  FLASHINFER_INLINE static void cast(__hip_fp8_e4m3_fnuz* dst, const float* src) {
+#if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+      dst[i].__x = __flashinfer_float_to_fp8_e4m3_fnuz(src[i]);
+    }
+#else
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+      dst[i] = __hip_fp8_e4m3_fnuz(src[i]);
+    }
+#endif
+  }
+};
+
+template <>
+struct vec_cast<__hip_fp8_e5m2_fnuz, float> {
+  template <size_t vec_size>
+  FLASHINFER_INLINE static void cast(__hip_fp8_e5m2_fnuz* dst, const float* src) {
+#if HIP_FP8_CVT_FAST_PATH && !HIP_FP8_TYPE_FNUZ
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+      dst[i].__x = __flashinfer_float_to_fp8_e5m2_fnuz(src[i]);
+    }
+#else
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+      dst[i] = __hip_fp8_e5m2_fnuz(src[i]);
+    }
+#endif
   }
 };
 
