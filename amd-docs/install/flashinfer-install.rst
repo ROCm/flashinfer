@@ -218,4 +218,4 @@ Expected output:
 
    0.5.3+amd.1
 
-If you see this version string, FlashInfer ``0.5.3`` has been installed successfully. You can now use FlashInfer in your projects.
+If you see the version string above, FlashInfer ``0.5.3`` has been installed successfully. You can now use FlashInfer in your projects.

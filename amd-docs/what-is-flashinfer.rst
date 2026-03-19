@@ -22,6 +22,23 @@ FlashInfer on ROCm supports both stages of LLM inference:
 - **Prefill** – processes the input prompt to construct KV caches and activations.
 - **Decode** – generates tokens sequentially using previously computed states.
 
+Why FlashInfer?
+====================================================================
+
+FlashInfer is well suited for LLM inference acceleration for the following reasons:
+
+- Its specialized attention kernels target the critical path of decoding
+  to deliver substantial latency and throughput gains.
+
+- Paged cache and fused operations reduce memory bandwidth pressure
+  and improve efficiency at long sequence lengths.
+
+- Flexible integration allows drop-in acceleration within existing
+  inference stacks and services.
+
+- Optimized for GPUs with ROCm builds to leverage AMD Instinct hardware
+  effectively in production environments.
+
 Features and use cases
 ====================================================================
 
@@ -39,8 +56,8 @@ FlashInfer provides the following key features:
 - **Streaming and Batched Inference:** Supports both real-time streaming
   generation and large-batch workloads with dynamic sequence handling.
 
-- **Model Compatibility:** Works with common attention variants (e.g., RoPE,
-  multi-query/group-query attention) to accelerate modern LLMs.
+- **Model Compatibility:** Works with common attention variants (for example, RoPE
+  and multi-query/group-query attention) to accelerate modern LLMs.
 
 FlashInfer on ROCm also includes performance-enhancing features:
 
@@ -61,7 +78,7 @@ FlashInfer is commonly used in the following scenarios:
   serving stacks and microservices.
 
 - **Research on Kernel Efficiency:** Prototype new attention and cache
-  strategies to push inference performance on AMD Instinct GPUs.
+  strategies to improve inference performance on AMD Instinct GPUs.
 
 For currently supported use cases and recommendations, refer to the `AMD ROCm blog <https://rocm.blogs.amd.com/search.html?q=flashinfer>`__, 
 where you can search for examples and best practices to optimize your workloads on AMD GPUs.
@@ -71,9 +88,9 @@ Kernel support matrix
 
 Recommended attention modes available upstream:
 
-- Multi‑Head Attention (MHA)
-- Grouped‑Query Attention (GQA)
-- Multi‑Query Attention (MQA)
+- Multi-Head Attention (MHA): Each attention head has its own keys/values, so KV cache and bandwidth are the largest.
+- Grouped-Query Attention (GQA): Groups of heads share the same keys/values, reducing KV cache size and memory traffic.
+- Multi-Query Attention (MQA): All heads share one keys/values stream, minimizing KV cache and maximizing decode speed.
 
 .. note::
 
@@ -135,20 +152,3 @@ Recommended attention modes available upstream:
      - —
      - No
      - Supports RMS-Norm/Layer-Norm
-
-Why FlashInfer?
-====================================================================
-
-FlashInfer is well suited for LLM inference acceleration for the following reasons:
-
-- Its **specialized attention kernels** target the critical path of decoding
-  to deliver substantial latency and throughput gains.
-
-- **Paged cache and fused operations** reduce memory bandwidth pressure
-  and improve efficiency at long sequence lengths.
-
-- **Flexible integration** allows drop-in acceleration within existing
-  inference stacks and services.
-
-- **Optimized for GPUs** with ROCm builds to leverage AMD Instinct hardware
-  effectively in production environments.
