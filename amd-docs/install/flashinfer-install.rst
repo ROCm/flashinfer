@@ -16,7 +16,7 @@ To use FlashInfer `0.5.3 <https://github.com/flashinfer-ai/flashinfer/releases/t
 - **ROCm version:** `7.0.2 <https://rocm.docs.amd.com/en/docs-7.0.2/>`__, `7.2.0 <https://rocm.docs.amd.com/en/docs-7.2.0/>`__
 - **Operating system:** Ubuntu 24.04
 - **GPU platform:** AMD Instinct™ MI300X, MI325X, MI355X
-- **PyTorch:** `2.9.1 <https://github.com/ROCm/pytorch/releases/tag/v2.9.1>`__
+- **PyTorch:** `2.9.1 <https://hub.docker.com/r/rocm/pytorch/tags?name=2.9.1>`__
 - **Python:** `3.12 <https://www.python.org/downloads/release/python-3129/>`__
 
 Install FlashInfer
