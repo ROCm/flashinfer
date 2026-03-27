@@ -83,7 +83,7 @@ ROCm, and all other requirements.
             --ipc=host --shm-size 16G \
             rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1
 
-3. The above step will create a Docker container with FlashInfer pre-installed. During this process, the Dockerfile will have a pre-installed and configured micromamba environment with FlashInfer available inside. To use FlashInfer, activate the micromamba environment.
+3. The above step will create a Docker container with FlashInfer pre-installed. Micromamba is pre-configured inside the container and will automatically start the ``base`` environment.
 
    .. code-block:: bash
 
