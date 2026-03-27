@@ -5,7 +5,7 @@ that adds support for AMD Instinct GPUs. The project is in active development wi
 porting attention kernels to ROCm.
 
 **Versioning:** The release tag format `<upstream_version>+amd` ties each FlashInfer+ROCm release
-to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.2.5`).
+to its corresponding upstream tag (e.g., `0.2.5+amd.2` is second release of amd-flashinfer based on upstream version `v0.2.5`).
 
 ## Table of Contents
 
@@ -28,12 +28,12 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is based on upstream `v0.
 | :--- | :---: | :---: | :---: | :--- |
 | **Decode Attention** | ✅ | ✅ | No | Supports MHA, GQA, and MQA |
 | **Prefill Attention** | ✅ | WIP | ✅ | Supports MHA, GQA, and MQA |
-| **Cascade Attention** | TBD | TBD | No |  Not Yet Ported |
+| **Cascade Attention** | TBD | TBD | No | Not Yet Ported |
 | **MLA** | TBD | TBD | No | Not Yet Ported |
 | **POD** | TBD | TBD | No | Not Yet Ported |
 | **Positional Encoding** | TBD | TBD | No | Not Yet Ported |
 | **Sampling** | ✅ | TBD | No | Supports Top-K/Top-P Sampling/OnlineSoftmax/SamplingFromLogits |
-| **Logits Processor** | ✅ | TBD | No |  |
+| **Logits Processor** | ✅ | TBD | No | |
 | **Normalization** | ✅ | TBD | No | Supports RMS-Norm/Layer-Norm |
 
 ## GPU and ROCm Support
@@ -61,7 +61,6 @@ inventories represent the latest available FlashInfer version from the official 
 | rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 |7.2.0 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355x, MI325X, MI300X |
 | rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1 | 7.0.2 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355x, MI325X, MI300X |
 | rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8 | 7.1.1 | v0.2.5 | 2.8.0 | 24.04 | 3.12 | MI325X, MI300X |
-
 
 **Start a container:**
 
@@ -232,83 +231,48 @@ The default test configuration is specified in [pyproject.toml](pyproject.toml) 
 
 FlashInfer+ROCm has experimental support to use [AITER](https://github.com/ROCm/aiter) as a
 backend. The `aiter` backend currently is enabled for the `single_prefill` and `batch_prefill`
-kernels. To use AITER as the backend for these kernels, please set `backend=aiter` keyword
-argument when invoking the kernels. Additionally, AITER should also be installed on your system and
-you may follow one of the below ways to do so.
+kernels only. To use AITER as the backend for these kernels, please set `backend="aiter"` keyword
+argument when invoking the kernels. Unless you are using the prebuilt docker image, AITER should also be installed on your system. You may follow one of the following ways to do so.
 
-**Install AITER by building from source**
+### Install AITER from source
 
 ```bash
 git clone --recursive https://github.com/ROCm/aiter.git
 cd aiter
 python3 setup.py develop
 ```
-**Install AITER wheel package from https://pypi.amd.com/simple/**
+
+### Install AITER wheel package
+
+Wheel packages are available from AMD's PyPI index: [pypi.amd.com/simple](https://pypi.amd.com/simple/).
 
 ```bash
 pip install amd-aiter --index-url https://pypi.amd.com/simple/
 ```
 
-### Known Limitations:
+### Known Limitations
 
-The AITER backend only supports `NHD` kv_layout.
+The AITER backend only supports `NHD` kv_layout. Further, the only supported page sizes for batch prefill for AITER Multi‑Head Attention (MHA) when it uses CK (Composable Kernel) FMHA kernels (that we use currently) are 1, 16, and 1024.
 
 ### Single Prefill Example
 
-This section provides an example on how to use Single Prefill with AITER
+This section provides an example on how to use Single Prefill with AITER.
 
 ```python
 import torch
 import flashinfer
 
-def single_prefill_with_kv_cache_aiter_example():
-  qo_len = 128
-  kv_len = 128
-  num_qo_heads = 1
-  num_kv_heads = 1
-  head_dim = 64
-  causal = False
-  kv_layout = "NHD"
-  pos_encoding_mode = "NONE"
-  logits_soft_cap = 8.0
-  return_lse = False
+# Configuration
+seq_len = 1024        # Prompt length
+num_qo_heads = 32     # Number of query/output heads
+num_kv_heads = 8      # Number of KV heads (GQA with 4:1 ratio)
+head_dim = 128
 
-  q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16)
+# Create Q, K, V tensors (NHD layout: sequence, heads, dimension)
+q = torch.randn(seq_len, num_qo_heads, head_dim, dtype=torch.float16, device="cuda")
+k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
+v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
 
-  # NHD Layout
-  k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0",dtype=torch.float16)
-  v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
-
-
-  # Call flashinfer API
-  logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
-  if return_lse:
-    o, lse = flashinfer.single_prefill_with_kv_cache_return_lse(
-        q,
-        k,
-        v,
-        causal=causal,
-        kv_layout=kv_layout,
-        pos_encoding_mode=pos_encoding_mode,
-        logits_soft_cap=logits_soft_cap,
-        backend="aiter" # Pass the backend = aiter flag to enable AITER computation
-    )
-    print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
-
-  else:
-    o = flashinfer.single_prefill_with_kv_cache(
-        q,
-        k,
-        v,
-        causal=causal,
-        kv_layout=kv_layout,
-        pos_encoding_mode=pos_encoding_mode,
-        logits_soft_cap=logits_soft_cap,
-        backend="aiter" # Pass the backend = aiter flag to enable AITER computation
-    )
-    print(f"  FlashInfer output shape: {o.shape}")
-
-if __name__ == "__main__":
-  single_prefill_with_kv_cache_aiter_example()
-
+# Run single prefill attention with causal masking
+output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True,  backend="aiter")
 ```
