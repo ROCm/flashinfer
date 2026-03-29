@@ -165,8 +165,15 @@ struct smem_t {
     } else if constexpr (swizzle_mode == SwizzleMode::k128B_16Row) {
       static_assert(step_size == 4 || step_size % 8 == 0, "Unsupported step size");
       if constexpr (step_size == 4) {
-        const uint32_t xor_mask = 0x4u | (0x8u * ((row_idx / 4u) % 2u));
-        return (offset ^ xor_mask) + step_size * row_stride;
+        // Use the same period as get_permuted_offset: period=16 when row_stride>=16,
+        // period=8 otherwise.  For period-16: (i+4)%16 ^ i%16 alternates between 4
+        // and 12 every 4 rows.  For period-8 (fallback): (i+4)%8 ^ i%8 = 4 always.
+        if constexpr (row_stride >= 16u) {
+          const uint32_t xor_mask = 0x4u | (0x8u * ((row_idx / 4u) % 2u));
+          return (offset ^ xor_mask) + step_size * row_stride;
+        } else {
+          return (offset ^ 0x4u) + step_size * row_stride;
+        }
       } else {
         // step_size % 8 == 0 (e.g. step=16 in the read path)
         return offset + step_size * row_stride;

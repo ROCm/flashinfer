@@ -646,6 +646,11 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
     uint32_t kv_idx = kv_idx_base + (warp_idx / 2) * 16 + lane_idx / THREADS_PER_BMATRIX_ROW_SET;
     *k_smem_offset_r =
         (*k_smem_offset_r ^ (0x2 * (warp_idx % 2))) + (warp_idx / 2) * 16 * UPCAST_STRIDE_K;
+    // After the XOR above, the logical column of *k_smem_offset_r is
+    // (lane_idx/TPBRS) ^ (2*warp_idx%2).  Required by k128B_16Row for the
+    // advance_offset_by_column<4> call inside the loop.
+    const uint32_t k_col_rope_if =
+        (lane_idx / THREADS_PER_BMATRIX_ROW_SET) ^ (0x2u * (warp_idx % 2u));
 #pragma unroll
     for (uint32_t i = 0; i < KTraits::NUM_MMA_KV / 2; ++i) {
       uint32_t k_smem_offset_r_first_half = *k_smem_offset_r;
@@ -653,7 +658,7 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
       k_smem->load_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
       uint32_t k_smem_offset_r_last_half =
           k_smem->template advance_offset_by_column<4, UPCAST_STRIDE_K>(k_smem_offset_r_first_half,
-                                                                        0, 0);
+                                                                        0, k_col_rope_if);
       k_smem->load_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
       k_frag_apply_llama_rope<DTypeKV, HALF_ELEMS_PER_THREAD>(
           (DTypeKV*)k_frag_local[0], (DTypeKV*)k_frag_local[1], rope_freq[mma_di], kv_idx);
