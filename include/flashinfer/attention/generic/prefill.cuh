@@ -960,9 +960,6 @@ __device__ __forceinline__ void compute_sfm_v(
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
   constexpr uint32_t V_SMEM_COLUMN_ADVANCE = 16 / KTraits::HALF_ELEMS_PER_THREAD;
-  // v_col_idx: current column j of *v_smem_offset_r before each advance_offset_by_column<4>.
-  // Needed by k128B_16Row; ignored by k128B.
-  uint32_t v_col_idx = threadIdx.x / KTraits::WARP_THREAD_COLS;
   typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
                                      [HALF_ELEMS_PER_THREAD];
 
@@ -1003,6 +1000,10 @@ __device__ __forceinline__ void compute_sfm_v(
 
 #pragma unroll
   for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
+    // v_col_idx: current column j of *v_smem_offset_r before each advance_offset_by_column.
+    // Reset per KV row: each row's V fragment starts at column threadIdx.x / WARP_THREAD_COLS.
+    // Needed by k128B_16Row; ignored by k128B.
+    uint32_t v_col_idx = threadIdx.x / KTraits::WARP_THREAD_COLS;
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
       uint32_t b_frag[INT32_ELEMS_PER_THREAD];
