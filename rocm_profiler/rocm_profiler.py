@@ -70,6 +70,19 @@ Counter presets:
     "memory"    2 passes — Pass1: FetchSize+VALU+TCC_RD; Pass2: WriteSize+LDS+TCC_WR
     "basic"     2 passes — FetchSize / WriteSize (separate passes, gfx942 hw limit)
 
+    Note: You can also bypass presets entirely and point to a YAML file on disk:
+    `counters="/path/to/my_counters.yml"`.  The file must use rocprofv3's native
+    job format — one `pmc:` list per hardware pass.  Counters that share the same
+    internal resource on gfx942 (e.g. FetchSize + WriteSize) must be split across
+    separate passes or rocprofv3 will abort with error code 38.  Example:
+
+        # my_counters.yml
+        jobs:
+          - pmc: [SQ_WAVES, SQ_INSTS_MFMA, FetchSize]   # Pass 1
+          - pmc: [SQ_WAIT_INST_ANY, WriteSize]            # Pass 2
+
+    Run `rocprofv3 --list-counters` to enumerate all counters available on your GPU.
+
 rocprofv3 notes:
 
   - rocprofv3 replays the driver script once per PMC pass. Each replay sees

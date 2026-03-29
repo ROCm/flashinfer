@@ -31,6 +31,34 @@ Output files (all gitignored):
     benchmarks/rocm_benchmarks/fa2_counters.yml
     benchmarks/rocm_benchmarks/fa2_counter_collection.csv
     benchmarks/rocm_benchmarks/fa2_roofline.png
+
+Custom counters:
+
+    Instead of a built-in preset ("roofline", "compute", "memory", "basic") you can
+    point `counters=` at a YAML file in rocprofv3's native job format:
+
+        profiler = RocmProfiler(..., counters="my_counters.yml", ...)
+
+    The YAML groups hardware counters into passes. On gfx942 (MI300X) the hardware
+    cannot collect all counters in a single pass; counters that share the same
+    internal resource must be placed in separate `pmc:` entries.  Key constraints:
+
+        • FetchSize and WriteSize must be in different passes.
+        • SQ_INSTS_VALU cannot be combined with FetchSize or WriteSize.
+        • MemUnitBusy does not exist on gfx942.
+
+    Example — collect occupancy + wave stall breakdown in two passes:
+
+        # my_counters.yml
+        jobs:
+          # Pass 1: wave issue rate + MFMA activity
+          - pmc: [SQ_WAVES, SQ_INSTS_MFMA, SQ_INSTS_VALU_MFMA_MOPS_F16, FetchSize]
+          # Pass 2: stall reasons (must be separate — share SQ resource with Pass 1)
+          - pmc: [SQ_WAIT_INST_ANY, SQ_ACTIVE_INST_VALU, WriteSize]
+
+    To discover available counters for your GPU run:
+
+        rocprofv3 --list-counters
 """
 
 import sys
