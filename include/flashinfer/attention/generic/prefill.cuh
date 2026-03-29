@@ -120,7 +120,7 @@ struct KernelTraits {
   // LDS bank conflicts that k128B exhibits in the Q-smem read path on MI300x
   // (CDNA3 issues LDS in 16-thread phases; k128B only de-aliases 8 of them).
   static constexpr SwizzleMode SWIZZLE_MODE_Q = SwizzleMode::k128B_16Row;
-  static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::k128B;
+  static constexpr SwizzleMode SWIZZLE_MODE_KV = SwizzleMode::k128B_16Row;
 
   // Presently we use 16x4 thread layout for all cases.
   static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
@@ -652,7 +652,8 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
       uint32_t mma_di = (warp_idx % 2);
       k_smem->load_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
       uint32_t k_smem_offset_r_last_half =
-          k_smem->template advance_offset_by_column<4>(k_smem_offset_r_first_half, 0);
+          k_smem->template advance_offset_by_column<4, UPCAST_STRIDE_K>(k_smem_offset_r_first_half,
+                                                                        0, 0);
       k_smem->load_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
       k_frag_apply_llama_rope<DTypeKV, HALF_ELEMS_PER_THREAD>(
           (DTypeKV*)k_frag_local[0], (DTypeKV*)k_frag_local[1], rope_freq[mma_di], kv_idx);
@@ -676,24 +677,29 @@ __device__ __forceinline__ void k_smem_inplace_apply_rotary(
     uint32_t kv_idx = kv_idx_base + (warp_idx_z * KTraits::NUM_MMA_KV * 16) +
                       lane_idx / THREADS_PER_BMATRIX_ROW_SET;
     *k_smem_offset_r = *k_smem_offset_r ^ (0x2 * warp_idx_x);
+    // Starting logical column after the XOR: j_new = (lane_idx/TPBRS) ^ (2*warp_idx_x).
+    // Required by k128B_16Row for advance_offset_by_column<step> when step ∈ {2,4}.
+    const uint32_t k_col_rope = (lane_idx / THREADS_PER_BMATRIX_ROW_SET) ^ (2u * warp_idx_x);
 #pragma unroll
     for (uint32_t i = 0; i < KTraits::NUM_MMA_KV; ++i) {
       uint32_t k_smem_offset_r_first_half = *k_smem_offset_r;
+      uint32_t k_col_rope_cur = k_col_rope;
 #pragma unroll
       for (uint32_t j = 0; j < KTraits::NUM_MMA_D_QK / (2 * KTraits::NUM_WARPS_Q); ++j) {
         uint32_t mma_di = warp_idx_x + j * KTraits::NUM_WARPS_Q;
         k_smem->load_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
         uint32_t k_smem_offset_r_last_half =
-            k_smem->template advance_offset_by_column<KTraits::NUM_MMA_D_QK>(
-                k_smem_offset_r_first_half, 0);
+            k_smem->template advance_offset_by_column<KTraits::NUM_MMA_D_QK, UPCAST_STRIDE_K>(
+                k_smem_offset_r_first_half, 0, k_col_rope_cur);
         k_smem->load_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
         k_frag_apply_llama_rope<DTypeKV, HALF_ELEMS_PER_THREAD>(
             (DTypeKV*)k_frag_local[0], (DTypeKV*)k_frag_local[1], rope_freq[mma_di], kv_idx);
         k_smem->store_fragment(k_smem_offset_r_last_half, k_frag_local[1]);
         k_smem->store_fragment(k_smem_offset_r_first_half, k_frag_local[0]);
         k_smem_offset_r_first_half =
-            k_smem->template advance_offset_by_column<2 * KTraits::NUM_WARPS_Q>(
-                k_smem_offset_r_first_half, mma_di);
+            k_smem->template advance_offset_by_column<2 * KTraits::NUM_WARPS_Q, UPCAST_STRIDE_K>(
+                k_smem_offset_r_first_half, mma_di, k_col_rope_cur);
+        k_col_rope_cur += 2u * KTraits::NUM_WARPS_Q;
       }
       *k_smem_offset_r += 16 * UPCAST_STRIDE_K;
       kv_idx += 16;
@@ -722,6 +728,8 @@ __device__ __forceinline__ void compute_qk(
   // Needed by k128B_16Row to apply the exact XOR correction; ignored by k128B.
   // Initial column = lane_idx / WARP_THREAD_COLS (the "j" dimension of the read layout).
   uint32_t q_col_idx = tid.x / KTraits::WARP_THREAD_COLS;
+  // k_col_idx: same role for *k_smem_offset_r in the K read path.
+  uint32_t k_col_idx = tid.x / KTraits::WARP_THREAD_COLS;
 
   // compute q*k^T
 #pragma unroll
@@ -772,9 +780,11 @@ __device__ __forceinline__ void compute_qk(
       }
       *k_smem_offset_r -= KTraits::NUM_MMA_KV * 16 * UPCAST_STRIDE_K;
     } else {
-      *k_smem_offset_r = k_smem->template advance_offset_by_column<QK_SMEM_COLUMN_ADVANCE>(
-                             *k_smem_offset_r, mma_d) -
-                         KTraits::NUM_MMA_KV * 16 * UPCAST_STRIDE_K;
+      *k_smem_offset_r =
+          k_smem->template advance_offset_by_column<QK_SMEM_COLUMN_ADVANCE, UPCAST_STRIDE_K>(
+              *k_smem_offset_r, mma_d, k_col_idx) -
+          KTraits::NUM_MMA_KV * 16 * UPCAST_STRIDE_K;
+      k_col_idx += QK_SMEM_COLUMN_ADVANCE;
     }
   }
   *q_smem_offset_r -= KTraits::NUM_MMA_D_QK * QK_SMEM_COLUMN_ADVANCE;
@@ -950,6 +960,9 @@ __device__ __forceinline__ void compute_sfm_v(
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
   constexpr uint32_t V_SMEM_COLUMN_ADVANCE = 16 / KTraits::HALF_ELEMS_PER_THREAD;
+  // v_col_idx: current column j of *v_smem_offset_r before each advance_offset_by_column<4>.
+  // Needed by k128B_16Row; ignored by k128B.
+  uint32_t v_col_idx = threadIdx.x / KTraits::WARP_THREAD_COLS;
   typename KTraits::DTypeQ s_frag_f16[KTraits::NUM_MMA_Q][KTraits::NUM_MMA_KV]
                                      [HALF_ELEMS_PER_THREAD];
 
@@ -1014,8 +1027,10 @@ __device__ __forceinline__ void compute_sfm_v(
               *v_smem_offset_r, mma_d / 2);
         }
       } else {
-        *v_smem_offset_r = v_smem->template advance_offset_by_column<V_SMEM_COLUMN_ADVANCE>(
-            *v_smem_offset_r, mma_d);
+        *v_smem_offset_r =
+            v_smem->template advance_offset_by_column<V_SMEM_COLUMN_ADVANCE, UPCAST_STRIDE_V>(
+                *v_smem_offset_r, mma_d, v_col_idx);
+        v_col_idx += V_SMEM_COLUMN_ADVANCE;
       }
     }
     *v_smem_offset_r =
