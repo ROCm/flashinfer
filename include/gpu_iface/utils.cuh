@@ -93,11 +93,16 @@ inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_di
   // the time.
   //
   // CTA_TILE_Q=64 with head_dim=128 → 32 KB smem → 2 blocks/CU → 8 wavefronts,
-  // doubling latency-hiding capacity and MFMA utilization.  For head_dim≥256
-  // the Q tile alone is ≥32 KB so 64 is already the largest viable Q tile.
-  // CTA_TILE_Q=16 is retained for very short sequences (avg ≤ 16 rows) to
-  // avoid launching an excessive number of near-empty threadblocks.
-  (void)head_dim;  // no longer needed; all head_dims benefit from CTA_TILE_Q=64
+  // doubling latency-hiding capacity and MFMA utilization.
+  //
+  // For head_dim >= 256, CTA_TILE_Q=16 is non-viable on CDNA3: get_num_warps_q(16)=1
+  // forces NUM_WARPS_KV=4, so even the minimum NUM_MMA_KV=1 configuration produces
+  // smem = Q(8 KB) + K(32 KB) + V(32 KB) = 72 KB, exceeding the 64 KB LDS ceiling.
+  // 2 blocks/CU is also impossible since the Q tile alone occupies 32 KB = half of LDS,
+  // so CTA_TILE_Q=64 is the correct choice for all sequence lengths at head_dim >= 256.
+  if (head_dim >= 256) return 64;
+  // CTA_TILE_Q=16 is retained for very short sequences (avg ≤ 16 rows) with head_dim < 256
+  // to avoid launching an excessive number of near-empty threadblocks.
   return avg_packed_qo_len <= 16 ? 16 : 64;
 #endif
 }
