@@ -1670,9 +1670,27 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
          !USE_FP16_QK_REDUCTION)
             ? 2
             : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
-    const uint32_t max_num_mma_kv_smem =
-        (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
-        ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
+    // On HIP (CDNA3), cap KV smem at half of LDS per CU to allow 2 workgroups/CU.
+    // Without this cap, CTA_TILE_Q=64 savings in q_smem are automatically
+    // consumed by a larger NUM_MMA_KV, keeping smem at 48 KB (1 block/CU).
+    // With the cap, CTA_TILE_Q=64+head_dim=128 → 32 KB smem → 2 blocks/CU.
+    // Always use at least min_valid_mma_kv (IsInvalid: NUM_MMA_D_VO==4 → must be even).
+#if defined(PLATFORM_HIP_DEVICE)
+    const uint32_t q_smem_bytes_ = CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
+    const uint32_t kv_budget_ =
+        (static_cast<uint32_t>(max_smem_per_threadblock) / 2u > q_smem_bytes_)
+            ? static_cast<uint32_t>(max_smem_per_threadblock) / 2u - q_smem_bytes_
+            : 0u;
+    constexpr uint32_t min_valid_mma_kv_ = (HEAD_DIM_VO / 16u == 4u) ? 2u : 1u;
+#else
+    const uint32_t kv_budget_ =
+        static_cast<uint32_t>(max_smem_per_threadblock) -
+        CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
+    constexpr uint32_t min_valid_mma_kv_ = 1u;
+#endif
+    const uint32_t max_num_mma_kv_smem = std::max(
+        min_valid_mma_kv_, static_cast<uint32_t>(kv_budget_ / ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 *
+                                                               NUM_WARPS_KV * sizeof(DTypeKV))));
 
     // control NUM_MMA_KV for maximum warp occupancy
     DISPATCH_NUM_MMA_KV(min(max_num_mma_kv_smem, max_num_mma_kv_reg), NUM_MMA_KV, {
@@ -2398,9 +2416,26 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
           ? 2
           : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
 
-  const uint32_t max_num_mma_kv_smem =
-      (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
-      ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
+  // On HIP (CDNA3), cap KV smem at half of LDS per CU to allow 2 workgroups/CU.
+  // Without this cap, CTA_TILE_Q=64 savings in q_smem are automatically
+  // consumed by a larger NUM_MMA_KV, keeping smem at 48 KB (1 block/CU).
+  // With the cap, CTA_TILE_Q=64+head_dim=128 → 32 KB smem → 2 blocks/CU.
+  // Always use at least min_valid_mma_kv (IsInvalid: NUM_MMA_D_VO==4 → must be even).
+#if defined(PLATFORM_HIP_DEVICE)
+  const uint32_t q_smem_bytes_ = CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
+  const uint32_t kv_budget_ =
+      (static_cast<uint32_t>(max_smem_per_threadblock) / 2u > q_smem_bytes_)
+          ? static_cast<uint32_t>(max_smem_per_threadblock) / 2u - q_smem_bytes_
+          : 0u;
+  constexpr uint32_t min_valid_mma_kv_ = (HEAD_DIM_VO / 16u == 4u) ? 2u : 1u;
+#else
+  const uint32_t kv_budget_ =
+      static_cast<uint32_t>(max_smem_per_threadblock) - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
+  constexpr uint32_t min_valid_mma_kv_ = 1u;
+#endif
+  const uint32_t max_num_mma_kv_smem = std::max(
+      min_valid_mma_kv_, static_cast<uint32_t>(kv_budget_ / ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 *
+                                                             NUM_WARPS_KV * sizeof(DTypeKV))));
 
   DISPATCH_NUM_MMA_KV(min(max_num_mma_kv_smem, max_num_mma_kv_reg), NUM_MMA_KV, {
     using KTraits =
@@ -2496,9 +2531,26 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
           ? 2
           : (ELEMS_PER_FRAGMENT / NUM_MMA_Q);
 
-  const uint32_t max_num_mma_kv_smem =
-      (max_smem_per_threadblock - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ)) /
-      ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 * NUM_WARPS_KV * sizeof(DTypeKV));
+  // On HIP (CDNA3), cap KV smem at half of LDS per CU to allow 2 workgroups/CU.
+  // Without this cap, CTA_TILE_Q=64 savings in q_smem are automatically
+  // consumed by a larger NUM_MMA_KV, keeping smem at 48 KB (1 block/CU).
+  // With the cap, CTA_TILE_Q=64+head_dim=128 → 32 KB smem → 2 blocks/CU.
+  // Always use at least min_valid_mma_kv (IsInvalid: NUM_MMA_D_VO==4 → must be even).
+#if defined(PLATFORM_HIP_DEVICE)
+  const uint32_t q_smem_bytes_ = CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
+  const uint32_t kv_budget_ =
+      (static_cast<uint32_t>(max_smem_per_threadblock) / 2u > q_smem_bytes_)
+          ? static_cast<uint32_t>(max_smem_per_threadblock) / 2u - q_smem_bytes_
+          : 0u;
+  constexpr uint32_t min_valid_mma_kv_ = (HEAD_DIM_VO / 16u == 4u) ? 2u : 1u;
+#else
+  const uint32_t kv_budget_ =
+      static_cast<uint32_t>(max_smem_per_threadblock) - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
+  constexpr uint32_t min_valid_mma_kv_ = 1u;
+#endif
+  const uint32_t max_num_mma_kv_smem = std::max(
+      min_valid_mma_kv_, static_cast<uint32_t>(kv_budget_ / ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 *
+                                                             NUM_WARPS_KV * sizeof(DTypeKV))));
 
   DISPATCH_NUM_MMA_KV(min(max_num_mma_kv_smem, max_num_mma_kv_reg), NUM_MMA_KV, {
     using KTraits =

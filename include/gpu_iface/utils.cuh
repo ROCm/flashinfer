@@ -85,16 +85,25 @@ inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_di
     }
   }
 #elif defined(PLATFORM_HIP_DEVICE)
-  // HIP version: AMD GPUs have 64KB shared memory limit with warp size 64
-  // For head_dim >= 256, CTA_TILE_Q=16 requires >64KB shared memory
-  // Always use CTA_TILE_Q=64 for large head dimensions
-  if (head_dim >= 256) {
-    return 64;
-  } else if (avg_packed_qo_len > 64 && head_dim < 256) {
-    return 128;
-  } else {
-    return avg_packed_qo_len <= 16 ? 16 : 64;
-  }
+  // CDNA3 (MI300X) occupancy-aware tile selection.
+  //
+  // LDS per CU on gfx942 is 64 KB. SharedStorageQKVO with CTA_TILE_Q=128 and
+  // head_dim=128 occupies 48 KB, fitting only 1 block/CU → 4 wavefronts/CU
+  // (12.5% of the 32-wavefront HW maximum), leaving MFMA units idle >93% of
+  // the time.
+  //
+  // CTA_TILE_Q=64 with head_dim=128 → 32 KB smem → 2 blocks/CU → 8 wavefronts,
+  // doubling latency-hiding capacity and MFMA utilization.
+  //
+  // For head_dim >= 256, CTA_TILE_Q=16 is non-viable on CDNA3: get_num_warps_q(16)=1
+  // forces NUM_WARPS_KV=4, so even the minimum NUM_MMA_KV=1 configuration produces
+  // smem = Q(8 KB) + K(32 KB) + V(32 KB) = 72 KB, exceeding the 64 KB LDS ceiling.
+  // 2 blocks/CU is also impossible since the Q tile alone occupies 32 KB = half of LDS,
+  // so CTA_TILE_Q=64 is the correct choice for all sequence lengths at head_dim >= 256.
+  if (head_dim >= 256) return 64;
+  // CTA_TILE_Q=16 is retained for very short sequences (avg ≤ 16 rows) with head_dim < 256
+  // to avoid launching an excessive number of near-empty threadblocks.
+  return avg_packed_qo_len <= 16 ? 16 : 64;
 #endif
 }
 
