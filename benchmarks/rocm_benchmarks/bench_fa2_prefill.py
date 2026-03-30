@@ -160,8 +160,13 @@ def _make_configs() -> list[KernelConfig]:
         factor = 2 if causal else 4
         flops = seq_len * seq_len * num_qo_heads * head_dim * factor
 
-        # Bytes: Q + K + V + O  (4 tensors × fp16 × elements), cold-cache lower bound
-        theo_bytes = 8 * seq_len * num_qo_heads * head_dim * 2
+        # Bytes (cold-cache lower bound):
+        #   Q: (seq_len, num_qo_heads, head_dim)  — read
+        #   K: (seq_len, num_kv_heads, head_dim)  — read
+        #   V: (seq_len, num_kv_heads, head_dim)  — read
+        #   O: (seq_len, num_qo_heads, head_dim)  — write
+        # Total = fp16 (2 B) × (2×num_qo_heads + 2×num_kv_heads) × seq_len × head_dim
+        theo_bytes = 4 * seq_len * head_dim * (num_qo_heads + num_kv_heads)
 
         causal_str = "causal" if causal else "nc"
         configs.append(
