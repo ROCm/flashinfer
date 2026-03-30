@@ -664,7 +664,7 @@ class RocmProfiler:
         )
         sys.stdout.flush()
         pre = subprocess.run(
-            [sys.executable, sys.argv[0]],
+            [sys.executable, *sys.argv],
             env=prewarm_env,
             capture_output=True,
             text=True,
@@ -706,7 +706,7 @@ class RocmProfiler:
                 ]
                 if self.kernel_name_regex:
                     cmd += ["--kernel-include-regex", self.kernel_name_regex]
-                cmd += ["--", sys.executable, sys.argv[0]]
+                cmd += ["--", sys.executable, *sys.argv]
 
                 env = {
                     **os.environ,

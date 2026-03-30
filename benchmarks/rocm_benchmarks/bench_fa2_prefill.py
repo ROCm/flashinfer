@@ -144,6 +144,7 @@ _CONFIGS = [
 _OUTPUT_DIR = str(Path(__file__).parent)
 
 
+@torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
     configs = []
     for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
@@ -168,9 +169,11 @@ def _make_configs() -> list[KernelConfig]:
         configs.append(
             KernelConfig(
                 name=f"s{seq_len}_{causal_str}",
-                run_fn=lambda q=q, k=k, v=v, c=causal: (
-                    flashinfer.single_prefill_with_kv_cache_return_lse(
-                        q, k, v, causal=c, backend="fa2"
+                run_fn=torch.inference_mode()(
+                    lambda q=q, k=k, v=v, c=causal: (
+                        flashinfer.single_prefill_with_kv_cache_return_lse(
+                            q, k, v, causal=c, backend="fa2"
+                        )
                     )
                 ),
                 theoretical_flops=flops,
@@ -181,19 +184,18 @@ def _make_configs() -> list[KernelConfig]:
     return configs
 
 
-# Constructed at module level so rocprofv3 subprocess replay (which re-imports
-# this module with the same sys.argv) picks up the correct counters preset.
-profiler = RocmProfiler(
-    configs=_make_configs(),
-    num_warmup=3,
-    dry_run_ms=100,
-    repeat_ms=1000,
-    counters=_counters,
-    kernel_name_regex="SinglePrefillWithKVCacheKernel",
-    output_dir=_OUTPUT_DIR,
-    label=_label,
-    roofline=(_counters == "roofline"),
-)
-
 if __name__ == "__main__":
+    # Defer GPU tensor allocation: --replot and --list-presets don't need a CUDA device.
+    _skip_gpu = "--replot" in sys.argv or "--list-presets" in sys.argv
+    profiler = RocmProfiler(
+        configs=[] if _skip_gpu else _make_configs(),
+        num_warmup=3,
+        dry_run_ms=100,
+        repeat_ms=1000,
+        counters=_counters,
+        kernel_name_regex="SinglePrefillWithKVCacheKernel",
+        output_dir=_OUTPUT_DIR,
+        label=_label,
+        roofline=(_counters == "roofline"),
+    )
     profiler.run()
