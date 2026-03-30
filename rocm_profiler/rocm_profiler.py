@@ -69,6 +69,8 @@ Counter presets:
     "compute"   1 pass  — MFMA ops and cycle counters
     "memory"    2 passes — Pass1: FetchSize+VALU+TCC_RD; Pass2: WriteSize+LDS+TCC_WR
     "basic"     2 passes — FetchSize / WriteSize (separate passes, gfx942 hw limit)
+    "occupancy" 2 passes — SQ_WAVES+SQ_BUSY_CYCLES+SQ_VALU_MFMA_BUSY_CYCLES / SQ_WAIT_INST_ANY+SQ_INSTS_LDS
+    "stall"     2 passes — SQ_INSTS_MFMA+SQ_WAIT_INST_VMEM+SQ_VALU_MFMA_BUSY_CYCLES / SQ_WAIT_INST_LDS+SQ_BUSY_CYCLES
 
     Note: You can also bypass presets entirely and point to a YAML file on disk:
     `counters="/path/to/my_counters.yml"`.  The file must use rocprofv3's native
@@ -145,6 +147,33 @@ jobs:
 jobs:
   - pmc: [FetchSize, SQ_INSTS_VALU_MFMA_MOPS_F16]
   - pmc: [WriteSize]
+""",
+    # Two-pass occupancy preset — confirms the LDS-driven occupancy collapse
+    # hypothesis and measures the true MFMA pipeline duty cycle.
+    #
+    # Derived metrics:
+    #   SQ_VALU_MFMA_BUSY_CYCLES / SQ_BUSY_CYCLES  → MFMA duty cycle
+    #   SQ_WAIT_INST_ANY / SQ_BUSY_CYCLES           → stalled fraction (barriers + waits)
+    #   SQ_WAVES / grid_blocks                      → wavefronts per block (expect 4)
+    "occupancy": """\
+jobs:
+  # Pass 1: wave count + GPU busy cycles + MFMA-active cycles + L2 reads
+  - pmc: [SQ_WAVES, SQ_BUSY_CYCLES, SQ_VALU_MFMA_BUSY_CYCLES, FetchSize]
+  # Pass 2: stall-all cycles + LDS instruction count + L2 writes
+  - pmc: [SQ_WAIT_INST_ANY, SQ_INSTS_LDS, WriteSize]
+""",
+    # Two-pass stall-source breakdown — identifies whether pipeline stalls
+    # originate from LDS latency, VMEM (HBM/L2) latency, or issue bubbles.
+    #
+    # Derived metrics:
+    #   SQ_WAIT_INST_LDS  / SQ_BUSY_CYCLES  → LDS-not-ready stall fraction
+    #   SQ_WAIT_INST_VMEM / SQ_BUSY_CYCLES  → VMEM-not-ready stall fraction
+    "stall": """\
+jobs:
+  # Pass 1: MFMA instruction count + VMEM stall cycles + MFMA pipe busy + L2 reads
+  - pmc: [SQ_INSTS_MFMA, SQ_WAIT_INST_VMEM, SQ_VALU_MFMA_BUSY_CYCLES, FetchSize]
+  # Pass 2: LDS stall cycles + total busy cycles + L2 writes
+  - pmc: [SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES, WriteSize]
 """,
     # -----------------------------------------------------------------------
     # Template for custom tuning presets — copy, rename, and modify.

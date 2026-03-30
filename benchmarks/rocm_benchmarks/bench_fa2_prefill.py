@@ -17,50 +17,59 @@ FA2 single prefill roofline benchmark using rocm_profiler.
 
 Run:
 
-    # Full pipeline: timing + rocprofv3 counter collection + roofline PNG
+    # Full roofline pipeline (timing + counter collection + roofline PNG):
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py
+
+    # Select a different counter preset:
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters stall
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters compute
+
+    # Override the output file label prefix:
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy --label fa2_occ
 
     # Timing only (no rocprofv3):
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --timing-only
 
+    # Skip roofline plot after profiling:
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --skip-roofline
+
     # Regenerate plot from existing CSVs (no GPU required):
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --replot
 
+    # List all available counter presets:
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --list-presets
+
 Output files (all gitignored):
-    benchmarks/rocm_benchmarks/fa2_timing.csv
-    benchmarks/rocm_benchmarks/fa2_counters.yml
-    benchmarks/rocm_benchmarks/fa2_counter_collection.csv
-    benchmarks/rocm_benchmarks/fa2_roofline.png
+    benchmarks/rocm_benchmarks/<label>_timing.csv
+    benchmarks/rocm_benchmarks/<label>_counters.yml
+    benchmarks/rocm_benchmarks/<label>_counter_collection.csv
+    benchmarks/rocm_benchmarks/<label>_roofline.png   (roofline preset only)
 
-Custom counters:
+Counter presets available out of the box:
+    roofline  — FetchSize, WriteSize, MFMA ops, TCC DRAM requests (default)
+    compute   — MFMA ops and cycle counters
+    memory    — L2 and DRAM bandwidth breakdown
+    basic     — minimal: FetchSize / WriteSize only
+    occupancy — SQ_WAVES, SQ_BUSY_CYCLES, SQ_VALU_MFMA_BUSY_CYCLES,
+                SQ_WAIT_INST_ANY, SQ_INSTS_LDS
+    stall     — SQ_INSTS_MFMA, SQ_WAIT_INST_VMEM, SQ_VALU_MFMA_BUSY_CYCLES,
+                SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES
 
-    Instead of a built-in preset ("roofline", "compute", "memory", "basic") you can
-    point `counters=` at a YAML file in rocprofv3's native job format:
+    Or pass a path to a YAML file in rocprofv3 native job format.
 
-        profiler = RocmProfiler(..., counters="my_counters.yml", ...)
-
-    The YAML groups hardware counters into passes. On gfx942 (MI300X) the hardware
-    cannot collect all counters in a single pass; counters that share the same
-    internal resource must be placed in separate `pmc:` entries.  Key constraints:
-
-        • FetchSize and WriteSize must be in different passes.
-        • SQ_INSTS_VALU cannot be combined with FetchSize or WriteSize.
-        • MemUnitBusy does not exist on gfx942.
-
-    Example — collect occupancy + wave stall breakdown in two passes:
-
-        # my_counters.yml
-        jobs:
-          # Pass 1: wave issue rate + MFMA activity
-          - pmc: [SQ_WAVES, SQ_INSTS_MFMA, SQ_INSTS_VALU_MFMA_MOPS_F16, FetchSize]
-          # Pass 2: stall reasons (must be separate — share SQ resource with Pass 1)
-          - pmc: [SQ_WAIT_INST_ANY, SQ_ACTIVE_INST_VALU, WriteSize]
-
-    To discover available counters for your GPU run:
-
-        rocprofv3 --list-counters
+Design note — why --counters is parsed at module level
+-------------------------------------------------------
+rocprofv3 re-executes this script as a subprocess (passing the same sys.argv)
+to collect hardware counters.  The RocmProfiler object must therefore be
+constructed at module import time with the correct `counters=` value, so that
+both the outer driver and the inner rocprofv3 subprocess use the same preset.
+We extract --counters / --label here (using parse_known_args so we don't
+conflict with the profiler's own argparse), strip them from sys.argv, and then
+pass the values to the RocmProfiler constructor.
 """
 
+import argparse
 import sys
 import logging
 from pathlib import Path
@@ -75,6 +84,44 @@ logger.setLevel(logging.ERROR)
 # (two levels up from benchmarks/rocm_benchmarks/)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "rocm_profiler"))
 from rocm_profiler import KernelConfig, RocmProfiler
+
+# ---------------------------------------------------------------------------
+# Bench-script-level argument parsing
+#
+# parse_known_args() extracts only --counters / --label and leaves all other
+# flags (--timing-only, --skip-roofline, --replot, --list-presets, …) in
+# sys.argv for RocmProfiler._parse_args() to consume.
+# ---------------------------------------------------------------------------
+_bench_parser = argparse.ArgumentParser(add_help=False)
+_bench_parser.add_argument(
+    "--counters",
+    default="roofline",
+    metavar="PRESET_OR_FILE",
+    help=(
+        "Counter preset name ('roofline', 'occupancy', 'stall', 'compute', "
+        "'memory', 'basic') or path to a rocprofv3 YAML file. "
+        "Default: roofline."
+    ),
+)
+_bench_parser.add_argument(
+    "--label",
+    default=None,
+    metavar="PREFIX",
+    help=(
+        "Output-file label prefix (default: 'fa2' for the roofline preset, "
+        "'fa2_<preset>' for all others)."
+    ),
+)
+_bench_args, _remaining = _bench_parser.parse_known_args()
+# Strip --counters / --label so RocmProfiler's own argparse doesn't error on them.
+sys.argv = [sys.argv[0]] + _remaining
+
+_counters = _bench_args.counters
+_label = (
+    _bench_args.label
+    if _bench_args.label is not None
+    else ("fa2" if _counters == "roofline" else f"fa2_{_counters}")
+)
 
 # ---------------------------------------------------------------------------
 # Sweep configuration
@@ -134,16 +181,18 @@ def _make_configs() -> list[KernelConfig]:
     return configs
 
 
+# Constructed at module level so rocprofv3 subprocess replay (which re-imports
+# this module with the same sys.argv) picks up the correct counters preset.
 profiler = RocmProfiler(
     configs=_make_configs(),
     num_warmup=3,
     dry_run_ms=100,
     repeat_ms=1000,
-    counters="roofline",
+    counters=_counters,
     kernel_name_regex="SinglePrefillWithKVCacheKernel",
     output_dir=_OUTPUT_DIR,
-    label="fa2",
-    roofline=True,
+    label=_label,
+    roofline=(_counters == "roofline"),
 )
 
 if __name__ == "__main__":
