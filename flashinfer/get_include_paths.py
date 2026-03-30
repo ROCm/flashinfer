@@ -4,19 +4,21 @@
 
 import os
 import pathlib
-from sysconfig import get_path
 
 
 def _get_package_root_dir():
     """Return the root directory of the flashinfer package.
+
+    Uses the location of this file so the path is correct for both regular
+    installs (site-packages/flashinfer/) and scikit-build-core inplace editable
+    installs (source_root/flashinfer/).
 
     Returns
     -------
     package_root_dir : str
         Path to the root directory of the flashinfer package.
     """
-    platlib = get_path("platlib")
-    return os.path.join(platlib, "flashinfer")
+    return str(pathlib.Path(__file__).parent)
 
 
 def get_include():
