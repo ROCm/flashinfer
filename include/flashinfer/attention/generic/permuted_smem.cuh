@@ -16,6 +16,8 @@ namespace flashinfer {
 enum class SwizzleMode {
   k64B,
   k128B,
+  k128B_16Row,  // Period-16 XOR swizzle for CDNA3 MI300x (64-thread wavefront, 16-thread LDS
+                // phases)
   kLinear,
 };
 
@@ -65,6 +67,11 @@ struct smem_t {
   static __device__ __forceinline__ uint32_t get_permuted_offset(uint32_t i, uint32_t j) {
     if constexpr (swizzle_mode == SwizzleMode::k128B) {
       return i * stride + (j ^ (i % 8));
+    } else if constexpr (swizzle_mode == SwizzleMode::k128B_16Row) {
+      // Extend the XOR period from 8 to 16 when stride allows it, eliminating
+      // the 8-way read-path bank conflicts that k128B has on CDNA3 MI300x.
+      constexpr uint32_t period = (stride >= 16u) ? 16u : 8u;
+      return i * stride + (j ^ (i % period));
     } else if constexpr (swizzle_mode == SwizzleMode::k64B) {
       static_assert(stride == 4);
       return i * stride + (j ^ ((i / 2) % 4));
@@ -74,9 +81,25 @@ struct smem_t {
     }
   }
 
-  template <uint32_t step_size>
+  // advance_offset_by_column
+  //
+  // The optional `stride` template parameter and `col_idx` runtime parameter are
+  // required for k128B_16Row with step_size ∈ {2, 4}.  All other modes and the
+  // step_size % 8 == 0 fast-path ignore them, so existing call sites that do not
+  // supply them continue to compile unchanged.
+  //
+  // k128B_16Row, step ∈ {2,4} — exact formula:
+  //   L         = offset & (stride-1)          // swizzled lower bits = j ^ (i%16)
+  //   i_mod     = col_idx ^ L                  // recover i % 16
+  //   new_lower = (col_idx + step_size) ^ i_mod // target lower bits = (j+step) ^ (i%16)
+  //   result    = (offset & ~(stride-1)) + new_lower
+  //
+  // This requires the caller to track col_idx (the current column j before the
+  // advance), similar to how row_idx is tracked for advance_offset_by_row<4>.
+  template <uint32_t step_size, uint32_t stride = 0>
   static __device__ __forceinline__ uint32_t advance_offset_by_column(uint32_t offset,
-                                                                      uint32_t step_idx) {
+                                                                      uint32_t step_idx,
+                                                                      uint32_t col_idx = 0) {
     if constexpr (swizzle_mode == SwizzleMode::k128B) {
       static_assert(step_size == 2 || step_size == 4 || step_size % 8 == 0,
                     "Unsupported step size");
@@ -88,6 +111,25 @@ struct smem_t {
         // step_size % 8 == 0
         return offset + step_size;
       }
+    } else if constexpr (swizzle_mode == SwizzleMode::k128B_16Row) {
+      static_assert(step_size == 2 || step_size == 4 || step_size % 8 == 0,
+                    "Unsupported step size for k128B_16Row");
+      if constexpr (step_size % 8 == 0) {
+        // No swizzle correction needed; also covers the write path (step_size=16).
+        return offset + step_size;
+      } else {
+        // step_size == 2 or 4.
+        // (col_idx + step_size) ^ j can equal 4, 12, or 28 (for step=4) depending on
+        // the carry pattern, so the simple "+8 / ^8" shortcut used by k128B is not
+        // universally correct here.  The formula below is exact for all j values.
+        static_assert(stride > 0u && (stride & (stride - 1u)) == 0u,
+                      "k128B_16Row advance_offset_by_column<2/4> requires "
+                      "a non-zero power-of-2 stride template argument");
+        constexpr uint32_t mask = stride - 1u;
+        const uint32_t L = offset & mask;    // j ^ (i%period)
+        const uint32_t i_mod = col_idx ^ L;  // recover i % period
+        return (offset & ~mask) + ((col_idx + step_size) ^ i_mod);
+      }
     } else if constexpr (swizzle_mode == SwizzleMode::k64B) {
       static_assert(step_size == 2 || step_size == 4, "Unsupported step size");
       return (offset ^ 0x2) + (step_idx % 2 == 1) * 4;
@@ -97,14 +139,43 @@ struct smem_t {
     }
   }
 
+  // advance_offset_by_row
+  //
+  // The optional `row_idx` runtime parameter is required for k128B_16Row with
+  // step_size == 4.  It must be the logical row index immediately before the
+  // advance (i.e. the current row, not the target row).  All other modes and
+  // the step_size % 8 == 0 path ignore it, so existing call sites are unaffected.
+  //
+  // k128B_16Row, step == 4:
+  //   (i+4)%16 ^ i%16 alternates between 4 and 12 every 4 rows:
+  //     rows  0-3  and  8-11  →  xor_mask = 0x4
+  //     rows  4-7  and 12-15  →  xor_mask = 0xC
+  //   xor_mask = 0x4 | (0x8 * ((row_idx / 4) % 2))
   template <uint32_t step_size, uint32_t row_stride>
-  static __device__ __forceinline__ uint32_t advance_offset_by_row(uint32_t offset) {
+  static __device__ __forceinline__ uint32_t advance_offset_by_row(uint32_t offset,
+                                                                   uint32_t row_idx = 0) {
     if constexpr (swizzle_mode == SwizzleMode::k128B) {
       static_assert(step_size == 4 || step_size % 8 == 0, "Unsupported step size");
       if constexpr (step_size == 4) {
         return (offset ^ 0x4) + step_size * row_stride;
       } else {
         // step_size % 8 == 0
+        return offset + step_size * row_stride;
+      }
+    } else if constexpr (swizzle_mode == SwizzleMode::k128B_16Row) {
+      static_assert(step_size == 4 || step_size % 8 == 0, "Unsupported step size");
+      if constexpr (step_size == 4) {
+        // Use the same period as get_permuted_offset: period=16 when row_stride>=16,
+        // period=8 otherwise.  For period-16: (i+4)%16 ^ i%16 alternates between 4
+        // and 12 every 4 rows.  For period-8 (fallback): (i+4)%8 ^ i%8 = 4 always.
+        if constexpr (row_stride >= 16u) {
+          const uint32_t xor_mask = 0x4u | (0x8u * ((row_idx / 4u) % 2u));
+          return (offset ^ xor_mask) + step_size * row_stride;
+        } else {
+          return (offset ^ 0x4u) + step_size * row_stride;
+        }
+      } else {
+        // step_size % 8 == 0 (e.g. step=16 in the read path)
         return offset + step_size * row_stride;
       }
     } else if constexpr (swizzle_mode == SwizzleMode::k64B) {
