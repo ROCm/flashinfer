@@ -341,8 +341,6 @@ class RocmProfiler:
         hw_ceilings: HardwareCeilings | None = None,
         rocprofv3_timeout: int = 600,
     ) -> None:
-        if not configs:
-            raise ValueError("configs must be non-empty")
         self.configs = configs
         self.num_warmup = num_warmup
         self.dry_run_ms = dry_run_ms
@@ -391,6 +389,7 @@ class RocmProfiler:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         if args.replot:
+            # --replot reads everything from existing CSVs; configs not required.
             timing_csv = self.output_dir / f"{self.label}_timing.csv"
             counter_csv = self.output_dir / f"{self.label}_counter_collection.csv"
             for p, desc in [(timing_csv, "timing CSV"), (counter_csv, "counter CSV")]:
@@ -399,6 +398,12 @@ class RocmProfiler:
                     sys.exit(1)
             self._plot_roofline(timing_csv, counter_csv)
             return
+
+        if not self.configs:
+            raise ValueError(
+                "configs must be non-empty for timing/profiling. "
+                "Pass --replot to regenerate a plot from existing CSVs without a GPU."
+            )
 
         timing_csv = self._timing_mode()
 
@@ -722,6 +727,13 @@ class RocmProfiler:
                         env=env,
                         timeout=self._rocprofv3_timeout,
                     )
+                except FileNotFoundError:
+                    print(
+                        "[rocm_profiler] ERROR: 'rocprofv3' not found on PATH. "
+                        "Install ROCm and ensure rocprofv3 is available before profiling.",
+                        file=sys.stderr,
+                    )
+                    return None
                 except subprocess.TimeoutExpired:
                     print(
                         f"[rocm_profiler] ERROR: rocprofv3 timed out for config "
@@ -809,21 +821,20 @@ class RocmProfiler:
                 if name:
                     counters_by_name[name] = row
 
-        # Merge and compute derived metrics
+        # Merge and compute derived metrics.
+        # Drive iteration from timing CSV so --replot works with configs=[].
+        name_to_label = {cfg.name: cfg.label for cfg in self.configs}
         results = []
-        for cfg in self.configs:
-            t = timing.get(cfg.name)
-            c = counters_by_name.get(cfg.name)
-            if t is None:
-                print(f"  WARNING: no timing row for '{cfg.name}'", file=sys.stderr)
-                continue
+        for name, t in timing.items():
+            c = counters_by_name.get(name)
             if c is None:
                 print(
-                    f"  WARNING: no counter row for '{cfg.name}' — "
+                    f"  WARNING: no counter row for '{name}' — "
                     "check kernel_name_regex and rocprofv3 output",
                     file=sys.stderr,
                 )
                 continue
+            label = name_to_label.get(name, name)
 
             flops = t["theoretical_flops"]
             theo_bytes = t["theoretical_bytes"]
@@ -850,8 +861,8 @@ class RocmProfiler:
 
             results.append(
                 dict(
-                    name=cfg.name,
-                    label=cfg.label,
+                    name=name,
+                    label=label,
                     median_ms=median_ms,
                     tflops=tflops,
                     ai_theory=ai_theory,
@@ -963,28 +974,6 @@ def _detect_hw_ceilings() -> HardwareCeilings | None:
             file=sys.stderr,
         )
     return None
-
-
-def _parse_dispatch_log(stdout: str, num_warmup: int, n_configs: int) -> dict[str, int]:
-    """
-    Parse PROFILE lines emitted by _profile_mode() from the captured subprocess stdout.
-    Returns {config_name: profiled_dispatch_index}.
-
-    rocprofv3 replays the script once per PMC pass, so PROFILE lines appear
-    multiple times in stdout. Only the first occurrence per name is kept
-    (all replays emit identical indices).
-    """
-    dispatch_map: dict[str, int] = {}
-    for line in stdout.splitlines():
-        if not line.startswith("PROFILE ") or "PROFILE_DONE" in line:
-            continue
-        m = re.search(r"name=(\S+).*?dispatch=(\d+)", line)
-        if m:
-            name = m.group(1)
-            idx = int(m.group(2))
-            if name not in dispatch_map:
-                dispatch_map[name] = idx
-    return dispatch_map
 
 
 def _find_col(fieldnames: list[str], candidates: list[str]) -> str | None:
@@ -1102,104 +1091,6 @@ def _merge_pass_csvs(csv_files: list[Path]) -> dict | None:
                     merged[k] = v  # counter values: always update
 
     return merged if merged else None
-
-
-def _pivot_rocprofv3_csv(
-    raw_csv: Path, out_csv: Path, dispatch_map: dict[str, int]
-) -> None:
-    """
-    rocprofv3 --output-format csv produces long-form data:
-      Each dispatch appears once per counter, with Counter_Name / Counter_Value columns.
-
-    This function:
-      1. Groups all rows by Dispatch_Id.
-      2. Pivots Counter_Name / Counter_Value into columns.
-      3. Filters to only the profiled dispatches listed in dispatch_map.
-      4. Annotates each row with config_name and writes wide-form CSV to out_csv.
-
-    Falls back gracefully if the CSV is already wide-form (no Counter_Name column).
-    """
-
-    with open(raw_csv, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        fieldnames: list[str] = reader.fieldnames or []
-
-        dispatch_col = _find_col(
-            fieldnames, ["Dispatch_Id", "dispatch_id", "DispatchId", "dispatch-id"]
-        )
-        counter_name_col = _find_col(
-            fieldnames, ["Counter_Name", "counter_name", "CounterName"]
-        )
-        counter_val_col = _find_col(
-            fieldnames, ["Counter_Value", "counter_value", "CounterValue"]
-        )
-
-        is_long_form = counter_name_col is not None and counter_val_col is not None
-
-        # Accumulate per dispatch
-        rows_by_dispatch: dict[int, dict] = {}
-        all_counter_names: list[str] = []
-
-        for row in reader:
-            if dispatch_col is None:
-                break
-            try:
-                disp_id = int(row[dispatch_col])
-            except (ValueError, KeyError, TypeError):
-                continue
-
-            if disp_id not in rows_by_dispatch:
-                # Store metadata (everything except counter name/value columns)
-                meta = {
-                    k: v
-                    for k, v in row.items()
-                    if k not in (counter_name_col, counter_val_col)
-                }
-                rows_by_dispatch[disp_id] = meta
-
-            if is_long_form:
-                cname = row.get(counter_name_col, "").strip()
-                cval = row.get(counter_val_col, "").strip()
-                if cname:
-                    rows_by_dispatch[disp_id][cname] = cval
-                    if cname not in all_counter_names:
-                        all_counter_names.append(cname)
-
-    # Build output rows for profiled dispatches only
-    profiled_rows = []
-    for cfg_name, disp_id in sorted(dispatch_map.items(), key=lambda kv: kv[1]):
-        if disp_id in rows_by_dispatch:
-            row = dict(rows_by_dispatch[disp_id])
-            row["config_name"] = cfg_name
-            profiled_rows.append(row)
-        else:
-            print(
-                f"[rocm_profiler] WARNING: dispatch {disp_id} for config "
-                f"'{cfg_name}' not found in rocprofv3 CSV.",
-                file=sys.stderr,
-            )
-
-    if not profiled_rows:
-        print(
-            "[rocm_profiler] WARNING: pivot produced no rows. Copying raw CSV as-is.",
-            file=sys.stderr,
-        )
-        import shutil
-
-        shutil.copy(raw_csv, out_csv)
-        return
-
-    # Union of all column names, config_name first
-    all_cols: list[str] = ["config_name"] + [
-        c
-        for c in dict.fromkeys(col for r in profiled_rows for col in r)
-        if c != "config_name"
-    ]
-
-    with open(out_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=all_cols, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(profiled_rows)
 
 
 def _float(v: Any, default: float = 0.0) -> float:
