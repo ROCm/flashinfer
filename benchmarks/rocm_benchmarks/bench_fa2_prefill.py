@@ -80,8 +80,6 @@ from flashinfer.jit.core import logger
 
 logger.setLevel(logging.ERROR)
 
-# rocm_profiler lives at flashinfer/rocm_profiler/rocm_profiler.py
-# (two levels up from benchmarks/rocm_benchmarks/)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "rocm_profiler"))
 from rocm_profiler import KernelConfig, RocmProfiler
 
