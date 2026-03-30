@@ -10,8 +10,10 @@ def _get_package_root_dir():
     """Return the root directory of the flashinfer package.
 
     Uses the location of this file so the path is correct for both regular
-    installs (site-packages/flashinfer/) and scikit-build-core inplace editable
-    installs (source_root/flashinfer/).
+    installs (site-packages/flashinfer/) and editable installs. With
+    scikit-build-core's default ``redirect`` editable mode, Python sources
+    are loaded from the source tree while compiled artifacts may live under
+    ``_skbuild/editable``.
 
     Returns
     -------
