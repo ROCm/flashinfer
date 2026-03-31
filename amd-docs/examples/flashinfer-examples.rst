@@ -18,20 +18,19 @@ You can save the following code snippet to a Python script once you have FlashIn
       import torch
       import flashinfer
 
-      kv_len = 2048
-      num_kv_heads = 32
+      # Configuration
+      seq_len = 1024        # Prompt length
+      num_qo_heads = 32     # Number of query/output heads
+      num_kv_heads = 8      # Number of KV heads (GQA with 4:1 ratio)
       head_dim = 128
 
-      k = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
-      v = torch.randn(kv_len, num_kv_heads, head_dim).half().to(0)
+      # Create Q, K, V tensors (NHD layout: sequence, heads, dimension)
+      q = torch.randn(seq_len, num_qo_heads, head_dim, dtype=torch.float16, device="cuda")
+      k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
+      v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
 
-      # decode attention
-
-      num_qo_heads = 32
-      q = torch.randn(num_qo_heads, head_dim).half().to(0)
-
-      o = flashinfer.single_decode_with_kv_cache(q, k, v) # decode attention without RoPE on-the-fly
-      o_rope_on_the_fly = flashinfer.single_decode_with_kv_cache(q, k, v, pos_encoding_mode="ROPE_LLAMA") # decode with LLaMA style RoPE on-the-fly
+      # Run single prefill attention with causal masking
+      output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
 
 2. Run the script to use FlashInfer.
 
