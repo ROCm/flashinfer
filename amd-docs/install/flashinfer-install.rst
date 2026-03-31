@@ -51,7 +51,7 @@ ROCm, and all other requirements.
 
          .. code-block:: bash
 
-            docker pull rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1
+            docker pull rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1.dev20251204
 
 2. Start a Docker container using the image.
 
@@ -81,7 +81,7 @@ ROCm, and all other requirements.
             --name=my_flashinfer --cap-add=SYS_PTRACE \
             --security-opt seccomp=unconfined \
             --ipc=host --shm-size 16G \
-            rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1
+            rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1.dev20251204
 
 3. The above step will create a Docker container with FlashInfer pre-installed. Micromamba is pre-configured inside the container and will automatically start the ``base`` environment.
 
