@@ -16,6 +16,7 @@ limitations under the License.
 
 import functools
 import math
+import os
 from enum import Enum
 from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
@@ -310,6 +311,26 @@ def _check_cached_qkv_data_type(
         )
 
 
+# When True, kernels are wrapped in ``torch.library.custom_op`` so ``torch.compile`` / Dynamo
+# do not trace into extensions that touch tensor data pointers (see PyTorch custom ops docs).
+# Set environment variable ``FLASHINFER_USE_TORCH_CUSTOM_OPS=1`` before importing ``flashinfer``.
+# NOTE(Zihao): ``torch.library.custom_op`` adds dispatch overhead; see
+# https://github.com/vllm-project/vllm/blob/36e76700453924c8d421db99af70a88a1df835cd/vllm/utils.py#L1660-L1674
+_USE_TORCH_CUSTOM_OPS = os.environ.get(
+    "FLASHINFER_USE_TORCH_CUSTOM_OPS", ""
+).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+
+def use_torch_custom_ops_enabled() -> bool:
+    """Return whether opaque ``torch.library`` custom ops are active (env at import time)."""
+    return _USE_TORCH_CUSTOM_OPS
+
+
 if TorchVersion(torch_version) < TorchVersion("2.4"):
 
     def register_custom_op(
@@ -340,24 +361,33 @@ else:
         device_types: Optional[Union[str, Sequence[str]]] = None,
         schema: Optional[str] = None,
     ) -> Callable:
-        # NOTE(Zihao): torch.library.custom_op has significant overhead as mentioned in the following link
-        # https://github.com/vllm-project/vllm/blob/36e76700453924c8d421db99af70a88a1df835cd/vllm/utils.py#L1660-L1674
+        def decorator(f: Callable) -> Callable:
+            if _USE_TORCH_CUSTOM_OPS:
+                return torch.library.custom_op(
+                    name,
+                    f,
+                    mutates_args=mutates_args,
+                    device_types=device_types,
+                    schema=schema,
+                )
+            return f
 
-        # return torch.library.custom_op(
-        #     name,
-        #     fn,
-        #     mutates_args=mutates_args,
-        #     device_types=device_types,
-        #     schema=schema,
-        # )
-        return lambda x: x
+        if fn is not None:
+            return decorator(fn)
+        return decorator
 
     def register_fake_op(
         name: str,
         fn: Optional[Callable] = None,
     ) -> Callable:
-        # return torch.library.register_fake(name, fn)
-        return lambda x: x
+        def decorator(f: Callable) -> Callable:
+            if _USE_TORCH_CUSTOM_OPS:
+                torch.library.register_fake(name, f)
+            return f
+
+        if fn is not None:
+            return decorator(fn)
+        return decorator
 
 
 def determine_gemm_backend(device: torch.device) -> str:
