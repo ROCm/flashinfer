@@ -85,10 +85,6 @@ ROCm, and all other requirements.
 
 3. The above step will create a Docker container with FlashInfer pre-installed. Micromamba is pre-configured inside the container and will automatically start the ``base`` environment.
 
-   .. code-block:: bash
-
-      micromamba activate base
-
 .. _flashinfer-pip-install:
 
 Install FlashInfer using pip
