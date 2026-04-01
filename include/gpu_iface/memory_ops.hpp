@@ -124,6 +124,38 @@ __device__ __forceinline__ void pred_load(T* smem_ptr, const T* gmem_ptr, bool p
   mem_detail::pred_load<NumBits, PrefetchOpt, FillOpt>(smem_ptr, gmem_ptr, predicate);
 }
 
+#if defined(PLATFORM_HIP_DEVICE)
+// === HIP-only async GMEM → LDS primitives
+
+/**
+ * @brief Build a buffer resource descriptor (V#) for async GMEM→LDS copies.
+ *
+ * @param base        Tensor base pointer (K or V head pointer)
+ * @param num_records Byte size of the region (use 0xFFFFFFFF to skip bounds check)
+ * @return srsrc_t    4-SGPR buffer resource descriptor
+ */
+__device__ __forceinline__ mem_detail::srsrc_t make_srsrc(const void* base, uint32_t num_records) {
+  return mem_detail::make_srsrc(base, num_records);
+}
+
+/**
+ * @brief Async load 64 bits from global buffer to LDS.
+ *
+ * Issues two buffer_load_dword lds instructions (vmcnt += 2).
+ * The wavefront does not stall; the caller must later call
+ * wait_group<N>() + __syncthreads() before reading lds_dst.
+ *
+ * @param lds_dst           LDS destination (2 consecutive uint32 slots)
+ * @param rsrc              Buffer resource from make_srsrc()
+ * @param global_byte_offset Per-thread byte offset from rsrc base
+ */
+__device__ __forceinline__ void async_load_64b_to_lds(mem_detail::lds_ptr_t lds_dst,
+                                                      mem_detail::srsrc_t rsrc,
+                                                      uint32_t global_byte_offset) {
+  mem_detail::async_load_64b_to_lds(lds_dst, rsrc, global_byte_offset);
+}
+#endif  // PLATFORM_HIP_DEVICE
+
 }  // namespace memory
 }  // namespace gpu_iface
 }  // namespace flashinfer

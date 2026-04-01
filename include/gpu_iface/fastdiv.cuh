@@ -62,7 +62,7 @@ struct uint_fastdiv {
 #ifdef __CUDA_ARCH__
       q = __umulhi(m, n);
 #else
-      q = (((unsigned long long)((long long)m * (long long)n)) >> 32);
+      q = (uint32_t)(((uint64_t)m * (uint64_t)n) >> 32);
 #endif
       q += a * n;
       q >>= s;
@@ -80,7 +80,7 @@ __host__ __device__ __forceinline__ uint32_t operator/(const uint32_t n,
 #ifdef __CUDA_ARCH__
     q = __umulhi(divisor.m, n);
 #else
-    q = (((unsigned long long)((long long)divisor.m * (long long)n)) >> 32);
+    q = (uint32_t)(((uint64_t)divisor.m * (uint64_t)n) >> 32);
 #endif
     q += divisor.a * n;
     q >>= divisor.s;
