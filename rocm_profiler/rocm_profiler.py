@@ -436,7 +436,7 @@ class RocmProfiler:
         if counter_csv is not None and self.roofline and not args.skip_roofline:
             self._plot_roofline(timing_csv, counter_csv)
 
-        if counter_csv is not None and not args.skip_roofline:
+        if counter_csv is not None:
             self._maybe_print_stall_table(timing_csv, counter_csv)
 
     # ── Argparse ──────────────────────────────────────────────────────────────
@@ -455,7 +455,7 @@ class RocmProfiler:
         p.add_argument(
             "--skip-roofline",
             action="store_true",
-            help="Skip roofline plot after profiling.",
+            help="Skip roofline plot after profiling (stall table is still printed).",
         )
         p.add_argument(
             "--replot",
@@ -1261,15 +1261,18 @@ def _print_stall_table(
             )
             continue
 
+        # Normalize to upper-case so lookups are robust to rocprofv3
+        # version differences in column-name casing.
+        c_norm = {str(k).upper(): v for k, v in c.items()}
         median_ms = _float(t.get("median_ms", "nan"), float("nan"))
 
-        wait_lds = _float(c.get("SQ_WAIT_INST_LDS", 0))
-        wait_vmem = _float(c.get("SQ_WAIT_INST_VMEM", 0))
-        busy = _float(c.get("SQ_BUSY_CYCLES", 0))
-        insts_lds = _float(c.get("SQ_INSTS_LDS", 0))
-        insts_vmem = _float(c.get("SQ_INSTS_VMEM", 0))
-        hires = _float(c.get("SQ_ACCUM_PREV_HIRES", 0))
-        bank_cf = _float(c.get("SQ_LDS_BANK_CONFLICT", 0))
+        wait_lds = _float(c_norm.get("SQ_WAIT_INST_LDS", 0))
+        wait_vmem = _float(c_norm.get("SQ_WAIT_INST_VMEM", 0))
+        busy = _float(c_norm.get("SQ_BUSY_CYCLES", 0))
+        insts_lds = _float(c_norm.get("SQ_INSTS_LDS", 0))
+        insts_vmem = _float(c_norm.get("SQ_INSTS_VMEM", 0))
+        hires = _float(c_norm.get("SQ_ACCUM_PREV_HIRES", 0))
+        bank_cf = _float(c_norm.get("SQ_LDS_BANK_CONFLICT", 0))
 
         alu_stalled_lds = (wait_lds / busy * 100) if busy > 0 else float("nan")
         alu_stalled_vmem = (wait_vmem / busy * 100) if busy > 0 else float("nan")
