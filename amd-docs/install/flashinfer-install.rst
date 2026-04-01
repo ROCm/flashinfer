@@ -33,8 +33,8 @@ To install FlashInfer on ROCm, you have the following options:
 Use a prebuilt Docker image with FlashInfer pre-installed
 --------------------------------------------------------------------------------------
 
-Docker is the recommended method to set up a FlashInfer environment, as it avoids 
-dependency conflicts.  The tested, prebuilt image includes FlashInfer, PyTorch, 
+Docker is the recommended method to set up a FlashInfer environment, as it avoids
+dependency conflicts.  The tested, prebuilt image includes FlashInfer, PyTorch,
 ROCm, and all other requirements.
 
 1. Pull the Docker image.
@@ -90,9 +90,9 @@ ROCm, and all other requirements.
 Install FlashInfer using pip
 --------------------------------------------------------------------------------------
 
-Use a base PyTorch Docker image and follow these steps to install FlashInfer using ``pip``.  
+Use a base ROCm-enabled PyTorch Docker image and follow these steps to install FlashInfer using ``pip``.
 
-1. Pull the base ROCm PyTorch Docker image.
+1. Pull the base ROCm-enabled PyTorch Docker image.
 
    .. tab-set::
 
@@ -157,19 +157,19 @@ Use a base PyTorch Docker image and follow these steps to install FlashInfer usi
 Build from source
 --------------------------------------------------------------------------------------
 
-FlashInfer on ROCm can be run directly by setting up a Docker container from scratch. 
+FlashInfer on ROCm can be run directly by setting up a Docker container from scratch.
 A Dockerfile is provided in the `https://github.com/ROCm/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile <https://github.com/ROCm/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile>`__ repository to help you get started.
 
 1. Clone the `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository.
 
    .. code-block:: bash
-      
+
       git clone https://github.com/ROCm/flashinfer.git
 
 2. Enter the directory and build the Dockerfile to create a Docker image.
-   
+
    .. code-block:: bash
-      
+
       cd flashinfer
       docker build \
       --build-arg USERNAME=$USER \
@@ -181,7 +181,7 @@ A Dockerfile is provided in the `https://github.com/ROCm/flashinfer/blob/amd-int
 3. Start a Docker container using the image.
 
    .. code-block:: bash
-      
+
       docker run -it --rm \
       --privileged --network=host --device=/dev/kfd \
       --device=/dev/dri --group-add video \
@@ -196,7 +196,7 @@ A Dockerfile is provided in the `https://github.com/ROCm/flashinfer/blob/amd-int
    .. code-block:: bash
 
       cd /workspace
-      FLASHINFER_HIP_ARCHITECTURES=gfx942 python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
+      python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
       cd dist && pip install amd_flashinfer-*.whl
 
 Test the FlashInfer installation
@@ -215,3 +215,31 @@ Expected output:
    0.5.3+amd.1
 
 If you see the version string above, FlashInfer ``0.5.3`` has been installed successfully. You can now use FlashInfer in your projects.
+
+AITER Support
+======================================================================================
+
+FlashInfer+ROCm has experimental support to use `AITER <https://github.com/ROCm/aiter>`__ as a backend. AITER is a library for efficient attention operations.
+
+Unless you are using the prebuilt docker image with FlashInfer pre-installed (which includes AITER), AITER should be installed on your system to use it as a backend. You may use one of the following options to do so:
+
+* :ref:`aiter-build-from-source`
+* :ref:`aiter-install-wheel-pypi-amd`
+
+.. _aiter-build-from-source:
+
+Install AITER by building from source
+--------------------------------------------------------------------------------------
+
+.. code-block:: bash
+   git clone --recursive https://github.com/ROCm/aiter.git
+   cd aiter
+   python3 setup.py develop
+
+.. _aiter-install-wheel-pypi-amd:
+
+Install AITER wheel package from AMD PyPI
+--------------------------------------------------------------------------------------
+
+.. code-block:: bash
+   pip install amd-aiter --index-url https://pypi.amd.com/simple/

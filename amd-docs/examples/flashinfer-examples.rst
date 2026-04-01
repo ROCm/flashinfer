@@ -8,12 +8,11 @@
 Run a FlashInfer example
 ********************************************************************
 
-The examples folder in the `https://github.com/ROCm/flashinfer/tree/amd-integration/examples <https://github.com/ROCm/flashinfer/tree/amd-integration/examples>`__ repository has example code that you can use to run FlashInfer.
-You can save the following code snippet to a Python script once you have FlashInfer installed, and then run the script to try it out.
+The examples folder in the `https://github.com/ROCm/flashinfer/tree/amd-integration/examples <https://github.com/ROCm/flashinfer/tree/amd-integration/examples>`__ repository has example code that you can use to run FlashInfer. You have the option to use the AITER backend for the prefill attention kernels. The AITER backend currently is enabled for the `single_prefill` and `batch_prefill` kernels only. To use AITER as the backend for these kernels, please set ``backend="aiter"`` keyword argument when invoking the kernels.
 
 1. Save the following code snippet to a Python script named ``flashinfer_example.py``.
 
-   .. code-block:: bash
+   .. code-block:: python
 
       import torch
       import flashinfer
@@ -30,7 +29,7 @@ You can save the following code snippet to a Python script once you have FlashIn
       v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
 
       # Run single prefill attention with causal masking
-      output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
+      output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
 
 2. Run the script to use FlashInfer.
 
