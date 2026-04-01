@@ -59,6 +59,8 @@ from .utils import (
     device_support_pdl,
     get_device_sm_count,
     is_float8,
+    plan_info_vec_as_tensor,
+    plan_info_vec_to_py_list,
     register_custom_op,
     register_fake_op,
     ceil_div,
@@ -149,7 +151,7 @@ def get_batch_decode_jit_module(module_name: str, jit_module: Any):
     def run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -163,10 +165,11 @@ def get_batch_decode_jit_module(module_name: str, jit_module: Any):
         enable_pdl: bool,
         *args,
     ) -> None:
+        plan_list = plan_info_vec_to_py_list(plan_info_vec)
         run_func(
             float_workspace_buffer,
             int_workspace_buffer,
-            plan_info_vec,
+            plan_list,
             q,
             paged_k_cache,
             paged_v_cache,
@@ -185,7 +188,7 @@ def get_batch_decode_jit_module(module_name: str, jit_module: Any):
     def _fake_run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -230,7 +233,7 @@ def get_batch_decode_module(*args):
     def run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -248,10 +251,11 @@ def get_batch_decode_module(*args):
         rope_scale: float,
         rope_theta: float,
     ) -> None:
+        plan_list = plan_info_vec_to_py_list(plan_info_vec)
         run_func(
             float_workspace_buffer,
             int_workspace_buffer,
-            plan_info_vec,
+            plan_list,
             q,
             paged_k_cache,
             paged_v_cache,
@@ -274,7 +278,7 @@ def get_batch_decode_module(*args):
     def _fake_run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -1287,10 +1291,14 @@ class BatchDecodeWithPagedKVCacheWrapper:
             q = q.view(q.size(0) // q_len_per_req, q_len_per_req, q.size(1), q.size(2))
 
         if self.use_tensor_cores:
+            _plan_tensor = plan_info_vec_as_tensor(
+                self._plan_info if self._plan_info is not None else [],
+                device=self._float_workspace_buffer.device,
+            )
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
-                self._plan_info,
+                _plan_tensor,
                 q,
                 k_cache,
                 v_cache,
@@ -1344,10 +1352,14 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 plan_info = self._plan_info
             assert plan_info is not None, "plan info is not initialized"
 
+            _plan_tensor = plan_info_vec_as_tensor(
+                plan_info,
+                device=self._float_workspace_buffer.device,
+            )
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
-                self._plan_info,
+                _plan_tensor,
                 q,
                 k_cache,
                 v_cache,
@@ -1837,7 +1849,10 @@ class BatchDecodeMlaWithPagedKVCacheWrapper:
         self._cached_module.run(
             self._float_workspace_buffer,
             self._int_workspace_buffer,
-            self._plan_info,
+            plan_info_vec_as_tensor(
+                self._plan_info if self._plan_info is not None else [],
+                device=device,
+            ),
             q_nope,
             q_pe,
             paged_ckv_cache,
@@ -1944,7 +1959,7 @@ def get_trtllm_gen_decode_module(*args):
     def paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -2013,7 +2028,7 @@ def get_trtllm_gen_decode_module(*args):
     def _fake_paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,

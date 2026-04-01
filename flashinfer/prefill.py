@@ -57,6 +57,8 @@ from .utils import (
     is_sm110a_supported,
     is_sm120a_supported,
     is_sm121a_supported,
+    plan_info_vec_as_tensor,
+    plan_info_vec_to_py_list,
     register_custom_op,
     register_fake_op,
     ceil_div,
@@ -335,7 +337,6 @@ def get_single_prefill_module(backend, *args):
                 1.0 / rope_scale,  # rope_rcp_scale
                 1.0 / rope_theta,  # rope_rcp_theta
             )
-        return o
 
     @register_fake_op(f"flashinfer::{uri}_run")
     def _fake_run_single_prefill(
@@ -352,6 +353,9 @@ def get_single_prefill_module(backend, *args):
         maybe_alibi_slopes: Optional[torch.Tensor],
         logits_soft_cap: float,
         sm_scale: float,
+        scale_q: Optional[torch.Tensor],
+        scale_k: Optional[torch.Tensor],
+        scale_v: Optional[torch.Tensor],
         rope_scale: float,
         rope_theta: float,
     ) -> None:
@@ -390,7 +394,7 @@ def get_batch_prefill_module(backend, *args):
     def ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -414,11 +418,12 @@ def get_batch_prefill_module(backend, *args):
         rope_theta: float,
         token_pos_in_items_len: int,
     ) -> None:
+        plan_list = plan_info_vec_to_py_list(plan_info_vec)
         if backend == "fa2":
             ragged_run_func(
                 float_workspace_buffer,
                 int_workspace_buffer,
-                plan_info_vec,
+                plan_list,
                 q,
                 k,
                 v,
@@ -446,7 +451,7 @@ def get_batch_prefill_module(backend, *args):
             ragged_run_func(
                 float_workspace_buffer,
                 int_workspace_buffer,
-                plan_info_vec,
+                plan_list,
                 q,
                 k,
                 v,
@@ -466,13 +471,11 @@ def get_batch_prefill_module(backend, *args):
                 token_pos_in_items_len,
             )
 
-        return o
-
     @register_fake_op(f"flashinfer::{uri}_ragged_run")
     def _fake_ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -514,7 +517,7 @@ def get_batch_prefill_module(backend, *args):
     def paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -555,6 +558,7 @@ def get_batch_prefill_module(backend, *args):
         cum_seq_lens_kv: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> None:
+        plan_list = plan_info_vec_to_py_list(plan_info_vec)
         if backend == "trtllm-gen":
             assert maybe_lse is None
             assert num_qo_heads is not None
@@ -593,7 +597,7 @@ def get_batch_prefill_module(backend, *args):
             paged_run_func(
                 float_workspace_buffer,
                 int_workspace_buffer,
-                plan_info_vec,
+                plan_list,
                 q,
                 paged_k_cache,
                 paged_v_cache,
@@ -624,7 +628,7 @@ def get_batch_prefill_module(backend, *args):
                 paged_run_func(
                     float_workspace_buffer,
                     int_workspace_buffer,
-                    plan_info_vec,
+                    plan_list,
                     q,
                     paged_k_cache,
                     paged_v_cache,
@@ -649,7 +653,7 @@ def get_batch_prefill_module(backend, *args):
                 paged_run_func(
                     float_workspace_buffer,
                     int_workspace_buffer,
-                    plan_info_vec,
+                    plan_list,
                     q,
                     paged_k_cache,
                     paged_v_cache,
@@ -668,13 +672,12 @@ def get_batch_prefill_module(backend, *args):
                     scale_v,
                     sm_scale,
                 )
-        return o
 
     @register_fake_op(f"flashinfer::{uri}_paged_run")
     def _fake_paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -743,7 +746,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -756,10 +759,11 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
         window_left: int,
         *args,
     ) -> None:
+        plan_list = plan_info_vec_to_py_list(plan_info_vec)
         ragged_run_func(
             float_workspace_buffer,
             int_workspace_buffer,
-            plan_info_vec,
+            plan_list,
             q,
             k,
             v,
@@ -777,7 +781,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def _fake_ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -807,7 +811,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -822,10 +826,11 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
         window_left: int,
         *args,
     ) -> None:
+        plan_list = plan_info_vec_to_py_list(plan_info_vec)
         paged_run_func(
             float_workspace_buffer,
             int_workspace_buffer,
-            plan_info_vec,
+            plan_list,
             q,
             paged_k_cache,
             paged_v_cache,
@@ -845,7 +850,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def _fake_paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -2152,10 +2157,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
         else:
             if self._backend != "trtllm-gen":
                 assert self._plan_info is not None, "plan info is not initialized"
+            _plan_tensor = plan_info_vec_as_tensor(
+                self._plan_info if self._plan_info is not None else [],
+                device=self._float_workspace_buffer.device,
+            )
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
-                self._plan_info,
+                _plan_tensor,
                 q,
                 k_cache,
                 v_cache,
@@ -2948,10 +2957,14 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             else:
                 mask_mode = MaskMode.NON_CAUSAL.value
 
+        _plan_tensor = plan_info_vec_as_tensor(
+            self._plan_info if self._plan_info is not None else [],
+            device=self._float_workspace_buffer.device,
+        )
         run_args = [
             self._float_workspace_buffer,
             self._int_workspace_buffer,
-            self._plan_info,
+            _plan_tensor,
             q,
             k,
             v,

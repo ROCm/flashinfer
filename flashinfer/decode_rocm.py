@@ -51,6 +51,7 @@ from .utils import (
     canonicalize_torch_dtype,
     device_support_pdl,
     is_float8,
+    plan_info_vec_as_tensor,
     register_custom_op,
     register_fake_op,
 )
@@ -137,7 +138,7 @@ def get_batch_decode_jit_module(module_name: str, jit_module: Any):
     def run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -173,7 +174,7 @@ def get_batch_decode_jit_module(module_name: str, jit_module: Any):
     def _fake_run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -218,7 +219,7 @@ def get_batch_decode_module(*args):
     def run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -262,7 +263,7 @@ def get_batch_decode_module(*args):
     def _fake_run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: Optional[torch.Tensor],
         paged_v_cache: Optional[torch.Tensor],
@@ -972,6 +973,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 head_dim,
                 False,  # causal
             )
+            self._plan_info = plan_info_vec_as_tensor(
+                self._plan_info, device=self._float_workspace_buffer.device
+            )
         else:
             if self._jit_module is not None:
                 self._cached_module = self._jit_module
@@ -1004,6 +1008,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 head_dim,
                 torch.empty(0, dtype=q_data_type),
                 torch.empty(0, dtype=kv_data_type),
+            )
+            self._plan_info = plan_info_vec_as_tensor(
+                self._plan_info, device=self._float_workspace_buffer.device
             )
 
         self._pos_encoding_mode = pos_encoding_mode
@@ -1192,10 +1199,14 @@ class BatchDecodeWithPagedKVCacheWrapper:
             check_shape_dtype_device(out, q.shape, q.dtype, q.device, "out")
 
         if self.use_tensor_cores:
+            _plan_tensor = plan_info_vec_as_tensor(
+                self._plan_info if self._plan_info is not None else [],
+                device=self._float_workspace_buffer.device,
+            )
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
-                self._plan_info,
+                _plan_tensor,
                 q,
                 k_cache,
                 v_cache,
@@ -1230,13 +1241,16 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     rope_theta,
                     0,  # token_pos_in_items_len
                     self._workspace_size,
-                    paged_kv_cache,
                     self._num_qo_heads,
                     self._num_kv_heads,
                     self._block_tables,
                     self._kv_lens_buffer,
                     page_size,
+                    None,  # max_q_len (decode: single token)
                     self._max_kv_len,
+                    None,  # batch_size
+                    None,  # cum_seq_lens_q
+                    None,  # cum_seq_lens_kv
                     sinks,
                 ]
 
@@ -1245,10 +1259,14 @@ class BatchDecodeWithPagedKVCacheWrapper:
             plan_info = self._plan_info
             assert plan_info is not None, "plan info is not initialized"
 
+            _plan_tensor = plan_info_vec_as_tensor(
+                plan_info,
+                device=self._float_workspace_buffer.device,
+            )
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
-                self._plan_info,
+                _plan_tensor,
                 q,
                 k_cache,
                 v_cache,

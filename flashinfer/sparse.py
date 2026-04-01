@@ -34,6 +34,7 @@ from .utils import (
     determine_attention_backend,
     device_support_pdl,
     is_float8,
+    plan_info_vec_as_tensor,
 )
 
 
@@ -403,6 +404,9 @@ class BlockSparseAttentionWrapper:
                 torch.empty(0, dtype=q_data_type),
                 torch.empty(0, dtype=kv_data_type),
             )
+            self._plan_info = plan_info_vec_as_tensor(
+                self._plan_info, device=self._float_workspace_buffer.device
+            )
         else:
             # if the operation is compute-bound, we use the tensor-core implementation
             self._use_tensor_cores = True
@@ -476,6 +480,9 @@ class BlockSparseAttentionWrapper:
                 args.append(0)  # num_colocated_ctas
             self._plan_info = self._cached_module.plan(
                 *args,
+            )
+            self._plan_info = plan_info_vec_as_tensor(
+                self._plan_info, device=self._float_workspace_buffer.device
             )
 
         self._pos_encoding_mode = pos_encoding_mode
@@ -640,7 +647,10 @@ class BlockSparseAttentionWrapper:
             self._cached_module.paged_run(
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
-                self._plan_info,
+                plan_info_vec_as_tensor(
+                    self._plan_info if self._plan_info is not None else [],
+                    device=self._float_workspace_buffer.device,
+                ),
                 q,
                 k,
                 v,
@@ -675,7 +685,10 @@ class BlockSparseAttentionWrapper:
             self._cached_module.run(
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
-                self._plan_info,
+                plan_info_vec_as_tensor(
+                    self._plan_info if self._plan_info is not None else [],
+                    device=self._float_workspace_buffer.device,
+                ),
                 q,
                 k,
                 v,
@@ -1067,6 +1080,9 @@ class VariableBlockSparseAttentionWrapper:
         self._plan_info = self._cached_module.plan(
             *args,
         )
+        self._plan_info = plan_info_vec_as_tensor(
+            self._plan_info, device=self._float_workspace_buffer.device
+        )
 
         self._pos_encoding_mode = pos_encoding_mode
         self._use_fp16_qk_reduction = use_fp16_qk_reduction
@@ -1221,7 +1237,10 @@ class VariableBlockSparseAttentionWrapper:
         self._cached_module.paged_run(
             self._float_workspace_buffer,
             self._int_workspace_buffer,
-            self._plan_info,
+            plan_info_vec_as_tensor(
+                self._plan_info if self._plan_info is not None else [],
+                device=self._float_workspace_buffer.device,
+            ),
             q,
             k,
             v,

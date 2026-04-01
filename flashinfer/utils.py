@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import contextlib
 import functools
 import math
 import os
 from enum import Enum
-from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.version
@@ -27,6 +28,32 @@ from torch.torch_version import __version__ as torch_version
 import inspect
 
 from .jit.spdlog import gen_spdlog_module
+
+
+def plan_info_vec_as_tensor(
+    plan_info: Union[torch.Tensor, Sequence[int]],
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    """Normalize JIT ``plan`` output to int64 on ``device`` for custom-op boundaries.
+
+    ``plan()`` returns a tensor on HIP/CUDA; some call sites may still use a Python
+    sequence — accept both.
+    """
+    if isinstance(plan_info, torch.Tensor):
+        if plan_info.dtype == torch.int64 and plan_info.device == device:
+            return plan_info
+        return plan_info.to(device=device, dtype=torch.int64)
+    return torch.tensor(list(plan_info), dtype=torch.int64, device=device)
+
+
+def plan_info_vec_to_py_list(
+    plan_info_vec: Union[torch.Tensor, Sequence[int]],
+) -> List[int]:
+    """Unpack plan info for CUDA/TVM-FFI bindings that expect ``Array<int64_t>`` (Python list)."""
+    if isinstance(plan_info_vec, torch.Tensor):
+        return [int(x) for x in plan_info_vec.detach().cpu().flatten().tolist()]
+    return [int(x) for x in plan_info_vec]
 
 
 class PosEncodingMode(Enum):
@@ -363,13 +390,16 @@ else:
     ) -> Callable:
         def decorator(f: Callable) -> Callable:
             if _USE_TORCH_CUSTOM_OPS:
-                return torch.library.custom_op(
-                    name,
-                    f,
-                    mutates_args=mutates_args,
-                    device_types=device_types,
-                    schema=schema,
-                )
+                try:
+                    return torch.library.custom_op(
+                        name,
+                        f,
+                        mutates_args=mutates_args,
+                        device_types=device_types,
+                        schema=schema,
+                    )
+                except (ValueError, TypeError):
+                    pass
             return f
 
         if fn is not None:
@@ -382,7 +412,8 @@ else:
     ) -> Callable:
         def decorator(f: Callable) -> Callable:
             if _USE_TORCH_CUSTOM_OPS:
-                torch.library.register_fake(name, f)
+                with contextlib.suppress(Exception):
+                    torch.library.register_fake(name, f)
             return f
 
         if fn is not None:

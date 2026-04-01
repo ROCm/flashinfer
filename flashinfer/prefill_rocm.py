@@ -22,8 +22,8 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
+
 from .aiter_utils import HAS_AITER
-from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
@@ -31,6 +31,7 @@ from .jit import (
     get_batch_prefill_uri,
     get_single_prefill_uri,
 )
+from .jit.core import logger
 from .page import get_seq_lens
 from .quantization import packbits, segment_packbits
 from .utils import (
@@ -40,14 +41,15 @@ from .utils import (
     _check_cached_qkv_data_type,
     _check_kv_layout,
     _check_pos_encoding_mode,
-    check_shape_dtype_device,
     _get_cache_alibi_slopes_buf,
     _get_cache_buf,
     _unpack_paged_kv_cache,
     canonicalize_torch_dtype,
+    check_shape_dtype_device,
     determine_attention_backend,
     device_support_pdl,
     is_float8,
+    plan_info_vec_as_tensor,
     register_custom_op,
     register_fake_op,
 )
@@ -56,8 +58,9 @@ aiter_mha_module = None
 _AITER_NATIVE_PAGE_SIZES: frozenset[int] = frozenset()
 
 if HAS_AITER:
-    from .aiter_utils import get_aiter_mha_module
     from importlib.metadata import version
+
+    from .aiter_utils import get_aiter_mha_module
 
     if version("amd-aiter") == "0.1.10":
         _AITER_NATIVE_PAGE_SIZES = frozenset({128, 256, 1024})
@@ -288,7 +291,6 @@ def get_single_prefill_module(backend, *args):
             1.0 / rope_scale,  # rope_rcp_scale
             1.0 / rope_theta,  # rope_rcp_theta
         )
-        return o
 
     @register_fake_op(f"flashinfer::{uri}_run")
     def _fake_run_single_prefill(
@@ -305,6 +307,9 @@ def get_single_prefill_module(backend, *args):
         maybe_alibi_slopes: Optional[torch.Tensor],
         logits_soft_cap: float,
         sm_scale: float,
+        scale_q: Optional[torch.Tensor],
+        scale_k: Optional[torch.Tensor],
+        scale_v: Optional[torch.Tensor],
         rope_scale: float,
         rope_theta: float,
     ) -> None:
@@ -525,7 +530,7 @@ def get_batch_prefill_module(backend, *args):
     def ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -581,13 +586,11 @@ def get_batch_prefill_module(backend, *args):
             # token_pos_in_items_len,  # Not supported by HIP FA2 kernels
         )
 
-        return o
-
     @register_fake_op(f"flashinfer::{uri}_ragged_run")
     def _fake_ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -629,7 +632,7 @@ def get_batch_prefill_module(backend, *args):
     def paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -705,13 +708,11 @@ def get_batch_prefill_module(backend, *args):
             # token_pos_in_items_len,  # Not supported by HIP FA2 kernels
         )
 
-        return o
-
     @register_fake_op(f"flashinfer::{uri}_paged_run")
     def _fake_paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -780,7 +781,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -814,7 +815,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def _fake_ragged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -844,7 +845,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -882,7 +883,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     def _fake_paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
+        plan_info_vec: torch.Tensor,
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,
         paged_v_cache: torch.Tensor,
@@ -1525,7 +1526,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
-        self._plan_info = None
+        self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
         self._seq_lens_kv = None
         self._seq_lens_q = None
@@ -1894,6 +1895,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 head_dim_vo,
                 causal,
             )
+            self._plan_info = plan_info_vec_as_tensor(
+                self._plan_info, device=self._float_workspace_buffer.device
+            )
 
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
@@ -2180,10 +2184,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
         sparse_indptr = self._paged_kv_indptr_buf
 
         assert self._plan_info is not None, "plan info is not initialized"
+        _plan_tensor = plan_info_vec_as_tensor(
+            self._plan_info if self._plan_info is not None else [],
+            device=self._float_workspace_buffer.device,
+        )
         run_args = [
             self._float_workspace_buffer,
             self._int_workspace_buffer,
-            self._plan_info,
+            _plan_tensor,
             q,
             k_cache,
             v_cache,
@@ -2504,6 +2512,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
+        self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
 
     @property
@@ -2784,6 +2793,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             head_dim_vo,
             causal,
         )
+        self._plan_info = plan_info_vec_as_tensor(
+            self._plan_info, device=self._float_workspace_buffer.device
+        )
 
         self._causal: bool = causal
         self._pos_encoding_mode = pos_encoding_mode
@@ -2917,10 +2929,14 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             else:
                 mask_mode = MaskMode.NON_CAUSAL.value
 
+        _plan_tensor = plan_info_vec_as_tensor(
+            self._plan_info if self._plan_info is not None else [],
+            device=self._float_workspace_buffer.device,
+        )
         run_args = [
             self._float_workspace_buffer,
             self._int_workspace_buffer,
-            self._plan_info,  # type: ignore[has-type]
+            _plan_tensor,
             q,
             k,
             v,
