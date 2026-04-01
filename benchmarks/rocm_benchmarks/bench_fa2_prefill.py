@@ -24,6 +24,7 @@ Run:
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters stall
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters compute
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters lds_stall
 
     # Override the output file label prefix:
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy --label fa2_occ
@@ -47,14 +48,20 @@ Output files (all gitignored):
     benchmarks/rocm_benchmarks/<label>_roofline.png   (roofline preset only)
 
 Counter presets available out of the box:
-    roofline  — FetchSize, WriteSize, MFMA ops, TCC DRAM requests (default)
-    compute   — MFMA ops and cycle counters
-    memory    — L2 and DRAM bandwidth breakdown
-    basic     — minimal: FetchSize / WriteSize only
-    occupancy — SQ_WAVES, SQ_BUSY_CYCLES, SQ_VALU_MFMA_BUSY_CYCLES,
-                SQ_WAIT_INST_ANY, SQ_INSTS_LDS
-    stall     — SQ_INSTS_MFMA, SQ_WAIT_INST_VMEM, SQ_VALU_MFMA_BUSY_CYCLES,
-                SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES
+    roofline   — FetchSize, WriteSize, MFMA ops, TCC DRAM requests (default)
+    compute    — MFMA ops and cycle counters
+    memory     — L2 and DRAM bandwidth breakdown
+    basic      — minimal: FetchSize / WriteSize only
+    occupancy  — SQ_WAVES, SQ_BUSY_CYCLES, SQ_VALU_MFMA_BUSY_CYCLES,
+                 SQ_WAIT_INST_ANY, SQ_INSTS_LDS
+    stall      — SQ_INSTS_MFMA, SQ_WAIT_INST_VMEM, SQ_VALU_MFMA_BUSY_CYCLES,
+                 SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES
+    lds_stall  — focused 3-pass LDS/VMEM stall analysis (recommended for
+                 diagnosing prefill kernel stalls); automatically prints:
+                   ALUStalledByLDS(%)  = SQ_WAIT_INST_LDS  / SQ_BUSY_CYCLES * 100
+                   ALUStalledByVMEM(%) = SQ_WAIT_INST_VMEM / SQ_BUSY_CYCLES * 100
+                   VMEM avg latency    = SQ_ACCUM_PREV_HIRES / SQ_INSTS_VMEM
+                   LDS wait/inst       = SQ_WAIT_INST_LDS / SQ_INSTS_LDS
 
     Or pass a path to a YAML file in rocprofv3 native job format.
 
