@@ -232,6 +232,7 @@ Install AITER by building from source
 --------------------------------------------------------------------------------------
 
 .. code-block:: bash
+
    git clone --recursive https://github.com/ROCm/aiter.git
    cd aiter
    python3 setup.py develop
@@ -242,4 +243,5 @@ Install AITER wheel package from AMD PyPI
 --------------------------------------------------------------------------------------
 
 .. code-block:: bash
+
    pip install amd-aiter --index-url https://pypi.amd.com/simple/
