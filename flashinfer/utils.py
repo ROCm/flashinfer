@@ -381,7 +381,7 @@ else:
     ) -> Callable:
         def decorator(f: Callable) -> Callable:
             if _USE_TORCH_CUSTOM_OPS:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     return torch.library.custom_op(
                         name,
                         f,
@@ -389,8 +389,6 @@ else:
                         device_types=device_types,
                         schema=schema,
                     )
-                except (ValueError, TypeError):
-                    pass
             return f
 
         if fn is not None:
@@ -403,7 +401,7 @@ else:
     ) -> Callable:
         def decorator(f: Callable) -> Callable:
             if _USE_TORCH_CUSTOM_OPS:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(ValueError, TypeError):
                     torch.library.register_fake(name, f)
             return f
 

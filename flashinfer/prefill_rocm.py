@@ -22,8 +22,8 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
-
 from .aiter_utils import HAS_AITER
+from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
@@ -31,7 +31,6 @@ from .jit import (
     get_batch_prefill_uri,
     get_single_prefill_uri,
 )
-from .jit.core import logger
 from .page import get_seq_lens
 from .quantization import packbits, segment_packbits
 from .utils import (
@@ -41,11 +40,11 @@ from .utils import (
     _check_cached_qkv_data_type,
     _check_kv_layout,
     _check_pos_encoding_mode,
+    check_shape_dtype_device,
     _get_cache_alibi_slopes_buf,
     _get_cache_buf,
     _unpack_paged_kv_cache,
     canonicalize_torch_dtype,
-    check_shape_dtype_device,
     determine_attention_backend,
     device_support_pdl,
     is_float8,
@@ -58,9 +57,8 @@ aiter_mha_module = None
 _AITER_NATIVE_PAGE_SIZES: frozenset[int] = frozenset()
 
 if HAS_AITER:
-    from importlib.metadata import version
-
     from .aiter_utils import get_aiter_mha_module
+    from importlib.metadata import version
 
     if version("amd-aiter") == "0.1.10":
         _AITER_NATIVE_PAGE_SIZES = frozenset({128, 256, 1024})
@@ -2184,14 +2182,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
         sparse_indptr = self._paged_kv_indptr_buf
 
         assert self._plan_info is not None, "plan info is not initialized"
-        _plan_tensor = plan_info_vec_as_tensor(
-            self._plan_info if self._plan_info is not None else [],
-            device=self._float_workspace_buffer.device,
-        )
         run_args = [
             self._float_workspace_buffer,
             self._int_workspace_buffer,
-            _plan_tensor,
+            self._plan_info,
             q,
             k_cache,
             v_cache,
@@ -2929,14 +2923,10 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             else:
                 mask_mode = MaskMode.NON_CAUSAL.value
 
-        _plan_tensor = plan_info_vec_as_tensor(
-            self._plan_info if self._plan_info is not None else [],
-            device=self._float_workspace_buffer.device,
-        )
         run_args = [
             self._float_workspace_buffer,
             self._int_workspace_buffer,
-            _plan_tensor,
+            self._plan_info,
             q,
             k,
             v,

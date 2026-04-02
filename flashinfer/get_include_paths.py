@@ -2,15 +2,8 @@
 #
 # SPDX - License - Identifier : Apache - 2.0
 
+import os
 import pathlib
-
-# Resolved relative to a candidate include root; used to pick repo ``include/``
-# when ``flashinfer/include`` is missing (e.g. ``PYTHONPATH`` without editable cmake symlink).
-_INCLUDE_MARKER = pathlib.Path("flashinfer") / "attention" / "generic" / "prefill.cuh"
-
-
-def _include_dir_has_headers(include_root: pathlib.Path) -> bool:
-    return (include_root / _INCLUDE_MARKER).is_file()
 
 
 def _get_package_root_dir():
@@ -33,24 +26,17 @@ def _get_package_root_dir():
 def get_include():
     """Return the directory containing the header files needed by the JIT.
 
-    Prefer ``<package>/flashinfer/include`` (wheel install or editable symlink from
-    CMake). If that directory does not contain the JIT headers yet, fall back to
-    ``<repo>/include`` so running from a source tree with ``PYTHONPATH`` works
-    without running the editable install symlink step.
+    The `include` dir in the splatlib/flashinfer directory contains the header
+    files needed by the JIT to compile the C++ code. The include path contains
+    all flashinfer, cutlass, and Cute headers and any future dependencies.
 
     Returns
     -------
     include_dir : str
         Path to include and Cutlass header files.
     """
-    package_dir = pathlib.Path(_get_package_root_dir()).resolve()
-    pkg_include = package_dir / "include"
-    repo_include = package_dir.parent / "include"
-    if _include_dir_has_headers(pkg_include):
-        return str(pkg_include)
-    if _include_dir_has_headers(repo_include):
-        return str(repo_include)
-    return str(pkg_include)
+    include_dir = os.path.join(_get_package_root_dir(), "include")
+    return str(include_dir)
 
 
 def get_csrc_dir():
