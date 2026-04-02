@@ -370,6 +370,23 @@ if TorchVersion(torch_version) < TorchVersion("2.4"):
 
 else:
 
+    def _guard_compile(f: Callable, op_name: str) -> Callable:
+        """Wrap *f* so it raises a clear error when called under ``torch.compile``
+        without ``FLASHINFER_USE_TORCH_CUSTOM_OPS=1``."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if torch.compiler.is_compiling():
+                raise RuntimeError(
+                    f"torch.compile traced into flashinfer op '{op_name}' but "
+                    "custom ops are not enabled. Set the environment variable "
+                    "FLASHINFER_USE_TORCH_CUSTOM_OPS=1 before importing "
+                    "flashinfer to use torch.compile."
+                )
+            return f(*args, **kwargs)
+
+        return wrapper
+
     def register_custom_op(
         name: str,
         fn: Optional[Callable] = None,
@@ -380,15 +397,16 @@ else:
         schema: Optional[str] = None,
     ) -> Callable:
         def decorator(f: Callable) -> Callable:
-            if _USE_TORCH_CUSTOM_OPS:
-                with contextlib.suppress(ValueError, TypeError):
-                    return torch.library.custom_op(
-                        name,
-                        f,
-                        mutates_args=mutates_args,
-                        device_types=device_types,
-                        schema=schema,
-                    )
+            if not _USE_TORCH_CUSTOM_OPS:
+                return _guard_compile(f, name)
+            with contextlib.suppress(ValueError, TypeError):
+                return torch.library.custom_op(
+                    name,
+                    f,
+                    mutates_args=mutates_args,
+                    device_types=device_types,
+                    schema=schema,
+                )
             return f
 
         if fn is not None:
