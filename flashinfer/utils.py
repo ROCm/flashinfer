@@ -19,7 +19,7 @@ import functools
 import math
 import os
 from enum import Enum
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.version
@@ -45,15 +45,6 @@ def plan_info_vec_as_tensor(
             return plan_info
         return plan_info.to(device=device, dtype=torch.int64)
     return torch.tensor(list(plan_info), dtype=torch.int64, device=device)
-
-
-def plan_info_vec_to_py_list(
-    plan_info_vec: Union[torch.Tensor, Sequence[int]],
-) -> List[int]:
-    """Unpack plan info for CUDA/TVM-FFI bindings that expect ``Array<int64_t>`` (Python list)."""
-    if isinstance(plan_info_vec, torch.Tensor):
-        return [int(x) for x in plan_info_vec.detach().cpu().flatten().tolist()]
-    return [int(x) for x in plan_info_vec]
 
 
 class PosEncodingMode(Enum):
