@@ -401,7 +401,7 @@ else:
     ) -> Callable:
         def decorator(f: Callable) -> Callable:
             if _USE_TORCH_CUSTOM_OPS:
-                with contextlib.suppress(ValueError, TypeError):
+                with contextlib.suppress(Exception):
                     torch.library.register_fake(name, f)
             return f
 
