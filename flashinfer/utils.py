@@ -334,9 +334,9 @@ def _check_cached_qkv_data_type(
 # Set environment variable ``FLASHINFER_USE_TORCH_CUSTOM_OPS=1`` before importing ``flashinfer``.
 # NOTE(Zihao): ``torch.library.custom_op`` adds dispatch overhead; see
 # https://github.com/vllm-project/vllm/blob/36e76700453924c8d421db99af70a88a1df835cd/vllm/utils.py#L1660-L1674
-_USE_TORCH_CUSTOM_OPS = os.environ.get(
-    "FLASHINFER_USE_TORCH_CUSTOM_OPS", ""
-).strip().lower() in (
+_USE_TORCH_CUSTOM_OPS = TorchVersion(torch_version) >= TorchVersion(
+    "2.4"
+) and os.environ.get("FLASHINFER_USE_TORCH_CUSTOM_OPS", "").strip().lower() in (
     "1",
     "true",
     "yes",
@@ -345,7 +345,7 @@ _USE_TORCH_CUSTOM_OPS = os.environ.get(
 
 
 def use_torch_custom_ops_enabled() -> bool:
-    """Return whether opaque ``torch.library`` custom ops are active (env at import time)."""
+    """Return whether opaque ``torch.library`` custom ops are active (effective behavior)."""
     return _USE_TORCH_CUSTOM_OPS
 
 
@@ -399,15 +399,13 @@ else:
         def decorator(f: Callable) -> Callable:
             if not _USE_TORCH_CUSTOM_OPS:
                 return _guard_compile(f, name)
-            with contextlib.suppress(ValueError, TypeError):
-                return torch.library.custom_op(
-                    name,
-                    f,
-                    mutates_args=mutates_args,
-                    device_types=device_types,
-                    schema=schema,
-                )
-            return f
+            return torch.library.custom_op(
+                name,
+                f,
+                mutates_args=mutates_args,
+                device_types=device_types,
+                schema=schema,
+            )
 
         if fn is not None:
             return decorator(fn)
