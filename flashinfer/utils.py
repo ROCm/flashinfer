@@ -14,8 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import contextlib
 import functools
 import math
+import os
 from enum import Enum
 from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
@@ -26,6 +28,23 @@ from torch.torch_version import __version__ as torch_version
 import inspect
 
 from .jit.spdlog import gen_spdlog_module
+
+
+def plan_info_vec_as_tensor(
+    plan_info: Union[torch.Tensor, Sequence[int]],
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    """Normalize JIT ``plan`` output to int64 on ``device`` for custom-op boundaries.
+
+    ``plan()`` returns a tensor on HIP/CUDA; some call sites may still use a Python
+    sequence — accept both.
+    """
+    if isinstance(plan_info, torch.Tensor):
+        if plan_info.dtype == torch.int64 and plan_info.device == device:
+            return plan_info
+        return plan_info.to(device=device, dtype=torch.int64)
+    return torch.tensor(list(plan_info), dtype=torch.int64, device=device)
 
 
 class PosEncodingMode(Enum):
@@ -310,6 +329,26 @@ def _check_cached_qkv_data_type(
         )
 
 
+# When True, kernels are wrapped in ``torch.library.custom_op`` so ``torch.compile`` / Dynamo
+# do not trace into extensions that touch tensor data pointers (see PyTorch custom ops docs).
+# Set environment variable ``FLASHINFER_USE_TORCH_CUSTOM_OPS=1`` before importing ``flashinfer``.
+# NOTE(Zihao): ``torch.library.custom_op`` adds dispatch overhead; see
+# https://github.com/vllm-project/vllm/blob/36e76700453924c8d421db99af70a88a1df835cd/vllm/utils.py#L1660-L1674
+_USE_TORCH_CUSTOM_OPS = TorchVersion(torch_version) >= TorchVersion(
+    "2.4"
+) and os.environ.get("FLASHINFER_USE_TORCH_CUSTOM_OPS", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+
+def use_torch_custom_ops_enabled() -> bool:
+    """Return whether opaque ``torch.library`` custom ops are active (effective behavior)."""
+    return _USE_TORCH_CUSTOM_OPS
+
+
 if TorchVersion(torch_version) < TorchVersion("2.4"):
 
     def register_custom_op(
@@ -331,6 +370,23 @@ if TorchVersion(torch_version) < TorchVersion("2.4"):
 
 else:
 
+    def _guard_compile(f: Callable, op_name: str) -> Callable:
+        """Wrap *f* so it raises a clear error when called under ``torch.compile``
+        without ``FLASHINFER_USE_TORCH_CUSTOM_OPS=1``."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if torch.compiler.is_compiling():
+                raise RuntimeError(
+                    f"torch.compile traced into flashinfer op '{op_name}' but "
+                    "custom ops are not enabled. Set the environment variable "
+                    "FLASHINFER_USE_TORCH_CUSTOM_OPS=1 before importing "
+                    "flashinfer to use torch.compile."
+                )
+            return f(*args, **kwargs)
+
+        return wrapper
+
     def register_custom_op(
         name: str,
         fn: Optional[Callable] = None,
@@ -340,24 +396,41 @@ else:
         device_types: Optional[Union[str, Sequence[str]]] = None,
         schema: Optional[str] = None,
     ) -> Callable:
-        # NOTE(Zihao): torch.library.custom_op has significant overhead as mentioned in the following link
-        # https://github.com/vllm-project/vllm/blob/36e76700453924c8d421db99af70a88a1df835cd/vllm/utils.py#L1660-L1674
+        def decorator(f: Callable) -> Callable:
+            if not _USE_TORCH_CUSTOM_OPS:
+                return _guard_compile(f, name)
+            try:
+                return torch.library.custom_op(
+                    name,
+                    f,
+                    mutates_args=mutates_args,
+                    device_types=device_types,
+                    schema=schema,
+                )
+            except (ValueError, TypeError):
+                # Some parameter types (e.g. Optional[torch.Generator]) are not
+                # supported by torch.library.custom_op's schema inference.  Fall
+                # back to the compile guard so torch.compile still raises a
+                # clear error instead of tracing into the extension.
+                return _guard_compile(f, name)
 
-        # return torch.library.custom_op(
-        #     name,
-        #     fn,
-        #     mutates_args=mutates_args,
-        #     device_types=device_types,
-        #     schema=schema,
-        # )
-        return lambda x: x
+        if fn is not None:
+            return decorator(fn)
+        return decorator
 
     def register_fake_op(
         name: str,
         fn: Optional[Callable] = None,
     ) -> Callable:
-        # return torch.library.register_fake(name, fn)
-        return lambda x: x
+        def decorator(f: Callable) -> Callable:
+            if _USE_TORCH_CUSTOM_OPS:
+                with contextlib.suppress(Exception):
+                    torch.library.register_fake(name, f)
+            return f
+
+        if fn is not None:
+            return decorator(fn)
+        return decorator
 
 
 def determine_gemm_backend(device: torch.device) -> str:
