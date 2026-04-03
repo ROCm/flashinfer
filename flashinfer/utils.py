@@ -399,13 +399,20 @@ else:
         def decorator(f: Callable) -> Callable:
             if not _USE_TORCH_CUSTOM_OPS:
                 return _guard_compile(f, name)
-            return torch.library.custom_op(
-                name,
-                f,
-                mutates_args=mutates_args,
-                device_types=device_types,
-                schema=schema,
-            )
+            try:
+                return torch.library.custom_op(
+                    name,
+                    f,
+                    mutates_args=mutates_args,
+                    device_types=device_types,
+                    schema=schema,
+                )
+            except (ValueError, TypeError):
+                # Some parameter types (e.g. Optional[torch.Generator]) are not
+                # supported by torch.library.custom_op's schema inference.  Fall
+                # back to the compile guard so torch.compile still raises a
+                # clear error instead of tracing into the extension.
+                return _guard_compile(f, name)
 
         if fn is not None:
             return decorator(fn)
