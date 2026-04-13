@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <bit>
+#include <type_traits>
+
 #include "gpu_iface/mma_types.hpp"
 #include "gpu_iface/platform.hpp"
 
@@ -206,10 +209,23 @@ __device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const
 template <typename DType>
 __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float* d, DType* s_frag) {
   static_assert(sizeof(DType) == 2, "DType must be 16-bit type");
+  static_assert(std::is_same_v<DType, __half> || std::is_same_v<DType, __hip_bfloat16>,
+                "DType must be __half or __hip_bfloat16");
+
   f16x4 a = reinterpret_cast<const f16x4*>(s_frag)[0];
-  f16x4 b = {f16(1.0f), f16(1.0f), f16(1.0f), f16(1.0f)};
   f32x4 c = {d[0], d[1], d[2], d[3]};
-  f32x4 out = __builtin_amdgcn_mfma_f32_16x16x16f16(a, b, c, 0, 0, 0);
+  f32x4 out;
+
+  if constexpr (std::is_same_v<DType, __half>) {
+    f16x4 b = {f16(1.0f), f16(1.0f), f16(1.0f), f16(1.0f)};
+    out = __builtin_amdgcn_mfma_f32_16x16x16f16(a, b, c, 0, 0, 0);
+  } else if constexpr (std::is_same_v<DType, __hip_bfloat16>) {
+    constexpr uint32_t bf16_one_pair = 0x3F803F80u;  // two bf16 1.0 values packed
+    constexpr uint64_t bf16_ones = (uint64_t{bf16_one_pair} << 32) | bf16_one_pair;
+    f16x4 b = std::bit_cast<f16x4>(bf16_ones);
+    out = __builtin_amdgcn_mfma_f32_16x16x16bf16_1k(a, b, c, 0, 0, 0);
+  }
+
   d[0] = out.x;
   d[1] = out.y;
   d[2] = out.z;
