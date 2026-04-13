@@ -21,7 +21,7 @@ cd "$ROOT"
 
 if ! python -c "import jupyterlab" 2>/dev/null; then
   echo "Installing jupyterlab into the current Python environment..."
-  pip install jupyterlab
+  python -m pip install jupyterlab
 fi
 
 PORT="${JUPYTER_PORT:-8888}"
