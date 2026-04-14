@@ -401,12 +401,12 @@ def gen_jit_spec(
         check_rocm_arch()
         verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
 
-        cflags = ["-O3", "-std=c++17", "-Wno-switch-bool"]
+        cflags = ["-O3", "-std=c++20", "-Wno-switch-bool"]
         # Use dynamically-generated flags from CompilationContext (includes arch flags)
         cflags += current_compilation_context.get_hipcc_flags_list()  # type: ignore[attr-defined]
         cuda_cflags = [
             "-O3",
-            "-std=c++17",
+            "-std=c++20",
             "-DFLASHINFER_ENABLE_F16",
             "-DFLASHINFER_ENABLE_BF16",
             "-DFLASHINFER_ENABLE_FP8_E4M3",

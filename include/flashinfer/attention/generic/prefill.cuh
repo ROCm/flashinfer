@@ -805,7 +805,6 @@ __device__ __forceinline__ void logits_transform(
     const dim3 tid = threadIdx, const uint32_t kv_head_idx = blockIdx.z) {
   constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
   constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
-  constexpr uint32_t LIS = KTraits::LOGITS_INDEX_STRIDE;
 
   const uint32_t lane_idx = tid.x;
   uint32_t q[KTraits::NUM_MMA_Q][NAPTR], r[KTraits::NUM_MMA_Q][NAPTR];
@@ -815,7 +814,7 @@ __device__ __forceinline__ void logits_transform(
   for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
     for (uint32_t j = 0; j < NAPTR; ++j) {
-      group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / TPR + LIS * j, q[mma_q][j],
+      group_size.divmod(qo_packed_idx_base + mma_q * 16 + (lane_idx / TPR) * NAPTR + j, q[mma_q][j],
                         r[mma_q][j]);
     }
   }
@@ -872,14 +871,13 @@ __device__ __forceinline__ void logits_mask(
   constexpr MaskMode MASK_MODE = KTraits::MASK_MODE;
   constexpr uint32_t TPR = KTraits::THREADS_PER_BMATRIX_ROW_SET;
   constexpr uint32_t NAPTR = KTraits::NUM_ACCUM_ROWS_PER_THREAD;
-  constexpr uint32_t LIS = KTraits::LOGITS_INDEX_STRIDE;
 
   uint32_t q[NUM_MMA_Q][NAPTR], r[NUM_MMA_Q][NAPTR];
 #pragma unroll
   for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
 #pragma unroll
     for (uint32_t j = 0; j < NAPTR; ++j) {
-      group_size.divmod(qo_packed_idx_base + mma_q * 16 + lane_idx / TPR + LIS * j, q[mma_q][j],
+      group_size.divmod(qo_packed_idx_base + mma_q * 16 + (lane_idx / TPR) * NAPTR + j, q[mma_q][j],
                         r[mma_q][j]);
     }
   }
