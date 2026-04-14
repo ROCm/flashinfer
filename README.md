@@ -119,6 +119,8 @@ done
 * `single_prefill_example.py` - Single-sequence prefill attention
 * `batch_prefill_example.py` - Batched prefill attention
 * `batch_decode_example.py` - Batched decode attention
+* `examples/amd_flashinfer_rocm_tutorial.ipynb` - Jupyter tutorial: environment verification (`hip_utils`), AITER-backed prefill examples, and `logits_processor` on ROCm
+* `examples/run_jupyter_server.sh` - Start JupyterLab from the repo root (run inside your ROCm/FlashInfer environment or Docker container)
 
 ## Build from Source
 
