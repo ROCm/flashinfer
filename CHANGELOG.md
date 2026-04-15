@@ -1,3 +1,33 @@
+# v0.5.3+amd.2
+
+## Added
+
+- Add Jupyter notebook tutorial for using amd-flashinfer on ROCm (#213) @diptorupd
+- Add ROCm profiler module (`flashinfer/rocm_profiler/`) and FA2 single-prefill benchmark driver using rocprofv3 (#205) @diptorupd
+- Gate `torch.compile` integration behind `FLASHINFER_USE_TORCH_CUSTOM_OPS`, with HIP pytest coverage (#210) @demandal25
+
+## Changed
+
+- FA2 prefill on HIP: improve occupancy and throughput on CDNA3 via LDS-aware `CTA_TILE_Q` selection and shared-memory budget capping (#209) @diptorupd
+- Add `k128B_16Row` swizzle mode for prefill shared memory to reduce LDS bank conflicts on CDNA3 (#207) @diptorupd
+
+## Fixed
+
+- HIP FA2 on CDNA3: correct bfloat16 row-sum MFMA intrinsic selection and MFMA C/D row indexing for custom masks with GQA (#214) @subhajitdchow
+- Editable installs: ensure JIT sees current headers under `include/` with scikit-build-core redirect mode (symlink at install + `get_include_paths` fix) (#208) @diptorupd
+
+## Maintenance
+
+- Refresh README @demandal25
+
+---
+
+**Contributors**: @diptorupd, @demandal25, @subhajitdchow
+
+**Summary**: This point release focuses on ROCm prefill correctness and performance, developer tooling, and install ergonomics. It fixes silent bf16 softmax scaling and custom-mask/GQA mis-indexing in HIP FA2, improves CDNA3 occupancy and LDS bank behavior for FA2 prefill, adds an opt-in `torch.compile` path, a rocprofv3-based profiling kit, and a notebook tutorial. Editable installs now pick up header edits without reinstalling.
+
+---
+
 # v0.5.3+amd.1
 
 ## Updated Upstream
