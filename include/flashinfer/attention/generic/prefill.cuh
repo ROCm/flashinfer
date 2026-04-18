@@ -342,7 +342,9 @@ __device__ __forceinline__ void produce_kv(
   // to use a different swizzle mode for the global load than for the LDS write.
   using SmemTy = std::remove_reference_t<decltype(smem)>;
 
-  SmemCell loaded[NITERS];
+  // Zero-init the staging array so OOB slots are well-defined (avoids UB from
+  // copying indeterminate values in Phase B when fill_mode == kNoFill).
+  SmemCell loaded[NITERS] = {};
 
   // Phase A: all NITERS global loads issued before any LDS write.
 #pragma unroll
@@ -351,8 +353,6 @@ __device__ __forceinline__ void produce_kv(
     const uint32_t col = col_sw ^ SmemTy::Layout::template col_swizzle_xor<UPCAST_STRIDE>(row);
     if ((kv_idx_base + row) < kv_len) {
       loaded[i] = gptr_u2[(kv_idx_base + row) * stride_n_u2 + col];
-    } else if constexpr (fill_mode == SharedMemFillMode::kFillZero) {
-      loaded[i] = SmemCell{0u, 0u};
     }
   }
 
