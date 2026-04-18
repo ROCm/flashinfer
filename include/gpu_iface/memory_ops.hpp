@@ -130,12 +130,12 @@ __device__ __forceinline__ void pred_load(T* smem_ptr, const T* gmem_ptr, bool p
 /**
  * @brief Build a buffer resource descriptor (V#) for async GMEM→LDS copies.
  *
- * @param base        Tensor base pointer (K or V head pointer)
- * @param num_records Byte size of the region (use 0xFFFFFFFF to skip bounds check)
- * @return srsrc_t    4-SGPR buffer resource descriptor
+ * @param base      Tensor base pointer (K or V head pointer)
+ * @param num_bytes Byte size of the region (use 0xFFFFFFFF to skip bounds check)
+ * @return srsrc_t  4-SGPR buffer resource descriptor
  */
-__device__ __forceinline__ mem_detail::srsrc_t make_srsrc(const void* base, uint32_t num_records) {
-  return mem_detail::make_srsrc(base, num_records);
+__device__ __forceinline__ mem_detail::srsrc_t make_srsrc(const void* base, uint32_t num_bytes) {
+  return mem_detail::make_srsrc(base, num_bytes);
 }
 
 /**
