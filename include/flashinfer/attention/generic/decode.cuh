@@ -705,7 +705,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
       }
       uint32_t max_grid_size = uint32_t(num_blocks_per_sm) * uint32_t(num_sm);
       // Clamp to >=1: when num_kv_heads > max_grid_size (e.g. MI308X CPX has 20
-      // CUs vs 32 kv-heads), the integer division would underflow to 0 and the
+      // CUs vs 32 kv-heads), the integer division would truncate to 0 and the
       // ceil_div below would SIGFPE. With max_num_kv_chunks=1 we just don't
       // split KV further, which is the correct fallback.
       uint32_t max_num_kv_chunks = max(max_grid_size / num_kv_heads, 1U);
