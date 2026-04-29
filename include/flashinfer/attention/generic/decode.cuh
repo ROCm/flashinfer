@@ -704,7 +704,11 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
         FLASHINFER_ERROR(err_msg.str());
       }
       uint32_t max_grid_size = uint32_t(num_blocks_per_sm) * uint32_t(num_sm);
-      uint32_t max_num_kv_chunks = max_grid_size / num_kv_heads;
+      // Clamp to >=1: when num_kv_heads > max_grid_size (e.g. MI308X CPX has 20
+      // CUs vs 32 kv-heads), the integer division would truncate to 0 and the
+      // ceil_div below would SIGFPE. With max_num_kv_chunks=1 we just don't
+      // split KV further, which is the correct fallback.
+      uint32_t max_num_kv_chunks = max(max_grid_size / num_kv_heads, 1U);
 
       // AMD CDNA3: Use larger chunk size to reduce synchronization overhead
       uint32_t kv_chunk_size = max(ceil_div(seq_len, max_num_kv_chunks), 512U);
