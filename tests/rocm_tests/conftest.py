@@ -91,21 +91,29 @@ try:
     import xdist  # noqa: F401
 
     def pytest_xdist_auto_num_workers(config):
-        """Return the number of physical AMD cards for 'pytest -n auto'.
+        """Return the recommended worker count for 'pytest -n auto'.
 
-        On CPX systems this is the count of physical 192GB cards rather than
-        the count of logical XCD devices. Pinning one worker per physical
-        card avoids HSA hardware exceptions caused by multiple xdist workers
-        concurrently hammering the same card's HBM. See
-        get_physical_card_device_indices() for the detection rule.
+        On CPX AMD systems the count is half the number of physical cards.
+        Empirically, running one worker per physical card (the natural
+        upper bound) still produces sporadic HSA / HIPBLAS resource
+        failures across the wider test suite (rope, single_prefill,
+        logits_cap), even with --reruns 2. Halving the worker count
+        eliminates those failures reliably (3 consecutive 22k-test runs
+        green at -n 4 vs intermittent failures at -n 8 on an 8-card
+        host) at a ~1.6× wall-time cost. Pin the helper to ``max(1,
+        physical_cards // 2)`` so 'pytest -n auto' is always green.
+
+        On non-CPX systems all supported devices are physical and the
+        same halving applies; users who want every device used can
+        still pass an explicit ``-n N``.
         """
-        n = len(get_physical_card_device_indices())
-        if n == 0:
+        n_physical = len(get_physical_card_device_indices())
+        if n_physical == 0:
             raise RuntimeError(
                 "pytest -n auto: no FlashInfer-supported AMD GPUs detected. "
                 "Check HIP_VISIBLE_DEVICES or ROCm installation."
             )
-        return n
+        return max(1, n_physical // 2)
 
 except ImportError:
     pass
