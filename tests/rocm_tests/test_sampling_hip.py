@@ -21,8 +21,12 @@ import flashinfer
 
 # NOTE: Sampling tests for HIP/ROCm.
 # These tests verify that the sampling kernels work correctly on AMD GPUs
-# with 64-thread wavefronts. We use 3M samples instead of 5M to avoid
-# HSA hardware exceptions, while still providing sufficient statistical validation.
+# with 64-thread wavefronts. The trial budget is reduced from upstream's 5M
+# to stay below the HSA hardware-exception envelope.
+
+# Reduced from 5M (upstream) and 3M (earlier ROCm value) to stay well below
+# the HSA hardware-exception envelope while keeping cosine_similarity > 0.95.
+_HSA_SAFE_NUM_TRIALS = 1_000_000
 
 
 def normal_distribution(std):
@@ -56,7 +60,7 @@ def gumbel_distribution(beta):
 @pytest.mark.parametrize("zero_ratio", [0.0, 0.5, 0.9])
 def test_sampling_freq(vocab_size, distribution, zero_ratio):
     torch.manual_seed(42)
-    num_trials = 1000000
+    num_trials = _HSA_SAFE_NUM_TRIALS
     logits = distribution((1, vocab_size), "cuda:0")
     zero_indices = torch.randperm(vocab_size)[: int(vocab_size * zero_ratio)]
     logits[:, zero_indices] = -float("inf")
@@ -96,7 +100,7 @@ def test_top_p_sampling_freq(vocab_size, distribution, p):
 
     renorm_probs = flashinfer.sampling.top_p_renorm_probs(probs, p)
     counter = torch.zeros(vocab_size, dtype=torch.int32, device=logits.device)
-    num_trials = 1000000
+    num_trials = _HSA_SAFE_NUM_TRIALS
     samples = flashinfer.sampling.top_p_sampling_from_probs(
         probs,
         p,
@@ -133,7 +137,7 @@ def test_top_k_sampling_freq(vocab_size, distribution, k):
 
     renorm_probs = flashinfer.sampling.top_k_renorm_probs(probs, k)
     counter = torch.zeros(vocab_size, dtype=torch.int32, device=logits.device)
-    num_trials = 1000000
+    num_trials = _HSA_SAFE_NUM_TRIALS
     samples = flashinfer.sampling.top_k_sampling_from_probs(
         probs,
         k,
@@ -217,7 +221,7 @@ def test_sampling_from_logits_freq(vocab_size, distribution):
     torch.manual_seed(42)
     # 1M samples: enough for cosine_similarity > 0.95 even at 128k vocab,
     # well below the 3M HSA hardware-exception envelope.
-    num_trials = 1000000
+    num_trials = _HSA_SAFE_NUM_TRIALS
     logits = distribution((1, vocab_size), "cuda:0")
     probs = torch.softmax(logits, dim=-1)
     counter = torch.zeros(vocab_size, dtype=torch.int32, device=logits.device)

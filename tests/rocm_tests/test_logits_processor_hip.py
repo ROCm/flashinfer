@@ -53,6 +53,10 @@ from flashinfer.logits_processor import (
     TopP,
 )
 
+# Reduced from 5M (upstream) and 3M (earlier ROCm value) to stay well below
+# the HSA hardware-exception envelope while keeping cosine_similarity > 0.95.
+_HSA_SAFE_NUM_TRIALS = 1_000_000
+
 
 def normal_distribution(std):
     def normal_noise(shape, device):
@@ -125,7 +129,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("zero_ratio", [0.0, 0.5, 0.9])
     def test_probs_sample_freq(self, vocab_size, distribution, zero_ratio):
         set_random_seed(42)
-        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
+        num_trials = _HSA_SAFE_NUM_TRIALS
 
         logits = distribution((1, vocab_size), "cuda:0")
         zero_indices = torch.randperm(vocab_size)[: int(vocab_size * zero_ratio)]
@@ -187,7 +191,7 @@ class TestLogitsPipeCompilationHIP:
     )
     def test_logits_sample_freq(self, vocab_size, distribution):
         set_random_seed(42)
-        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
+        num_trials = _HSA_SAFE_NUM_TRIALS
 
         logits = distribution((1, vocab_size), "cuda:0")
         probs = torch.softmax(logits, dim=-1)
@@ -245,7 +249,7 @@ class TestLogitsPipeCompilationHIP:
             pytest.skip("k should be less than vocab_size")
 
         set_random_seed(42)
-        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
+        num_trials = _HSA_SAFE_NUM_TRIALS
 
         logits = distribution((1, vocab_size), "cuda:0")
         probs = torch.softmax(logits, dim=-1)
@@ -313,7 +317,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.1, 0.5, 0.9])
     def test_probs_top_p_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
+        num_trials = _HSA_SAFE_NUM_TRIALS
         eps = 1e-4
 
         logits = distribution((1, vocab_size), "cuda:0")
@@ -383,7 +387,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.05, 0.1, 0.2, 0.7, 1])
     def test_probs_min_p_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
+        num_trials = _HSA_SAFE_NUM_TRIALS
 
         logits = distribution((1, vocab_size), "cuda:0")
         probs = torch.softmax(logits, dim=-1)
@@ -455,7 +459,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.1, 0.5])
     def test_probs_top_k_top_p_joint_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
+        num_trials = _HSA_SAFE_NUM_TRIALS
         eps = 1e-4
 
         if p == 0.1:
@@ -536,7 +540,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.1, 0.5])
     def test_logits_top_k_top_p_joint_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
+        num_trials = _HSA_SAFE_NUM_TRIALS
         eps = 1e-4
 
         if p == 0.1:
