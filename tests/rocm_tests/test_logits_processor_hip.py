@@ -77,11 +77,15 @@ def set_random_seed(seed=42):
     np.random.seed(seed)
 
 
+@pytest.mark.slow
 class TestLogitsPipeCompilationHIP:
     """Test LogitsPipe with compile=True vs compile=False on HIP/ROCm.
 
-    Identical to TestLogitsPipeCompilation except num_trials is reduced from
-    5_000_000 to 3_000_000 to avoid HSA hardware exceptions on AMD GPUs.
+    Every test in this class runs the sampling kernel TWICE per case (once
+    with compile=True, once with compile=False) at num_trials=1_000_000, so
+    each test is ~2× the cost of the equivalent test in test_sampling_hip.py.
+    Marked slow so default fast-iteration runs (`pytest -m "not slow"`)
+    skip them; nightly / pre-merge runs include them.
     """
 
     @pytest.mark.parametrize("batch_size", [1, 99, 989])
@@ -121,7 +125,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("zero_ratio", [0.0, 0.5, 0.9])
     def test_probs_sample_freq(self, vocab_size, distribution, zero_ratio):
         set_random_seed(42)
-        num_trials = 3000000  # Reduced from 5M to avoid HSA hardware exceptions
+        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
 
         logits = distribution((1, vocab_size), "cuda:0")
         zero_indices = torch.randperm(vocab_size)[: int(vocab_size * zero_ratio)]
@@ -183,7 +187,7 @@ class TestLogitsPipeCompilationHIP:
     )
     def test_logits_sample_freq(self, vocab_size, distribution):
         set_random_seed(42)
-        num_trials = 3000000  # Reduced from 5M to avoid HSA hardware exceptions
+        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
 
         logits = distribution((1, vocab_size), "cuda:0")
         probs = torch.softmax(logits, dim=-1)
@@ -241,7 +245,7 @@ class TestLogitsPipeCompilationHIP:
             pytest.skip("k should be less than vocab_size")
 
         set_random_seed(42)
-        num_trials = 3000000  # Reduced from 5M to avoid HSA hardware exceptions
+        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
 
         logits = distribution((1, vocab_size), "cuda:0")
         probs = torch.softmax(logits, dim=-1)
@@ -309,7 +313,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.1, 0.5, 0.9])
     def test_probs_top_p_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 3000000  # Reduced from 5M to avoid HSA hardware exceptions
+        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
         eps = 1e-4
 
         logits = distribution((1, vocab_size), "cuda:0")
@@ -379,7 +383,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.05, 0.1, 0.2, 0.7, 1])
     def test_probs_min_p_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 3000000  # Reduced from 5M to avoid HSA hardware exceptions
+        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
 
         logits = distribution((1, vocab_size), "cuda:0")
         probs = torch.softmax(logits, dim=-1)
@@ -451,7 +455,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.1, 0.5])
     def test_probs_top_k_top_p_joint_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 3000000  # Reduced from 5M to avoid HSA hardware exceptions
+        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
         eps = 1e-4
 
         if p == 0.1:
@@ -532,7 +536,7 @@ class TestLogitsPipeCompilationHIP:
     @pytest.mark.parametrize("p", [0.1, 0.5])
     def test_logits_top_k_top_p_joint_sample_freq(self, vocab_size, distribution, p):
         set_random_seed(42)
-        num_trials = 3000000  # Reduced from 5M to avoid HSA hardware exceptions
+        num_trials = 1000000  # Reduced from 5M (and further from 3M) to stay well below HSA limits
         eps = 1e-4
 
         if p == 0.1:

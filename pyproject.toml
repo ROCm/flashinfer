@@ -175,8 +175,9 @@ ignore = [
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
-# Verbose output; importlib mode avoids __init__.py package-root walk
-addopts = "-v --import-mode=importlib"
+# Quiet output: dots while running, failures and errors in summary; importlib mode
+# avoids __init__.py package-root walk.
+addopts = "-q -rfE -x --tb=short --import-mode=importlib"
 norecursedirs = ["test_helpers"]
 pythonpath = ["tests", "tests/test_helpers"]
 # AMD/HIP test suite: rocm_tests/ directory for all AMD-authored tests,
@@ -195,6 +196,9 @@ testpaths = [
 ]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "slow: heavy ROCm tests (1M-trial sampling frequency, 4GB-tensor speculative-sampling) — exclude with '-m \"not slow\"' for fast iteration; nightly runs include them.",
+]
 
 [tool.coverage.run]
 # Note: 'source' is commented out because 'include' would be ignored if source is set
