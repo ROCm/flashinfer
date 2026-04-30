@@ -229,45 +229,34 @@ pytest -n 2 # Use only two GPUs
 
 The default test configuration is specified in [pyproject.toml](pyproject.toml) under the `testpaths` setting.
 
-#### Sampling and logits-processor tests on ROCm
+#### Recommended invocation on AMD CPX systems
 
-`tests/rocm_tests/test_sampling_hip.py` and `tests/rocm_tests/test_logits_processor_hip.py`
-are the heaviest tests in the suite. The following invocations apply:
+Install `pytest-rerunfailures` once (it absorbs the residual transient HIP runtime crashes):
 
 ```bash
-# Install rerunfailures once (needed to absorb transient HIP runtime crashes)
 pip install pytest-rerunfailures
+```
 
-# Fast iteration (~30 s on MI300-class hardware): skip the heavy frequency /
-# speculative-sampling cases that are tagged @pytest.mark.slow.
-pytest tests/rocm_tests/test_sampling_hip.py tests/rocm_tests/test_logits_processor_hip.py \
-       -n auto -m "not slow" --reruns 2
+Then for the full suite:
 
-# Full coverage including the slow tests (~13 min):
-pytest tests/rocm_tests/test_sampling_hip.py tests/rocm_tests/test_logits_processor_hip.py \
-       -n auto --reruns 2
+```bash
+# Fast path — skips heavy 1M-trial sampling-frequency tests and 4 GB
+# speculative-sampling cases (~7 min on a CPX 8-card host):
+pytest -n auto --reruns 2 -m "not slow"
 
-# Slow path only (~12.6 min):
-pytest tests/rocm_tests/test_sampling_hip.py tests/rocm_tests/test_logits_processor_hip.py \
-       -n auto -m "slow" --reruns 2
+# Full coverage — including the slow tests (~20 min):
+pytest -n auto --reruns 2
+
+# Slow path only (~13 min):
+pytest -n auto --reruns 2 -m "slow"
 ```
 
 **Notes**
 
-* `pytest -n auto` for the `tests/rocm_tests/` suite spawns **one xdist worker per
-  physical AMD card**, not per logical CPX device. On a CPX-mode system (e.g.
-  MI308X / MI325X-CPX) this means 8 workers per 8-GPU host instead of 32; this
-  prevents HSA hardware exceptions caused by 4 CPX siblings of one card all
-  hammering shared HBM concurrently. Each worker is pinned to its card via
-  `HIP_VISIBLE_DEVICES`. On non-CPX systems the helper falls back to one
-  worker per supported device.
-* `--reruns 2` (from `pytest-rerunfailures`) absorbs the residual ~0.3 % of
-  transient HIP runtime crashes (HSA exceptions and intermittent generator
-  non-determinism) that worker pinning cannot fully eliminate. Successful
-  tests are not duplicated; only failed tests are retried.
-* The `slow` marker is registered in [pyproject.toml](pyproject.toml). It
-  tags the 1M-trial sampling-frequency tests and the 4 GB-tensor
-  speculative-sampling cases.
+* `pytest -n auto` for the `tests/rocm_tests/` suite spawns **half as many xdist workers as physical AMD cards** (e.g. 4 workers on a CPX-mode 8-card MI308X / MI325X host). One worker per physical card was tried first but produced sporadic failures across rope, single_prefill, and logits_cap under residual concurrent load; halving the count produces reliable green runs. Each worker is pinned to its card via `HIP_VISIBLE_DEVICES`. On non-CPX systems the helper applies the same halving; users who want every device used can pass an explicit `-n N`.
+* `--reruns 2` (from `pytest-rerunfailures`) absorbs the residual ~0.01 % of transient HIP runtime crashes (HSA exceptions, HIPBLAS handle-pool exhaustion, intermittent generator non-determinism) that worker pinning cannot fully eliminate. Successful tests are not duplicated; only failed tests are retried.
+* The `slow` marker is registered in [pyproject.toml](pyproject.toml). It tags the 1M-trial sampling-frequency tests, the 4 GB-tensor speculative-sampling cases, and the entire `TestLogitsPipeCompilationHIP` class (every test there runs the sampling kernel twice per case for compile=True/False).
+* The reference attention helper in `tests/attention_reference.py` wraps `torch.matmul` in a `_hipblas_safe_matmul` retry helper that catches `HIPBLAS_STATUS_ALLOC_FAILED` and retries with a short back-off — needed under heavy concurrent xdist load.
 
 ## AITER Support
 
