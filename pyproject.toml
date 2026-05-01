@@ -44,6 +44,7 @@ Documentation = "https://rocm.docs.amd.com/projects/install-on-linux/en/latest/i
 dev = [
     "pytest",
     "pytest-xdist",
+    "pytest-rerunfailures",
 ]
 
 [build-system]
@@ -175,8 +176,9 @@ ignore = [
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
-# Verbose output; importlib mode avoids __init__.py package-root walk
-addopts = "-v --import-mode=importlib"
+# Quiet output: dots while running, failures and errors in summary; importlib mode
+# avoids __init__.py package-root walk.
+addopts = "-q -rfE --tb=short --import-mode=importlib"
 norecursedirs = ["test_helpers"]
 pythonpath = ["tests", "tests/test_helpers"]
 # AMD/HIP test suite: rocm_tests/ directory for all AMD-authored tests,
@@ -185,7 +187,7 @@ pythonpath = ["tests", "tests/test_helpers"]
 testpaths = [
     "tests/rocm_tests",
     "tests/attention/test_decode_prefill_lse.py",
-    "tests/attention/test_logits_cap.py",
+    "tests/rocm_tests/test_logits_cap_hip.py",
     "tests/attention/test_non_contiguous_decode.py",
     "tests/attention/test_non_contiguous_prefill.py",
     "tests/attention/test_page.py",
@@ -195,6 +197,9 @@ testpaths = [
 ]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "slow: heavy ROCm tests (1M-trial sampling frequency, 4GB-tensor speculative-sampling) — exclude with '-m \"not slow\"' for fast iteration; nightly runs include them.",
+]
 
 [tool.coverage.run]
 # Note: 'source' is commented out because 'include' would be ignored if source is set

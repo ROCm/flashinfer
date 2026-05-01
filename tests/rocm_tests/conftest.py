@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from flashinfer.hip_utils import get_supported_device_indices
-
+from flashinfer.hip_utils import get_physical_card_device_indices
 
 # pytest_xdist_auto_num_workers is only available when pytest-xdist is installed
 # and loaded (i.e. when -n / --dist is passed). Guard the definition so that
@@ -22,20 +21,22 @@ try:
     import xdist  # noqa: F401
 
     def pytest_xdist_auto_num_workers(config):
-        """Return the number of FlashInfer-supported AMD GPUs for 'pytest -n auto'.
+        """Return the recommended worker count for 'pytest -n auto'.
 
-        Only devices whose architecture is in FLASHINFER_SUPPORTED_ROCM_ARCHS are
-        counted so that xdist does not spawn workers for unsupported integrated GPUs.
-        Raises RuntimeError if no supported GPUs are detected so the failure is
-        explicit rather than silently falling back to single-process execution.
+        Halved from one-per-physical-card. One worker per physical card
+        still produces sporadic HSA / HIPBLAS failures across the wider
+        ROCm test suite (rope, single_prefill, logits_cap) under residual
+        concurrent CPX load even with --reruns 2; halving eliminates them
+        reliably at a ~1.6× wall-time cost. Users who want every device
+        used can pass an explicit -n N.
         """
-        n = len(get_supported_device_indices())
-        if n == 0:
+        n_physical = len(get_physical_card_device_indices())
+        if n_physical == 0:
             raise RuntimeError(
                 "pytest -n auto: no FlashInfer-supported AMD GPUs detected. "
                 "Check HIP_VISIBLE_DEVICES or ROCm installation."
             )
-        return n
+        return max(1, n_physical // 2)
 
 except ImportError:
     pass

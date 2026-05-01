@@ -3,9 +3,47 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import time
 from typing import Optional, Tuple
 
 import torch
+
+# HIPBLAS error markers that indicate transient handle-pool exhaustion under
+# concurrent xdist load. PyTorch wraps these as plain RuntimeError, so we have
+# to substring-match the message — there is no typed exception to catch.
+_HIPBLAS_TRANSIENT_MARKERS = ("HIPBLAS_STATUS_ALLOC_FAILED", "hipblasCreate")
+_HIPBLAS_RETRY_ATTEMPTS = 4
+_HIPBLAS_RETRY_BACKOFF_S = 0.1  # exhaustion clears in tens of ms
+
+
+def _hipblas_safe_call(fn, *args, **kwargs):
+    """Retry any callable on transient HIPBLAS handle-pool exhaustion."""
+    for _ in range(_HIPBLAS_RETRY_ATTEMPTS - 1):
+        try:
+            return fn(*args, **kwargs)
+        except RuntimeError as e:
+            if not any(m in str(e) for m in _HIPBLAS_TRANSIENT_MARKERS):
+                raise
+            time.sleep(_HIPBLAS_RETRY_BACKOFF_S)
+    return fn(*args, **kwargs)
+
+
+def _hipblas_safe_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """``torch.matmul`` with retry on transient HIPBLAS handle-pool exhaustion.
+
+    Under heavy concurrent xdist load on AMD CPX systems, ``hipblasCreate``
+    occasionally returns ``HIPBLAS_STATUS_ALLOC_FAILED``. The kernel itself
+    is fine — the failure is in the library's resource management. Retry
+    with a short fixed back-off; non-transient RuntimeErrors propagate.
+    """
+    for _ in range(_HIPBLAS_RETRY_ATTEMPTS - 1):
+        try:
+            return torch.matmul(a, b)
+        except RuntimeError as e:
+            if not any(m in str(e) for m in _HIPBLAS_TRANSIENT_MARKERS):
+                raise
+            time.sleep(_HIPBLAS_RETRY_BACKOFF_S)
+    return torch.matmul(a, b)  # final attempt; error propagates if it fails
 
 
 def naive_attention(
@@ -63,10 +101,10 @@ def naive_attention(
     # When soft cap is used: compute raw scores WITHOUT sm_scale
     # When soft cap is NOT used: apply sm_scale directly
     if logits_soft_cap is not None:
-        scores = torch.matmul(q_t, k_t.transpose(1, 2))
+        scores = _hipblas_safe_matmul(q_t, k_t.transpose(1, 2))
         scores = logits_soft_cap * torch.tanh(scores * sm_scale / logits_soft_cap)
     else:
-        scores = torch.matmul(q_t, k_t.transpose(1, 2)) * sm_scale
+        scores = _hipblas_safe_matmul(q_t, k_t.transpose(1, 2)) * sm_scale
 
     # Apply causal mask if needed (AFTER soft cap)
     if causal:
@@ -87,7 +125,7 @@ def naive_attention(
     attn = torch.softmax(scores, dim=-1)
 
     # Apply attention to values: [num_qo_heads, qo_len, head_dim]
-    out = torch.matmul(attn, v_t)
+    out = _hipblas_safe_matmul(attn, v_t)
 
     # Transpose back: [qo_len, num_qo_heads, head_dim]
     out = out.transpose(0, 1)

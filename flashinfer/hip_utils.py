@@ -435,6 +435,72 @@ def get_supported_device_indices() -> tuple:
     return tuple(supported)
 
 
+# A "primary" CPX sibling reports the full physical card capacity; the other
+# three siblings report ~25% of it. 0.95 separates the two cleanly without
+# tying the test to an exact GB value.
+_PRIMARY_VRAM_RATIO = 0.95
+
+
+@functools.cache
+def get_physical_card_device_indices() -> tuple:
+    """
+    Return one supported device index per physical AMD card.
+
+    On CDNA3 CPX systems each physical card exposes 4 logical XCD-sized
+    devices that share the card's HBM. Running one xdist worker per logical
+    device causes intermittent HSA hardware exceptions when multiple workers
+    on the same physical card concurrently allocate large tensors. We pick
+    one "primary" index per card (the one that reports the full card
+    capacity via rocm-smi) so callers can spread workloads one-per-card.
+
+    On non-CPX systems all supported devices report identical VRAM and the
+    helper returns them unchanged. Falls back to the supported-device list
+    if rocm-smi is unavailable or its output cannot be parsed.
+
+    Cached per-process; xdist spawns workers as separate processes, so the
+    cache is per-worker (the underlying rocm-smi call is paid once per
+    Python process, not once per test).
+    """
+    import json
+    import subprocess
+
+    supported = get_supported_device_indices()
+    if not supported:
+        return ()
+
+    try:
+        result = subprocess.run(
+            ["rocm-smi", "--showmeminfo", "vram", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            return supported
+        data = json.loads(result.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return supported
+
+    vram_by_idx: dict[int, int] = {}
+    for key, val in data.items():
+        if not key.startswith("card") or not isinstance(val, dict):
+            continue
+        try:
+            idx = int(key[4:])
+            vram_by_idx[idx] = int(val["VRAM Total Memory (B)"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    supported_vram = {idx: vram_by_idx[idx] for idx in supported if idx in vram_by_idx}
+    if not supported_vram:
+        return supported
+
+    threshold = int(max(supported_vram.values()) * _PRIMARY_VRAM_RATIO)
+    primary = tuple(idx for idx in supported if supported_vram.get(idx, 0) >= threshold)
+    return primary or supported
+
+
 def check_torch_rocm_compatibility() -> None:
     """
     Verify that PyTorch is installed with compatible ROCm support.

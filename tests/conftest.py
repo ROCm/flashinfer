@@ -18,9 +18,12 @@ import pytest
 _xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
 if _xdist_worker.startswith("gw"):
     _worker_idx = int(_xdist_worker[2:])
-    from flashinfer.hip_utils import get_supported_device_indices
+    # Pin to one physical card per worker on CPX systems (avoids HSA crashes
+    # when multiple workers hammer the same card's HBM). On non-CPX systems
+    # the helper returns all supported devices.
+    from flashinfer.hip_utils import get_physical_card_device_indices
 
-    _supported = get_supported_device_indices()
+    _supported = get_physical_card_device_indices()
     _gpu_index = (
         _supported[_worker_idx] if _worker_idx < len(_supported) else _worker_idx
     )
