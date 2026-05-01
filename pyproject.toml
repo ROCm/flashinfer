@@ -178,7 +178,7 @@ filterwarnings = [
 ]
 # Quiet output: dots while running, failures and errors in summary; importlib mode
 # avoids __init__.py package-root walk.
-addopts = "-q -rfE -x --tb=short --import-mode=importlib"
+addopts = "-q -rfE --tb=short --import-mode=importlib"
 norecursedirs = ["test_helpers"]
 pythonpath = ["tests", "tests/test_helpers"]
 # AMD/HIP test suite: rocm_tests/ directory for all AMD-authored tests,

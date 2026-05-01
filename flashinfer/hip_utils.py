@@ -492,11 +492,12 @@ def get_physical_card_device_indices() -> tuple:
         except (KeyError, TypeError, ValueError):
             continue
 
-    if not vram_by_idx:
+    supported_vram = {idx: vram_by_idx[idx] for idx in supported if idx in vram_by_idx}
+    if not supported_vram:
         return supported
 
-    threshold = int(max(vram_by_idx.values()) * _PRIMARY_VRAM_RATIO)
-    primary = tuple(idx for idx in supported if vram_by_idx.get(idx, 0) >= threshold)
+    threshold = int(max(supported_vram.values()) * _PRIMARY_VRAM_RATIO)
+    primary = tuple(idx for idx in supported if supported_vram.get(idx, 0) >= threshold)
     return primary or supported
 
 

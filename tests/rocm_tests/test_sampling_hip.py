@@ -201,8 +201,8 @@ def test_softmax(
 def test_sampling_from_logits(batch_size, vocab_size):
     torch.manual_seed(42)
     logits = torch.randn(batch_size, vocab_size, device="cuda:0")
-    num_trails = 100
-    for _ in range(num_trails):
+    num_trials = 100
+    for _ in range(num_trials):
         samples = flashinfer.sampling.sampling_from_logits(logits)
         assert torch.all(samples < vocab_size) and torch.all(samples >= 0)
 
