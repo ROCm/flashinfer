@@ -231,13 +231,8 @@ The default test configuration is specified in [pyproject.toml](pyproject.toml) 
 
 #### Recommended invocation on AMD CPX systems
 
-Install `pytest-rerunfailures` once (it absorbs the residual transient HIP runtime crashes):
-
-```bash
-pip install pytest-rerunfailures
-```
-
-Then for the full suite:
+`pytest-rerunfailures` (declared in the `dev` extra — `pip install -e ".[dev]"`)
+absorbs the residual transient HIP runtime crashes. Then for the full suite:
 
 ```bash
 # Fast path — skips heavy 1M-trial sampling-frequency tests and 4 GB
