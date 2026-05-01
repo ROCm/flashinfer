@@ -16,6 +16,18 @@ _HIPBLAS_RETRY_ATTEMPTS = 4
 _HIPBLAS_RETRY_BACKOFF_S = 0.1  # exhaustion clears in tens of ms
 
 
+def _hipblas_safe_call(fn, *args, **kwargs):
+    """Retry any callable on transient HIPBLAS handle-pool exhaustion."""
+    for _ in range(_HIPBLAS_RETRY_ATTEMPTS - 1):
+        try:
+            return fn(*args, **kwargs)
+        except RuntimeError as e:
+            if not any(m in str(e) for m in _HIPBLAS_TRANSIENT_MARKERS):
+                raise
+            time.sleep(_HIPBLAS_RETRY_BACKOFF_S)
+    return fn(*args, **kwargs)
+
+
 def _hipblas_safe_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """``torch.matmul`` with retry on transient HIPBLAS handle-pool exhaustion.
 

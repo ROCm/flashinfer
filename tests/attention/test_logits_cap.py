@@ -25,6 +25,7 @@ from tests.test_helpers.jit_utils import (
 
 import flashinfer
 from flashinfer.utils import has_flashinfer_jit_cache
+from attention_reference import _hipblas_safe_call
 
 
 @pytest.fixture(
@@ -57,11 +58,11 @@ def warmup_jit():
 
 def attention_logits_soft_cap_torch(q, k, v, soft_cap):
     q_len, num_heads, head_dim = q.shape
-    scores = torch.einsum("qhd,khd->qkh", q.float(), k.float())
+    scores = _hipblas_safe_call(torch.einsum, "qhd,khd->qkh", q.float(), k.float())
     scores *= 1.0 / math.sqrt(head_dim)
     scores = soft_cap * torch.tanh(scores / soft_cap)
     attn = torch.softmax(scores, dim=1)
-    return torch.einsum("ovh,vhd->ohd", attn, v.float()).to(q)
+    return _hipblas_safe_call(torch.einsum, "ovh,vhd->ohd", attn, v.float()).to(q)
 
 
 @pytest.mark.parametrize("seq_len", [1, 9, 81, 729, 33001])

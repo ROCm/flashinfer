@@ -26,6 +26,7 @@ import pytest
 import torch
 
 import flashinfer
+from attention_reference import _hipblas_safe_matmul
 
 # Monkey-patch flashinfer.quantization on older versions where the JIT-compiled
 # quantization module fails to build on ROCm (cub/cub.cuh missing in <= 0.2.5).
@@ -186,7 +187,7 @@ def _naive_attention(q, k, v, causal=False, custom_mask=None):
     k_t = k.transpose(0, 1).float()
     v_t = v.transpose(0, 1).float()
 
-    scores = torch.matmul(q_t, k_t.transpose(1, 2)) * scale
+    scores = _hipblas_safe_matmul(q_t, k_t.transpose(1, 2)) * scale
 
     if custom_mask is not None:
         scores = scores.masked_fill(~custom_mask.unsqueeze(0), float("-inf"))
@@ -198,7 +199,7 @@ def _naive_attention(q, k, v, causal=False, custom_mask=None):
         scores = scores.masked_fill(~mask.unsqueeze(0), float("-inf"))
 
     attn = torch.softmax(scores, dim=-1)
-    out = torch.matmul(attn, v_t)
+    out = _hipblas_safe_matmul(attn, v_t)
     return out.transpose(0, 1).to(q.dtype)
 
 
