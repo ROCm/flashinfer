@@ -958,7 +958,7 @@ __device__ __forceinline__ void compute_sfm_v(
     uint32_t* v_smem_offset_r,
     typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][KTraits::HALF_ELEMS_PER_THREAD],
     float (*o_frag)[KTraits::NUM_MMA_D_VO][KTraits::HALF_ELEMS_PER_THREAD],
-    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD]) {
+    float (*d)[KTraits::NUM_ACCUM_ROWS_PER_THREAD], const dim3 tid = threadIdx) {
   constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
   constexpr uint32_t HALF_ELEMS_PER_THREAD = KTraits::HALF_ELEMS_PER_THREAD;
   constexpr uint32_t INT32_ELEMS_PER_THREAD = KTraits::INT32_ELEMS_PER_THREAD;
@@ -1004,9 +1004,9 @@ __device__ __forceinline__ void compute_sfm_v(
 #pragma unroll
   for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
     // v_col_idx: current column j of *v_smem_offset_r before each advance_offset_by_column.
-    // Reset per KV row: each row's V fragment starts at column threadIdx.x / WARP_THREAD_COLS.
+    // Reset per KV row: each row's V fragment starts at column tid.x / WARP_THREAD_COLS.
     // Needed by k128B_16Row; ignored by k128B.
-    uint32_t v_col_idx = threadIdx.x / KTraits::WARP_THREAD_COLS;
+    uint32_t v_col_idx = tid.x / KTraits::WARP_THREAD_COLS;
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
       uint32_t b_frag[INT32_ELEMS_PER_THREAD];
@@ -1541,7 +1541,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
       block.sync();
     }
     // compute attention score
-    compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag);
+    compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag, tid);
     // logits transformation
     logits_transform<KTraits>(
         params, variant, /*batch_idx=*/0, qo_packed_idx_base,
@@ -1564,7 +1564,7 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
     block.sync();
 
     // compute sfm*v
-    compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
+    compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid);
     block.sync();
     produce_kv<true, SharedMemFillMode::kFillZero, KTraits>(
         v_smem, &v_smem_offset_w, &v_ptr, v_stride_n, (iter + 1) * CTA_TILE_KV, chunk_size, tid);
@@ -2278,7 +2278,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     }
 
     // compute attention score
-    compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag);
+    compute_qk<KTraits>(&qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r, s_frag, tid);
 
     logits_transform<KTraits>(
         params, variant, /*batch_idx=*/request_idx, qo_packed_idx_base,
@@ -2304,7 +2304,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
     block.sync();
 
     // compute sfm*v
-    compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d);
+    compute_sfm_v<KTraits>(&v_smem, &v_smem_offset_r, s_frag, o_frag, d, tid);
 
     block.sync();
     page_produce_kv<true, KTraits>(v_smem, &v_smem_offset_w, paged_kv, (iter + 1) * CTA_TILE_KV,
