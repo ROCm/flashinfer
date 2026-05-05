@@ -19,9 +19,12 @@ from typing import Literal, Optional, Tuple, Union, overload
 
 import torch
 
+from .device_utils import IS_HIP
 from .jit import gen_batch_mla_module
-from .jit.mla import gen_mla_module
 from .utils import MaskMode, check_shape_dtype_device, determine_mla_backend
+
+if not IS_HIP:
+    from .jit.mla import gen_mla_module
 
 
 def _check_cutlass_shape(q_nope_pe, ckv_kpe_cache, kv_len, page_table):
@@ -55,6 +58,8 @@ def _check_cutlass_shape(q_nope_pe, ckv_kpe_cache, kv_len, page_table):
 
 @functools.cache
 def get_mla_module():
+    if IS_HIP:
+        raise RuntimeError("Cutlass MLA backend is not supported on HIP/ROCm")
     return gen_mla_module().build_and_load()
 
 
