@@ -16,7 +16,9 @@
 
 #ifndef FLASHINFER_PROFILER_CUH_
 #define FLASHINFER_PROFILER_CUH_
+#if !defined(__HIPCC__) && !defined(__HIP__)
 #include <cuda.h>
+#endif
 
 namespace flashinfer {
 
@@ -55,7 +57,11 @@ __device__ __forceinline__ uint32_t encode_tag(uint32_t sm_id, uint32_t block_id
 
 __device__ __forceinline__ uint32_t get_timestamp() {
   volatile uint32_t ret;
+#if !defined(__HIPCC__) && !defined(__HIP__)
   asm volatile("mov.u32 %0, %globaltimer_lo;" : "=r"(ret));
+#else
+  ret = 0;
+#endif
   return ret;
 }
 

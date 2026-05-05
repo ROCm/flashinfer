@@ -15,7 +15,9 @@
  */
 #ifndef FLASHINFER_MLA_PARAMS_CUH_
 #define FLASHINFER_MLA_PARAMS_CUH_
+#if !defined(__HIPCC__) && !defined(__HIP__)
 #include <cuda.h>
+#endif
 
 #include "../fastdiv.cuh"
 #include "../profiler.cuh"
