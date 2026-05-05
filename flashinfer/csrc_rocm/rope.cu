@@ -53,16 +53,18 @@ void apply_rope(at::Tensor q, at::Tensor k, at::Tensor q_rope, at::Tensor k_rope
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q.device());
   auto stream = c10::hip::getCurrentHIPStream();
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(q.scalar_type(), c_type, [&] {
-    hipError_t status = BatchQKApplyRotary(
-        static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
-        static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
-        static_cast<int32_t*>(indptr.data_ptr()), static_cast<int32_t*>(offsets.data_ptr()),
-        batch_size, num_qo_heads, num_kv_heads, rotary_dim, head_dim, q_stride_n, q_stride_h,
-        k_stride_n, k_stride_h, q_rope_stride_n, q_rope_stride_h, k_rope_stride_n, k_rope_stride_h,
-        interleave, rope_scale, rope_theta, stream);
-    TORCH_CHECK(status == hipSuccess, "BatchQKApplyRotary failed with error code " +
-                                          std::string(hipGetErrorString(status)));
-    return true;
+    return DISPATCH_PYTORCH_IDTYPE_TO_CTYPE(indptr.scalar_type(), c_idtype, [&] {
+      hipError_t status = BatchQKApplyRotary(
+          static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
+          static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
+          static_cast<c_idtype*>(indptr.data_ptr()), static_cast<c_idtype*>(offsets.data_ptr()),
+          batch_size, num_qo_heads, num_kv_heads, rotary_dim, head_dim, q_stride_n, q_stride_h,
+          k_stride_n, k_stride_h, q_rope_stride_n, q_rope_stride_h, k_rope_stride_n,
+          k_rope_stride_h, interleave, rope_scale, rope_theta, stream);
+      TORCH_CHECK(status == hipSuccess, "BatchQKApplyRotary failed with error code " +
+                                            std::string(hipGetErrorString(status)));
+      return true;
+    });
   });
 }
 
@@ -96,15 +98,18 @@ void apply_rope_pos_ids(at::Tensor q, at::Tensor k, at::Tensor q_rope, at::Tenso
   auto stream = c10::hip::getCurrentHIPStream();
 
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(q.scalar_type(), c_type, [&] {
-    hipError_t status = BatchQKApplyRotaryPosIds(
-        static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
-        static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
-        static_cast<int32_t*>(pos_ids.data_ptr()), nnz, num_qo_heads, num_kv_heads, rotary_dim,
-        head_dim, q_stride_n, q_stride_h, k_stride_n, k_stride_h, q_rope_stride_n, q_rope_stride_h,
-        k_rope_stride_n, k_rope_stride_h, interleave, rope_scale, rope_theta, stream);
-    TORCH_CHECK(status == hipSuccess, "BatchQKApplyRotaryPosIds failed with error code " +
-                                          std::string(hipGetErrorString(status)));
-    return true;
+    return DISPATCH_PYTORCH_IDTYPE_TO_CTYPE(pos_ids.scalar_type(), c_idtype, [&] {
+      hipError_t status = BatchQKApplyRotaryPosIds(
+          static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
+          static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
+          static_cast<c_idtype*>(pos_ids.data_ptr()), nnz, num_qo_heads, num_kv_heads, rotary_dim,
+          head_dim, q_stride_n, q_stride_h, k_stride_n, k_stride_h, q_rope_stride_n,
+          q_rope_stride_h, k_rope_stride_n, k_rope_stride_h, interleave, rope_scale, rope_theta,
+          stream);
+      TORCH_CHECK(status == hipSuccess, "BatchQKApplyRotaryPosIds failed with error code " +
+                                            std::string(hipGetErrorString(status)));
+      return true;
+    });
   });
 }
 
@@ -121,8 +126,6 @@ void apply_rope_pos_ids_cos_sin_cache(at::Tensor q, at::Tensor k, at::Tensor q_r
   CHECK_EQ(pos_ids.device(), device);
   CHECK_DIM(3, q);  // q: (nnz, H_Q, D)
   CHECK_DIM(3, k);  // k: (nnz, H_K, D)
-  // cos_sin_cache: (max_seq_len, R)
-  // First half of R is cos, second half is sin
   CHECK_DIM(2, cos_sin_cache);
   CHECK_EQ(q.size(0), k.size(0));
   CHECK_EQ(q.size(2), k.size(2));
@@ -143,17 +146,19 @@ void apply_rope_pos_ids_cos_sin_cache(at::Tensor q, at::Tensor k, at::Tensor q_r
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q.device());
   auto stream = c10::hip::getCurrentHIPStream();
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(q.scalar_type(), c_type, [&] {
-    hipError_t status = BatchQKApplyRotaryPosIdsCosSinCache(
-        static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
-        static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
-        static_cast<float*>(cos_sin_cache.data_ptr()), static_cast<int32_t*>(pos_ids.data_ptr()),
-        nnz, num_qo_heads, num_kv_heads, rotary_dim, head_dim, q_stride_n, q_stride_h, k_stride_n,
-        k_stride_h, q_rope_stride_n, q_rope_stride_h, k_rope_stride_n, k_rope_stride_h, interleave,
-        stream);
-    TORCH_CHECK(status == hipSuccess,
-                "BatchQKApplyRotaryPosIdsCosSinCache failed with error code " +
-                    std::string(hipGetErrorString(status)));
-    return true;
+    return DISPATCH_PYTORCH_IDTYPE_TO_CTYPE(pos_ids.scalar_type(), c_idtype, [&] {
+      hipError_t status = BatchQKApplyRotaryPosIdsCosSinCache(
+          static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
+          static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
+          static_cast<float*>(cos_sin_cache.data_ptr()), static_cast<c_idtype*>(pos_ids.data_ptr()),
+          nnz, num_qo_heads, num_kv_heads, rotary_dim, head_dim, q_stride_n, q_stride_h, k_stride_n,
+          k_stride_h, q_rope_stride_n, q_rope_stride_h, k_rope_stride_n, k_rope_stride_h,
+          interleave, stream);
+      TORCH_CHECK(status == hipSuccess,
+                  "BatchQKApplyRotaryPosIdsCosSinCache failed with error code " +
+                      std::string(hipGetErrorString(status)));
+      return true;
+    });
   });
 }
 
@@ -191,17 +196,19 @@ void apply_llama31_rope(at::Tensor q, at::Tensor k, at::Tensor q_rope, at::Tenso
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q.device());
   auto stream = c10::hip::getCurrentHIPStream();
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(q.scalar_type(), c_type, [&] {
-    hipError_t status = BatchQKApplyLlama31Rotary(
-        static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
-        static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
-        static_cast<int32_t*>(indptr.data_ptr()), static_cast<int32_t*>(offsets.data_ptr()),
-        batch_size, num_qo_heads, num_kv_heads, rotary_dim, head_dim, q_stride_n, q_stride_h,
-        k_stride_n, k_stride_h, q_rope_stride_n, q_rope_stride_h, k_rope_stride_n, k_rope_stride_h,
-        interleave, rope_scale, rope_theta, low_freq_factor, high_freq_factor, old_context_length,
-        stream);
-    TORCH_CHECK(status == hipSuccess, "BatchQKApplyLlama31Rotary failed with error code " +
-                                          std::string(hipGetErrorString(status)));
-    return true;
+    return DISPATCH_PYTORCH_IDTYPE_TO_CTYPE(indptr.scalar_type(), c_idtype, [&] {
+      hipError_t status = BatchQKApplyLlama31Rotary(
+          static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
+          static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
+          static_cast<c_idtype*>(indptr.data_ptr()), static_cast<c_idtype*>(offsets.data_ptr()),
+          batch_size, num_qo_heads, num_kv_heads, rotary_dim, head_dim, q_stride_n, q_stride_h,
+          k_stride_n, k_stride_h, q_rope_stride_n, q_rope_stride_h, k_rope_stride_n,
+          k_rope_stride_h, interleave, rope_scale, rope_theta, low_freq_factor, high_freq_factor,
+          old_context_length, stream);
+      TORCH_CHECK(status == hipSuccess, "BatchQKApplyLlama31Rotary failed with error code " +
+                                            std::string(hipGetErrorString(status)));
+      return true;
+    });
   });
 }
 
@@ -223,19 +230,48 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
 
   auto device = q_rope_in.device();
   CHECK_DIM(3, q_rope_in);
-  CHECK_DIM(3, k_rope_in);
   CHECK_DIM(3, q_nope_in);
-  CHECK_DIM(3, k_nope_in);
   CHECK_DIM(3, q_rope_out);
-  CHECK_DIM(3, k_rope_out);
   CHECK_DIM(3, q_nope_out);
-  CHECK_DIM(3, k_nope_out);
+
+  uint32_t num_kv_heads;
+  uint32_t k_rope_in_stride, k_nope_in_stride, k_rope_out_stride, k_nope_out_stride;
+  uint32_t k_rope_in_stride_h, k_nope_in_stride_h, k_rope_out_stride_h, k_nope_out_stride_h;
+
+  if (k_rope_in.dim() == 2) {
+    TORCH_CHECK(k_nope_in.dim() == 2 && k_rope_out.dim() == 2 && k_nope_out.dim() == 2,
+                "MLA mode expects all K tensors to be 2D");
+    num_kv_heads = 1;
+    k_rope_in_stride = k_rope_in.stride(0);
+    k_nope_in_stride = k_nope_in.stride(0);
+    k_rope_out_stride = k_rope_out.stride(0);
+    k_nope_out_stride = k_nope_out.stride(0);
+    // head stride = batch stride: the kernel still receives a head-stride argument,
+    // so we alias it to the token stride to get num_kv_heads=1 behaviour.
+    k_rope_in_stride_h = k_rope_in_stride;
+    k_nope_in_stride_h = k_nope_in_stride;
+    k_rope_out_stride_h = k_rope_out_stride;
+    k_nope_out_stride_h = k_nope_out_stride;
+  } else {
+    CHECK_DIM(3, k_rope_in);
+    CHECK_DIM(3, k_nope_in);
+    CHECK_DIM(3, k_rope_out);
+    CHECK_DIM(3, k_nope_out);
+    num_kv_heads = k_rope_in.size(1);
+    k_rope_in_stride = k_rope_in.stride(0);
+    k_rope_in_stride_h = k_rope_in.stride(1);
+    k_nope_in_stride = k_nope_in.stride(0);
+    k_nope_in_stride_h = k_nope_in.stride(1);
+    k_rope_out_stride = k_rope_out.stride(0);
+    k_rope_out_stride_h = k_rope_out.stride(1);
+    k_nope_out_stride = k_nope_out.stride(0);
+    k_nope_out_stride_h = k_nope_out.stride(1);
+  }
 
   uint32_t rope_dim = q_rope_in.size(-1);
   uint32_t no_rope_dim = q_nope_in.size(-1);
   uint32_t nnz = q_rope_in.size(0);
   uint32_t num_qo_heads = q_rope_in.size(1);
-  uint32_t num_kv_heads = k_rope_in.size(1);
 
   TORCH_CHECK(q_rope_in.scalar_type() == at::kHalf || q_rope_in.scalar_type() == at::kBFloat16,
               "Input dtype must be float16 or bfloat16");
@@ -257,14 +293,6 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
   const uint32_t q_rope_out_stride_h = q_rope_out.stride(1);
   const uint32_t q_nope_out_stride_n = q_nope_out.stride(0);
   const uint32_t q_nope_out_stride_h = q_nope_out.stride(1);
-  const uint32_t k_rope_in_stride = k_rope_in.stride(0);
-  const uint32_t k_rope_in_stride_h = k_rope_in.stride(1);
-  const uint32_t k_nope_in_stride = k_nope_in.stride(0);
-  const uint32_t k_nope_in_stride_h = k_nope_in.stride(1);
-  const uint32_t k_rope_out_stride = k_rope_out.stride(0);
-  const uint32_t k_rope_out_stride_h = k_rope_out.stride(1);
-  const uint32_t k_nope_out_stride = k_nope_out.stride(0);
-  const uint32_t k_nope_out_stride_h = k_nope_out.stride(1);
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = c10::hip::getCurrentHIPStream();
@@ -316,9 +344,7 @@ void rope_quantize_append_paged_kv_cache(
   uint32_t no_rope_dim = q_nope_in.size(-1);
   uint32_t nnz = q_rope_in.size(0);
   uint32_t num_qo_heads = q_rope_in.size(1);
-  uint32_t num_kv_heads = k_rope_in.size(1);
   uint32_t batch_size = kv_indptr.size(0) - 1;
-  uint32_t head_dim = rope_dim + no_rope_dim;
 
   TORCH_CHECK(q_rope_in.scalar_type() == at::kHalf || q_rope_in.scalar_type() == at::kBFloat16,
               "Input dtype must be float16 or bfloat16");
@@ -328,8 +354,6 @@ void rope_quantize_append_paged_kv_cache(
               "q_nope_in dtype must match q_rope_in dtype");
   TORCH_CHECK(k_nope_in.scalar_type() == q_rope_in.scalar_type(),
               "k_nope_in dtype must match q_rope_in dtype");
-  TORCH_CHECK(v_in.scalar_type() == q_rope_in.scalar_type(),
-              "v_in dtype must match q_rope_in dtype");
   TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
   TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
   TORCH_CHECK(is_float8_tensor(q_rope_out), "Output dtype must be float8");
@@ -338,12 +362,10 @@ void rope_quantize_append_paged_kv_cache(
       k_cache.defined() && k_cache.numel() > 0 && v_cache.defined() && v_cache.numel() > 0;
   bool has_mla_caches =
       ckv_cache.defined() && ckv_cache.numel() > 0 && kpe_cache.defined() && kpe_cache.numel() > 0;
-  TORCH_CHECK(!has_mla_caches || has_gqa_caches,
-              "MLA rope_quantize_append_paged_kv_cache is not yet supported on ROCm");
-  TORCH_CHECK(has_gqa_caches, "rope_quantize_append_paged_kv_cache requires k_cache and v_cache");
-
-  QKVLayout kv_layout = QKVLayout(kv_layout_code);
-  auto k_strides = k_cache.strides();
+  bool is_mla = has_mla_caches && !has_gqa_caches;
+  TORCH_CHECK(has_gqa_caches || has_mla_caches,
+              "rope_quantize_append_paged_kv_cache requires either GQA caches (k_cache, v_cache) "
+              "or MLA caches (ckv_cache, kpe_cache)");
 
   const uint32_t q_rope_in_stride_n = q_rope_in.stride(0);
   const uint32_t q_rope_in_stride_h = q_rope_in.stride(1);
@@ -357,35 +379,82 @@ void rope_quantize_append_paged_kv_cache(
   const uint32_t k_rope_in_stride_h = k_rope_in.stride(1);
   const uint32_t k_nope_in_stride = k_nope_in.stride(0);
   const uint32_t k_nope_in_stride_h = k_nope_in.stride(1);
-  const uint32_t v_in_stride = v_in.stride(0);
-  const uint32_t v_in_stride_h = v_in.stride(1);
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q_rope_in.device());
   auto stream = c10::hip::getCurrentHIPStream();
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(q_rope_in.scalar_type(), c_type, [&] {
     return DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP8(q_rope_out.scalar_type(), c_quant_type, [&] {
-      paged_kv_t<c_quant_type, int32_t> paged_kv(
-          num_kv_heads, page_size, head_dim, batch_size, kv_layout,
-          static_cast<c_quant_type*>(k_cache.data_ptr()),
-          static_cast<c_quant_type*>(v_cache.data_ptr()), k_strides.data(),
-          static_cast<int32_t*>(kv_indices.data_ptr()), static_cast<int32_t*>(kv_indptr.data_ptr()),
-          /*last_page_len=*/nullptr);
-      hipError_t status = RopeQuantizeAppendPagedKVCache<c_type, int32_t, c_quant_type>(
-          static_cast<c_type*>(q_rope_in.data_ptr()), static_cast<c_type*>(k_rope_in.data_ptr()),
-          static_cast<c_type*>(q_nope_in.data_ptr()), static_cast<c_type*>(k_nope_in.data_ptr()),
-          static_cast<c_type*>(v_in.data_ptr()), static_cast<c_quant_type*>(q_rope_out.data_ptr()),
-          static_cast<c_quant_type*>(q_nope_out.data_ptr()), paged_kv,
-          static_cast<int32_t*>(batch_indices.data_ptr()),
-          static_cast<int32_t*>(positions.data_ptr()),
-          static_cast<float*>(cos_sin_cache.data_ptr()), static_cast<int32_t*>(pos_ids.data_ptr()),
-          nnz, num_qo_heads, num_kv_heads, rope_dim, no_rope_dim, q_rope_in_stride_n,
-          q_rope_in_stride_h, q_nope_in_stride_n, q_nope_in_stride_h, q_rope_out_stride_n,
-          q_rope_out_stride_h, q_nope_out_stride_n, q_nope_out_stride_h, k_rope_in_stride,
-          k_rope_in_stride_h, k_nope_in_stride, k_nope_in_stride_h, v_in_stride, v_in_stride_h,
-          static_cast<float>(quant_scale_q), static_cast<float>(quant_scale_kv), interleave,
-          enable_pdl, stream);
-      TORCH_CHECK(status == hipSuccess, "RopeQuantizeAppendPagedKVCache failed with error code " +
-                                            std::string(hipGetErrorString(status)));
+      hipError_t status;
+
+      if (is_mla) {
+        // MLA path: ckv_cache + kpe_cache, no V section
+        TORCH_CHECK(k_rope_in.dim() == 3 && k_rope_in.size(1) == 1,
+                    "MLA expects k_rope_in to be 3D with num_kv_heads=1");
+        TORCH_CHECK(k_nope_in.dim() == 3 && k_nope_in.size(1) == 1,
+                    "MLA expects k_nope_in to be 3D with num_kv_heads=1");
+
+        auto ckv_strides = ckv_cache.strides();
+        auto kpe_strides = kpe_cache.strides();
+        paged_kv_mla_t<c_quant_type, int32_t> paged_kv_mla(
+            page_size, no_rope_dim, rope_dim, batch_size,
+            static_cast<c_quant_type*>(ckv_cache.data_ptr()), ckv_strides.data(),
+            static_cast<c_quant_type*>(kpe_cache.data_ptr()), kpe_strides.data(),
+            static_cast<int32_t*>(kv_indices.data_ptr()),
+            static_cast<int32_t*>(kv_indptr.data_ptr()),
+            /*last_page_len=*/nullptr);
+
+        status = RopeQuantizeAppendPagedMLACache<c_type, int32_t, c_quant_type>(
+            static_cast<c_type*>(q_rope_in.data_ptr()), static_cast<c_type*>(k_rope_in.data_ptr()),
+            static_cast<c_type*>(q_nope_in.data_ptr()), static_cast<c_type*>(k_nope_in.data_ptr()),
+            static_cast<c_quant_type*>(q_rope_out.data_ptr()),
+            static_cast<c_quant_type*>(q_nope_out.data_ptr()), paged_kv_mla,
+            static_cast<int32_t*>(batch_indices.data_ptr()),
+            static_cast<int32_t*>(positions.data_ptr()),
+            static_cast<float*>(cos_sin_cache.data_ptr()),
+            static_cast<int32_t*>(pos_ids.data_ptr()), nnz, num_qo_heads, rope_dim, no_rope_dim,
+            q_rope_in_stride_n, q_rope_in_stride_h, q_nope_in_stride_n, q_nope_in_stride_h,
+            q_rope_out_stride_n, q_rope_out_stride_h, q_nope_out_stride_n, q_nope_out_stride_h,
+            k_rope_in_stride, k_nope_in_stride, static_cast<float>(quant_scale_q),
+            static_cast<float>(quant_scale_kv), interleave, enable_pdl, stream);
+        TORCH_CHECK(status == hipSuccess,
+                    "RopeQuantizeAppendPagedMLACache failed with error code " +
+                        std::string(hipGetErrorString(status)));
+
+      } else {
+        // GQA/MHA path: k_cache + v_cache
+        uint32_t num_kv_heads = k_rope_in.size(1);
+        uint32_t head_dim = rope_dim + no_rope_dim;
+        const uint32_t v_in_stride = v_in.stride(0);
+        const uint32_t v_in_stride_h = v_in.stride(1);
+        QKVLayout kv_layout = QKVLayout(kv_layout_code);
+        auto k_strides = k_cache.strides();
+
+        paged_kv_t<c_quant_type, int32_t> paged_kv(
+            num_kv_heads, page_size, head_dim, batch_size, kv_layout,
+            static_cast<c_quant_type*>(k_cache.data_ptr()),
+            static_cast<c_quant_type*>(v_cache.data_ptr()), k_strides.data(),
+            static_cast<int32_t*>(kv_indices.data_ptr()),
+            static_cast<int32_t*>(kv_indptr.data_ptr()),
+            /*last_page_len=*/nullptr);
+
+        status = RopeQuantizeAppendPagedKVCache<c_type, int32_t, c_quant_type>(
+            static_cast<c_type*>(q_rope_in.data_ptr()), static_cast<c_type*>(k_rope_in.data_ptr()),
+            static_cast<c_type*>(q_nope_in.data_ptr()), static_cast<c_type*>(k_nope_in.data_ptr()),
+            static_cast<c_type*>(v_in.data_ptr()),
+            static_cast<c_quant_type*>(q_rope_out.data_ptr()),
+            static_cast<c_quant_type*>(q_nope_out.data_ptr()), paged_kv,
+            static_cast<int32_t*>(batch_indices.data_ptr()),
+            static_cast<int32_t*>(positions.data_ptr()),
+            static_cast<float*>(cos_sin_cache.data_ptr()),
+            static_cast<int32_t*>(pos_ids.data_ptr()), nnz, num_qo_heads, num_kv_heads, rope_dim,
+            no_rope_dim, q_rope_in_stride_n, q_rope_in_stride_h, q_nope_in_stride_n,
+            q_nope_in_stride_h, q_rope_out_stride_n, q_rope_out_stride_h, q_nope_out_stride_n,
+            q_nope_out_stride_h, k_rope_in_stride, k_rope_in_stride_h, k_nope_in_stride,
+            k_nope_in_stride_h, v_in_stride, v_in_stride_h, static_cast<float>(quant_scale_q),
+            static_cast<float>(quant_scale_kv), interleave, enable_pdl, stream);
+        TORCH_CHECK(status == hipSuccess, "RopeQuantizeAppendPagedKVCache failed with error code " +
+                                              std::string(hipGetErrorString(status)));
+      }
       return true;
     });
   });
@@ -421,15 +490,17 @@ void apply_llama31_rope_pos_ids(at::Tensor q, at::Tensor k, at::Tensor q_rope, a
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q.device());
   auto stream = c10::hip::getCurrentHIPStream();
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(q.scalar_type(), c_type, [&] {
-    hipError_t status = BatchQKApplyLlama31RotaryPosIds(
-        static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
-        static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
-        static_cast<int32_t*>(pos_ids.data_ptr()), nnz, num_qo_heads, num_kv_heads, rotary_dim,
-        head_dim, q_stride_n, q_stride_h, k_stride_n, k_stride_h, q_rope_stride_n, q_rope_stride_h,
-        k_rope_stride_n, k_rope_stride_h, interleave, rope_scale, rope_theta, low_freq_factor,
-        high_freq_factor, old_context_length, stream);
-    TORCH_CHECK(status == hipSuccess, "BatchQKApplyLlama31RotaryPosIds failed with error code " +
-                                          std::string(hipGetErrorString(status)));
-    return true;
+    return DISPATCH_PYTORCH_IDTYPE_TO_CTYPE(pos_ids.scalar_type(), c_idtype, [&] {
+      hipError_t status = BatchQKApplyLlama31RotaryPosIds(
+          static_cast<c_type*>(q.data_ptr()), static_cast<c_type*>(k.data_ptr()),
+          static_cast<c_type*>(q_rope.data_ptr()), static_cast<c_type*>(k_rope.data_ptr()),
+          static_cast<c_idtype*>(pos_ids.data_ptr()), nnz, num_qo_heads, num_kv_heads, rotary_dim,
+          head_dim, q_stride_n, q_stride_h, k_stride_n, k_stride_h, q_rope_stride_n,
+          q_rope_stride_h, k_rope_stride_n, k_rope_stride_h, interleave, rope_scale, rope_theta,
+          low_freq_factor, high_freq_factor, old_context_length, stream);
+      TORCH_CHECK(status == hipSuccess, "BatchQKApplyLlama31RotaryPosIds failed with error code " +
+                                            std::string(hipGetErrorString(status)));
+      return true;
+    });
   });
 }
