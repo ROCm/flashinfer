@@ -72,6 +72,8 @@ elif IS_HIP:
     )
     from .modules_hip import gen_single_decode_module as gen_single_decode_module
     from .modules_hip import gen_single_prefill_module as gen_single_prefill_module
+    from .modules_hip import gen_batch_mla_module as gen_batch_mla_module
+    from .modules_hip import get_batch_mla_uri as get_batch_mla_uri
     from .modules_hip import get_batch_decode_uri as get_batch_decode_uri
     from .modules_hip import get_batch_prefill_uri as get_batch_prefill_uri
     from .modules_hip import get_single_decode_uri as get_single_decode_uri

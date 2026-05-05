@@ -943,3 +943,83 @@ def gen_customize_batch_prefill_module(
         raise ValueError("FA3 backend not currently supported for ROCm")
     else:
         raise ValueError(f"Invalid backend: {backend}")
+
+
+def get_batch_mla_uri(
+    backend: str,
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    dtype_idx: torch.dtype,
+    head_dim_ckv: int,
+    head_dim_kpe: int,
+    use_profiler: bool,
+) -> str:
+    return (
+        f"batch_mla_attention_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
+        f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
+        f"dtype_o_{filename_safe_dtype_map[dtype_o]}_"
+        f"dtype_idx_{filename_safe_dtype_map[dtype_idx]}_"
+        f"head_dim_ckv_{head_dim_ckv}_"
+        f"head_dim_kpe_{head_dim_kpe}_"
+        f"profiler_{use_profiler}_hip"
+    )
+
+
+def gen_batch_mla_module(
+    backend: str,
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    dtype_idx: torch.dtype,
+    head_dim_ckv: int,
+    head_dim_kpe: int,
+    use_profiler: bool,
+) -> JitSpec:
+    if backend == "auto":
+        raise ValueError("backend should not be auto when jit_args is provided")
+    uri = get_batch_mla_uri(
+        backend,
+        dtype_q,
+        dtype_kv,
+        dtype_o,
+        dtype_idx,
+        head_dim_ckv,
+        head_dim_kpe,
+        use_profiler,
+    )
+    gen_directory = FLASHINFER_GEN_SRC_DIR / uri
+    os.makedirs(gen_directory, exist_ok=True)
+
+    with open(FLASHINFER_CSRC_DIR / "batch_mla_customize_config.jinja") as f:
+        config_templ = jinja2.Template(f.read())
+
+    generated_inc_str = config_templ.render(
+        dtype_q=dtype_map_hip[dtype_q],
+        dtype_kv=dtype_map_hip[dtype_kv],
+        dtype_o=dtype_map_hip[dtype_o],
+        dtype_idx=dtype_map_hip[dtype_idx],
+        head_dim_ckv=head_dim_ckv,
+        head_dim_kpe=head_dim_kpe,
+    )
+
+    source_paths = []
+    for filename in [
+        "batch_mla.cu",
+        "batch_mla_jit_pybind.cu",
+    ]:
+        src_path = FLASHINFER_CSRC_DIR / filename
+        dest_path = gen_directory / filename
+        source_paths.append(dest_path)
+        with open(src_path, "r") as f:
+            source = f.read()
+        write_if_different(dest_path, source)
+
+    generated_config_path = gen_directory / "batch_mla_config.inc"
+    write_if_different(generated_config_path, generated_inc_str)
+
+    extra_cuda_cflags = []
+    if use_profiler:
+        extra_cuda_cflags += ["-DFLASHINFER_ENABLE_PROFILER"]
+
+    return gen_jit_spec(uri, source_paths, extra_cuda_cflags=extra_cuda_cflags)
