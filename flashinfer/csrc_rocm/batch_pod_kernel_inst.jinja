@@ -1,0 +1,26 @@
+#include <flashinfer/attention/generic/batch_pod.cuh>
+#include <flashinfer/attention/generic/default_prefill_params.cuh>
+#include "batch_pod_config.inc"
+
+using namespace flashinfer;
+
+namespace flashinfer {
+
+constexpr auto use_custom_mask_p = {{ mask_mode_p }} == MaskMode::kCustom;
+constexpr auto use_custom_mask_d = {{ mask_mode_d }} == MaskMode::kCustom;
+
+using PrefillAttentionVariant = {{ variant_name_p }};
+using DecodeAttentionVariant = {{ variant_name_d }};
+
+{% for cta_tile_q in [16, 64, 128] %}
+template hipError_t BatchPODWithKVCacheTensorDispatched<
+    {{ head_dim_qk }}, {{ head_dim_vo }}, POS_ENCODING_MODE,
+    {{ use_fp16_qk_reduction }}, /*CTA_TILE_Q_P=*/{{ cta_tile_q }}, {{ mask_mode_p }},
+    /*CTA_TILE_Q_D=*/16, {{ mask_mode_d }}, PrefillAttentionVariant, DecodeAttentionVariant,
+    PrefillParams, DecodeParams>(
+        PrefillParams prefill_params, {{ dtype_o }}* tmp_v_p, float* tmp_s_p,
+        DecodeParams decode_params, {{ dtype_o }}* tmp_v_d, float* tmp_s_d,
+        bool enable_pdl, hipStream_t stream, int* sm_aware_sched);
+{% endfor %}
+
+}  // namespace flashinfer
