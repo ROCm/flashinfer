@@ -131,3 +131,86 @@ void merge_states(at::Tensor v, at::Tensor s, at::Tensor v_merged, at::Tensor s_
 
   TORCH_CHECK(success, "MergeStates kernel launch failed: unsupported data type");
 }
+
+void variable_length_merge_states(at::Tensor v, at::Tensor s, at::Tensor indptr,
+                                  at::Tensor v_merged, at::Tensor s_merged) {
+  CHECK_INPUT(v);
+  CHECK_INPUT(s);
+  CHECK_INPUT(indptr);
+  auto device = v.device();
+  CHECK_EQ(s.device(), device);
+  CHECK_EQ(indptr.device(), device);
+  CHECK_DIM(3, v);
+  CHECK_DIM(2, s);
+  CHECK_DIM(1, indptr);
+  CHECK_EQ(v.size(0), s.size(0));
+  CHECK_EQ(v.size(1), s.size(1));
+  unsigned int num_heads = v.size(1);
+  unsigned int head_dim = v.size(2);
+  unsigned int seq_len = indptr.size(0) - 1;
+
+  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(v.device());
+  auto stream = at::hip::getCurrentHIPStream();
+  bool success = DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(v.scalar_type(), c_type, [&] {
+    hipError_t status = VariableLengthMergeStates(
+        static_cast<c_type*>(v.data_ptr()), static_cast<float*>(s.data_ptr()),
+        static_cast<int32_t*>(indptr.data_ptr()), static_cast<c_type*>(v_merged.data_ptr()),
+        static_cast<float*>(s_merged.data_ptr()), seq_len, /*seq_len_ptr=*/nullptr, num_heads,
+        head_dim, stream);
+    TORCH_CHECK(status == hipSuccess,
+                "VariableLengthMergeStates kernel launch failed: ", hipGetErrorString(status));
+    return true;
+  });
+  TORCH_CHECK(success, "VariableLengthMergeStates kernel launch failed: unsupported data type");
+}
+
+void attention_sum(at::Tensor v, at::Tensor v_sum, int64_t num_index_sets) {
+  CHECK_INPUT(v);
+  CHECK_INPUT(v_sum);
+  CHECK_EQ(v.device(), v_sum.device());
+  CHECK_DIM(4, v);
+  CHECK_DIM(3, v_sum);
+  unsigned int seq_len = v.size(0);
+  unsigned int num_heads = v.size(2);
+  unsigned int head_dim = v.size(3);
+
+  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(v.device());
+  auto stream = at::hip::getCurrentHIPStream();
+  bool success = DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(v.scalar_type(), c_type, [&] {
+    hipError_t status =
+        AttentionSum(static_cast<c_type*>(v.data_ptr()), static_cast<c_type*>(v_sum.data_ptr()),
+                     static_cast<uint32_t>(num_index_sets), seq_len, num_heads, head_dim, stream);
+    TORCH_CHECK(status == hipSuccess,
+                "AttentionSum kernel launch failed: ", hipGetErrorString(status));
+    return true;
+  });
+  TORCH_CHECK(success, "AttentionSum kernel launch failed: unsupported data type");
+}
+
+void variable_length_attention_sum(at::Tensor v, at::Tensor indptr, at::Tensor v_sum) {
+  CHECK_INPUT(v);
+  CHECK_INPUT(indptr);
+  CHECK_INPUT(v_sum);
+  auto device = v.device();
+  CHECK_EQ(indptr.device(), device);
+  CHECK_EQ(v_sum.device(), device);
+  CHECK_DIM(3, v);
+  CHECK_DIM(1, indptr);
+  CHECK_DIM(3, v_sum);
+  unsigned int num_heads = v.size(1);
+  unsigned int head_dim = v.size(2);
+  unsigned int seq_len = indptr.size(0) - 1;
+
+  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(v.device());
+  auto stream = at::hip::getCurrentHIPStream();
+  bool success = DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(v.scalar_type(), c_type, [&] {
+    hipError_t status = VariableLengthAttentionSum(
+        static_cast<c_type*>(v.data_ptr()), static_cast<int32_t*>(indptr.data_ptr()),
+        static_cast<c_type*>(v_sum.data_ptr()), seq_len, /*seq_len_ptr=*/nullptr, num_heads,
+        head_dim, stream);
+    TORCH_CHECK(status == hipSuccess,
+                "VariableLengthAttentionSum kernel launch failed: ", hipGetErrorString(status));
+    return true;
+  });
+  TORCH_CHECK(success, "VariableLengthAttentionSum kernel launch failed: unsupported data type");
+}
