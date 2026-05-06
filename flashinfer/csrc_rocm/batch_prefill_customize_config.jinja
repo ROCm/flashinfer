@@ -90,6 +90,8 @@ struct PagedParams {
   IdType* q_indptr;
   DTypeO* o;
   float* lse;
+  DTypeO* partial_o = nullptr;
+  float* partial_lse = nullptr;
   uint_fastdiv group_size;
 
   {{ additional_params_decl }}

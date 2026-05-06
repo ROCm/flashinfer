@@ -273,6 +273,9 @@ struct BatchPrefillPagedParams {
   DTypeO* o;
   float* lse;
   float* maybe_alibi_slopes;
+  // Non-null: kernel merges its output with this prior cascade level's state in-register.
+  DTypeO* partial_o = nullptr;
+  float* partial_lse = nullptr;
   uint_fastdiv group_size;
   uint32_t num_qo_heads;
   IdType q_stride_n;
@@ -305,6 +308,8 @@ struct BatchPrefillPagedParams {
         o(nullptr),
         lse(nullptr),
         maybe_alibi_slopes(nullptr),
+        partial_o(nullptr),
+        partial_lse(nullptr),
         group_size(),
         num_qo_heads(0),
         q_stride_n(0),
@@ -351,6 +356,8 @@ struct BatchPrefillPagedParams {
         sm_scale(sm_scale),
         rope_rcp_scale(1.f / rope_scale),
         rope_rcp_theta(1.f / rope_theta),
+        partial_o(nullptr),
+        partial_lse(nullptr),
         request_indices(nullptr),
         qo_tile_indices(nullptr),
         kv_tile_indices(nullptr),
