@@ -35,20 +35,23 @@ import flashinfer
 
 def _silu_and_mul_ref(x: torch.Tensor) -> torch.Tensor:
     d = x.shape[-1] // 2
-    gate, up = x.float()[..., :d], x.float()[..., d:]
+    x_f32 = x.float()
+    gate, up = x_f32[..., :d], x_f32[..., d:]
     return (gate / (1.0 + torch.exp(-gate)) * up).to(x.dtype)
 
 
 def _gelu_tanh_and_mul_ref(x: torch.Tensor) -> torch.Tensor:
     d = x.shape[-1] // 2
-    gate, up = x.float()[..., :d], x.float()[..., d:]
+    x_f32 = x.float()
+    gate, up = x_f32[..., :d], x_f32[..., d:]
     y = torch.nn.functional.gelu(gate, approximate="tanh") * up
     return y.to(x.dtype)
 
 
 def _gelu_and_mul_ref(x: torch.Tensor) -> torch.Tensor:
     d = x.shape[-1] // 2
-    gate, up = x.float()[..., :d], x.float()[..., d:]
+    x_f32 = x.float()
+    gate, up = x_f32[..., :d], x_f32[..., d:]
     y = torch.nn.functional.gelu(gate, approximate="none") * up
     return y.to(x.dtype)
 
