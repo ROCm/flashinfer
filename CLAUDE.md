@@ -39,10 +39,11 @@ python -m pip install --no-build-isolation -ve.
 **Important**: Torch must be installed from AMD's ROCm repository, **not** from PyPI:
 
 ```bash
-pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2
+pip install torch==<torch-version> -f https://repo.radeon.com/rocm/manylinux/rocm-rel-<rocm-version>
 ```
 
-Other ROCm versions: replace `7.2` with the desired release (e.g. `7.0.2`, `7.1.1`).
+Replace `<torch-version>` and `<rocm-version>` with the versions listed in the
+[GPU and ROCm Support](README.md#gpu-and-rocm-support) table in `README.md`.
 
 If you forgot `--recursive` when cloning:
 
