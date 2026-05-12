@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-
 # HIP-specific version of test_rope.py
 #
 # Included tests:
@@ -36,12 +35,13 @@ limitations under the License.
 
 import pytest
 import torch
-from rope_reference import *
 
 import flashinfer
-from flashinfer.rope import (
-    rope_quantize_fp8,
-    rope_quantize_fp8_append_paged_kv_cache,
+from flashinfer.rope import rope_quantize_fp8, rope_quantize_fp8_append_paged_kv_cache
+from tests.test_helpers.rope_reference import (
+    RotaryEmbedding,
+    apply_rotary_emb,
+    precompute_freqs_cis,
 )
 
 
@@ -1049,9 +1049,11 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode_hip(
     kv_page_indices_e = torch.arange(n_pages_e, dtype=torch.int32, device=device)
     kv_last_page_len_e = torch.tensor(
         [
-            num_existing_tokens % page_size
-            if num_existing_tokens % page_size != 0
-            else page_size
+            (
+                num_existing_tokens % page_size
+                if num_existing_tokens % page_size != 0
+                else page_size
+            )
         ]
         + [0] * (batch_size - 1),
         dtype=torch.int32,

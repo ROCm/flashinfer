@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <bit>
 #include <type_traits>
 
 #include "gpu_iface/mma_types.hpp"
@@ -222,7 +221,9 @@ __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float* d, DType* s_frag)
   } else if constexpr (std::is_same_v<DType, __hip_bfloat16>) {
     constexpr uint32_t bf16_one_pair = 0x3F803F80u;  // two bf16 1.0 values packed
     constexpr uint64_t bf16_ones = (uint64_t{bf16_one_pair} << 32) | bf16_one_pair;
-    f16x4 b = std::bit_cast<f16x4>(bf16_ones);
+    static_assert(sizeof(f16x4) == sizeof(bf16_ones), "f16x4 size mismatch");
+    f16x4 b;
+    __builtin_memcpy(&b, &bf16_ones, sizeof(f16x4));
     out = __builtin_amdgcn_mfma_f32_16x16x16bf16_1k(a, b, c, 0, 0, 0);
   }
 

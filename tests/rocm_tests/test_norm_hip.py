@@ -43,11 +43,11 @@ def gemma_rms_norm(x, w, eps=1e-6):
 
 def gemma_fused_add_rms_norm(x, residual, w, eps=1e-6):
     orig_dtype = x.dtype
-    x = x + residual
-    residual = x
-    x = x.float()
-    variance = x.pow(2).mean(dim=-1, keepdim=True)
-    x = x * torch.rsqrt(variance + eps)
+    # Add in float32 to match the kernel, which promotes both operands before adding.
+    x_f32 = x.float() + residual.float()
+    residual = x_f32.to(orig_dtype)
+    variance = x_f32.pow(2).mean(dim=-1, keepdim=True)
+    x = x_f32 * torch.rsqrt(variance + eps)
     x = x * (1.0 + w.float())
     x = x.to(orig_dtype)
     return x, residual
@@ -67,7 +67,7 @@ def fused_add_rms_norm(x, residual, weight, eps):
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
 @pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("specify_out", [True, False])
 @pytest.mark.parametrize("enable_pdl", [False])
 @pytest.mark.parametrize("contiguous", [True, False])
@@ -87,12 +87,13 @@ def test_norm(batch_size, hidden_size, dtype, specify_out, enable_pdl, contiguou
     else:
         y = flashinfer.norm.rmsnorm(x, w, enable_pdl=enable_pdl)
 
-    torch.testing.assert_close(y_ref, y, rtol=1e-3, atol=1e-3)
+    rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
+    torch.testing.assert_close(y_ref, y, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
 @pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("enable_pdl", [False])
 @pytest.mark.parametrize("contiguous", [True, False])
 def test_fused_add_rmsnorm(batch_size, hidden_size, dtype, enable_pdl, contiguous):
@@ -117,13 +118,14 @@ def test_fused_add_rmsnorm(batch_size, hidden_size, dtype, enable_pdl, contiguou
         x_fused, residual_fused, weight, eps, enable_pdl=enable_pdl
     )
 
-    torch.testing.assert_close(x_fused, x_native, rtol=1e-3, atol=1e-3)
-    torch.testing.assert_close(residual_fused, residual_native, rtol=1e-3, atol=1e-3)
+    rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
+    torch.testing.assert_close(x_fused, x_native, rtol=rtol, atol=atol)
+    torch.testing.assert_close(residual_fused, residual_native, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
 @pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("specify_out", [True, False])
 @pytest.mark.parametrize("enable_pdl", [False])
 @pytest.mark.parametrize("contiguous", [True, False])
@@ -145,12 +147,13 @@ def test_gemma_norm(
     else:
         y = flashinfer.norm.gemma_rmsnorm(x, w, enable_pdl=enable_pdl)
 
-    torch.testing.assert_close(y_ref, y, rtol=1e-3, atol=1e-3)
+    rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
+    torch.testing.assert_close(y_ref, y, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
 @pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("enable_pdl", [False])
 @pytest.mark.parametrize("contiguous", [True, False])
 def test_gemma_fused_add_rmsnorm(
@@ -177,8 +180,9 @@ def test_gemma_fused_add_rmsnorm(
         x_fused, residual_fused, weight, eps, enable_pdl=enable_pdl
     )
 
-    torch.testing.assert_close(x_fused, x_native, rtol=1e-3, atol=1e-3)
-    torch.testing.assert_close(residual_fused, residual_native, rtol=1e-3, atol=1e-3)
+    rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
+    torch.testing.assert_close(x_fused, x_native, rtol=rtol, atol=atol)
+    torch.testing.assert_close(residual_fused, residual_native, rtol=rtol, atol=atol)
 
 
 if __name__ == "__main__":

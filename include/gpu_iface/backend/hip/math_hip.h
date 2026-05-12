@@ -65,14 +65,12 @@ __forceinline__ __device__ float ptx_rcp(float x) { return __frcp_rn(x); }
 
 template <typename T>
 __forceinline__ __device__ T shfl_xor_sync(T x, int lane_mask) {
-  // FIXME (diptorupd): The shfl_xor_sync is used to implement a butterfly
-  // reduction pattern. The caller in decode.cuh most likely assumes that the
-  // warp size is 32 and the lane_mask is going from 16, 8, 4, 2, 1.
-  // Given that AMDGPU for CDNA3 has a warp size of 64, the lane_mask based on
-  // the warp size of 32 might lead to incorrect exchanges between the
-  // threads. The issue requires further investigation, for now I have hard
-  // coded the warp size to 32 when calling shfl_xor.
-  return __shfl_xor(x, lane_mask, 32);
+  // CDNA3 wavefront width is 64. Use the full wavefront width so that
+  // cross-lane exchanges work correctly across all 64 lanes. All current
+  // callers (norm, decode, prefill, mla) use lane_mask values ≤ 16, so
+  // the exchange pattern is identical to a width=32 call for those callers,
+  // but this is the semantically correct value for CDNA3.
+  return __shfl_xor(x, lane_mask, 64);
 }
 
 /// @brief Wrapper for math intrinsic 1/sqrt(x)
