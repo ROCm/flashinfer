@@ -29,7 +29,7 @@ to its corresponding upstream tag (e.g., `0.2.5+amd.2` is second release of amd-
 | **Decode Attention** | ✅ | ✅ | No | Supports MHA, GQA, and MQA |
 | **Prefill Attention** | ✅ | WIP | ✅ | Supports MHA, GQA, and MQA |
 | **Cascade Attention** | TBD | TBD | No | Not Yet Ported |
-| **MLA** | TBD | TBD | No | Not Yet Ported |
+| **MLA** | ✅ | TBD | No | Decode-path (qo_len=1) on CDNA3; prefill TODO |
 | **POD** | TBD | TBD | No | Not Yet Ported |
 | **Positional Encoding** | TBD | TBD | No | Not Yet Ported |
 | **Sampling** | ✅ | TBD | No | Supports Top-K/Top-P Sampling/OnlineSoftmax/SamplingFromLogits |

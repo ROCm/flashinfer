@@ -118,6 +118,21 @@ def gen_attention(
             use_logits_soft_cap=use_logits_soft_cap,
         )
 
+    # MLA (DeepSeek shapes: head_dim_ckv=512, head_dim_kpe=64).
+    from .jit.attention import gen_batch_mla_module
+
+    for dtype in f16_dtype_:
+        yield gen_batch_mla_module(
+            backend="hip",
+            dtype_q=dtype,
+            dtype_kv=dtype,
+            dtype_o=dtype,
+            dtype_idx=torch.int32,
+            head_dim_ckv=512,
+            head_dim_kpe=64,
+            use_profiler=False,
+        )
+
 
 def gen_all_modules(
     f16_dtype_: List[torch.dtype],
