@@ -150,7 +150,7 @@ void variable_length_merge_states(at::Tensor v, at::Tensor s, at::Tensor indptr,
   unsigned int seq_len = indptr.size(0) - 1;
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(v.device());
-  auto stream = at::hip::getCurrentHIPStream();
+  const hipStream_t stream = at::hip::getCurrentHIPStream();
   bool success = DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(v.scalar_type(), c_type, [&] {
     hipError_t status = VariableLengthMergeStates(
         static_cast<c_type*>(v.data_ptr()), static_cast<float*>(s.data_ptr()),
@@ -175,7 +175,7 @@ void attention_sum(at::Tensor v, at::Tensor v_sum, int64_t num_index_sets) {
   unsigned int head_dim = v.size(3);
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(v.device());
-  auto stream = at::hip::getCurrentHIPStream();
+  const hipStream_t stream = at::hip::getCurrentHIPStream();
   bool success = DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(v.scalar_type(), c_type, [&] {
     hipError_t status =
         AttentionSum(static_cast<c_type*>(v.data_ptr()), static_cast<c_type*>(v_sum.data_ptr()),
@@ -202,7 +202,7 @@ void variable_length_attention_sum(at::Tensor v, at::Tensor indptr, at::Tensor v
   unsigned int seq_len = indptr.size(0) - 1;
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(v.device());
-  auto stream = at::hip::getCurrentHIPStream();
+  const hipStream_t stream = at::hip::getCurrentHIPStream();
   bool success = DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(v.scalar_type(), c_type, [&] {
     hipError_t status = VariableLengthAttentionSum(
         static_cast<c_type*>(v.data_ptr()), static_cast<int32_t*>(indptr.data_ptr()),

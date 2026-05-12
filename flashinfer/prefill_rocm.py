@@ -2190,12 +2190,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
 
         assert self._plan_info is not None, "plan info is not initialized"
         if partial_state is not None:
-            assert partial_state[0].dtype == out.dtype, (
-                f"partial_state dtype {partial_state[0].dtype} must match output dtype {out.dtype}"
-            )
-            assert partial_state[0].device == out.device, (
-                f"partial_state device {partial_state[0].device} must match output device {out.device}"
-            )
+            if partial_state[0].dtype != out.dtype:
+                raise ValueError(
+                    f"partial_state dtype {partial_state[0].dtype} must match output dtype {out.dtype}"
+                )
+            if partial_state[0].device != out.device:
+                raise ValueError(
+                    f"partial_state device {partial_state[0].device} must match output device {out.device}"
+                )
             # Ensure lse is allocated so the kernel can write the merged LSE output.
             if lse is None:
                 lse = torch.empty(

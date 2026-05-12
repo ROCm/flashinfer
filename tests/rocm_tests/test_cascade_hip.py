@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
+# SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -159,41 +159,185 @@ def test_merge_state_in_place_with_mask(seed, num_tries):
         )
 
 
+def _ceil_div(a, b):
+    return (a + b - 1) // b
+
+
+def _build_cascade_fixture(
+    batch_size, num_heads, head_dim, shared_kv_len, unique_kv_len, dtype
+):
+    """Build paged-KV fixture for a two-level cascade (shared + unique KV)."""
+    page_size = 16
+    assert shared_kv_len % page_size == 0
+    kv_layout = "NHD"
+
+    q = torch.randn(batch_size, num_heads, head_dim, dtype=dtype, device="cuda")
+    k_shared = torch.randn(
+        shared_kv_len, num_heads, head_dim, dtype=dtype, device="cuda"
+    )
+    v_shared = torch.randn(
+        shared_kv_len, num_heads, head_dim, dtype=dtype, device="cuda"
+    )
+    k_unique = torch.randn(
+        batch_size * unique_kv_len, num_heads, head_dim, dtype=dtype, device="cuda"
+    )
+    v_unique = torch.randn(
+        batch_size * unique_kv_len, num_heads, head_dim, dtype=dtype, device="cuda"
+    )
+
+    kv_data = torch.zeros(
+        _ceil_div(shared_kv_len, page_size)
+        + batch_size * _ceil_div(unique_kv_len, page_size),
+        2,
+        page_size,
+        num_heads,
+        head_dim,
+        dtype=dtype,
+        device="cuda",
+    )
+
+    shared_kv_indices = torch.arange(
+        0, _ceil_div(shared_kv_len, page_size), dtype=torch.int32, device="cuda"
+    )
+    shared_append_indptr = (
+        torch.arange(0, 2, dtype=torch.int32, device="cuda") * shared_kv_len
+    )
+    shared_kv_indptr = torch.arange(0, 2, dtype=torch.int32, device="cuda") * _ceil_div(
+        shared_kv_len, page_size
+    )
+    shared_last_page_len = torch.full(
+        (1,), (shared_kv_len - 1) % page_size + 1, dtype=torch.int32, device="cuda"
+    )
+    flashinfer.append_paged_kv_cache(
+        k_shared,
+        v_shared,
+        *flashinfer.get_batch_indices_positions(
+            shared_append_indptr,
+            flashinfer.get_seq_lens(shared_kv_indptr, shared_last_page_len, page_size),
+            k_shared.shape[0],
+        ),
+        kv_data,
+        shared_kv_indices,
+        shared_kv_indptr,
+        shared_last_page_len,
+        kv_layout,
+    )
+
+    unique_kv_indices = torch.arange(
+        0,
+        batch_size * _ceil_div(unique_kv_len, page_size),
+        dtype=torch.int32,
+        device="cuda",
+    ) + _ceil_div(shared_kv_len, page_size)
+    unique_append_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device="cuda")
+        * unique_kv_len
+    )
+    unique_kv_indptr = torch.arange(
+        0, batch_size + 1, dtype=torch.int32, device="cuda"
+    ) * _ceil_div(unique_kv_len, page_size)
+    unique_last_page_len = torch.full(
+        (batch_size,),
+        (unique_kv_len - 1) % page_size + 1,
+        dtype=torch.int32,
+        device="cuda",
+    )
+    flashinfer.append_paged_kv_cache(
+        k_unique,
+        v_unique,
+        *flashinfer.get_batch_indices_positions(
+            unique_append_indptr,
+            flashinfer.get_seq_lens(unique_kv_indptr, unique_last_page_len, page_size),
+            k_unique.shape[0],
+        ),
+        kv_data,
+        unique_kv_indices,
+        unique_kv_indptr,
+        unique_last_page_len,
+        kv_layout,
+    )
+
+    return (
+        q,
+        kv_data,
+        kv_layout,
+        shared_kv_indptr,
+        shared_kv_indices,
+        shared_last_page_len,
+        unique_kv_indptr,
+        unique_kv_indices,
+        unique_last_page_len,
+    )
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch_size", [1, 4])
 @pytest.mark.parametrize("num_heads", [4, 16])
 @pytest.mark.parametrize("head_dim", [64, 128])
 def test_fused_cascade_epilogue(dtype, batch_size, num_heads, head_dim):
-    """Verify fused in-kernel cascade merge agrees with standalone merge_state_in_place."""
-    import flashinfer
+    """Fused in-kernel cascade merge must agree with standalone merge_state_in_place path."""
+    import flashinfer.cascade as cascade_mod
 
     torch.manual_seed(42)
     atol = 5e-3 if dtype == torch.float16 else 1e-2
+    shared_kv_len = 128
+    unique_kv_len = 17
+    page_size = 16
 
-    # Build two sets of (output, lse) representing two cascade levels
-    seq_len = batch_size
-    v_a = torch.randn(seq_len, num_heads, head_dim, dtype=dtype, device="cuda")
-    s_a = torch.randn(seq_len, num_heads, dtype=torch.float32, device="cuda")
-    v_b = torch.randn(seq_len, num_heads, head_dim, dtype=dtype, device="cuda")
-    s_b = torch.randn(seq_len, num_heads, dtype=torch.float32, device="cuda")
+    (
+        q,
+        kv_data,
+        kv_layout,
+        shared_kv_indptr,
+        shared_kv_indices,
+        shared_last_page_len,
+        unique_kv_indptr,
+        unique_kv_indices,
+        unique_last_page_len,
+    ) = _build_cascade_fixture(
+        batch_size, num_heads, head_dim, shared_kv_len, unique_kv_len, dtype
+    )
 
-    # Reference: standalone merge
-    v_ref, s_ref = merge_state_ref(v_a, s_a, v_b, s_b)
+    def make_wrapper_and_plan():
+        w = flashinfer.MultiLevelCascadeAttentionWrapper(
+            2, torch.empty(32 * 1024 * 1024, dtype=torch.int8, device="cuda"), kv_layout
+        )
+        qo_indptr_top = torch.tensor([0, q.shape[0]], dtype=torch.int32, device="cuda")
+        qo_indptr_bottom = torch.arange(
+            0, batch_size + 1, dtype=torch.int32, device="cuda"
+        )
+        w.plan(
+            [qo_indptr_top, qo_indptr_bottom],
+            [shared_kv_indptr, unique_kv_indptr],
+            [shared_kv_indices, unique_kv_indices],
+            [shared_last_page_len, unique_last_page_len],
+            num_heads,
+            num_heads,
+            head_dim,
+            page_size,
+            q_data_type=dtype,
+        )
+        return w
 
-    # Standalone merge_state_in_place (unfused path)
-    v_a_copy = v_a.clone()
-    s_a_copy = s_a.clone()
-    flashinfer.merge_state_in_place(v_a_copy, s_a_copy, v_b, s_b)
+    orig_flag = cascade_mod._HIP_FUSED_CASCADE
 
-    torch.testing.assert_close(v_a_copy.float(), v_ref, rtol=1e-3, atol=atol)
-    torch.testing.assert_close(s_a_copy, s_ref, rtol=1e-3, atol=atol)
+    cascade_mod._HIP_FUSED_CASCADE = False
+    try:
+        w_unfused = make_wrapper_and_plan()
+        out_unfused = w_unfused.run(q, kv_data)
+    finally:
+        cascade_mod._HIP_FUSED_CASCADE = orig_flag
 
-    # Fused path: use env var to trigger the in-kernel merge in MultiLevelCascadeAttentionWrapper
-    # This is a numerical test to verify the kernel-level merge logic is correct.
-    # We test the underlying prefill_rocm.BatchPrefillWithPagedKVCacheWrapper.run(partial_state=...)
-    # directly since setting up MultiLevelCascadeAttentionWrapper end-to-end requires plan().
-    # The kernel correctness is covered by the merge_state tests above.
-    # TODO: add end-to-end test with MultiLevelCascadeAttentionWrapper once build is verified.
+    cascade_mod._HIP_FUSED_CASCADE = True
+    try:
+        w_fused = make_wrapper_and_plan()
+        out_fused = w_fused.run(q, kv_data)
+    finally:
+        cascade_mod._HIP_FUSED_CASCADE = orig_flag
+
+    torch.testing.assert_close(
+        out_fused.float(), out_unfused.float(), rtol=1e-3, atol=atol
+    )
 
 
 if __name__ == "__main__":
@@ -201,4 +345,5 @@ if __name__ == "__main__":
     test_merge_state_in_place(torch.float16, 64, 8, 128)
     test_merge_states(torch.float16, 16, 32, 8, 128)
     test_merge_state_in_place_with_mask(0, 20)
-    test_fused_cascade_epilogue(torch.float16, 4, 8, 128)
+    test_fused_cascade_epilogue(torch.float16, 4, 16, 128)
+    test_fused_cascade_epilogue(torch.bfloat16, 4, 16, 128)

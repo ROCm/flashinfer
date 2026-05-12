@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
-// SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
+// SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -131,6 +131,29 @@ __device__ __forceinline__ void threadblock_sync_state(state_t<vec_size>& st, DT
   // Ensure all threads finish reading shared memory before any thread
   // proceeds to potentially reuse the shared memory in the next iteration.
   __syncthreads();
+}
+
+template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>
+__device__ __forceinline__ void warp_sync_state(state_t<vec_size>& st, DTypeIn* v_smem,
+                                                float* s_smem, const uint32_t tx = threadIdx.x,
+                                                const uint32_t ty = threadIdx.y) {
+  constexpr uint32_t head_dim = vec_size * bdx;
+  st.o.cast_store(v_smem + ty * head_dim + tx * vec_size);
+  s_smem[ty] = st.get_lse();
+  st.init();
+#ifdef PLATFORM_HIP_DEVICE
+  __builtin_amdgcn_wave_barrier();
+#else
+  __syncwarp();
+#endif
+
+#pragma unroll
+  for (uint32_t iter = 0; iter < bdy; ++iter) {
+    float s = s_smem[iter];
+    vec_t<float, vec_size> v;
+    v.cast_load(v_smem + iter * head_dim + tx * vec_size);
+    st.merge(v, s, 1);
+  }
 }
 
 template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>

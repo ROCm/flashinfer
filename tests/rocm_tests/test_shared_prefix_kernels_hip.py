@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
+# SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -21,7 +21,7 @@ def warmup_jit():
         gen_decode_attention_modules(
             [torch.float16],
             [torch.float16],
-            [128],
+            [128, 256],
             [0],
             [False],
             [False],
@@ -29,7 +29,7 @@ def warmup_jit():
         + gen_prefill_attention_modules(
             [torch.float16],
             [torch.float16],
-            [128],
+            [128, 256],
             [0],
             [False],
             [False],
@@ -47,10 +47,10 @@ def ceil_div(a, b):
 @pytest.mark.parametrize("stage", ["decode", "append"])
 @pytest.mark.parametrize("batch_size", [12, 17])
 @pytest.mark.parametrize("unique_kv_len", [37, 17])
-@pytest.mark.parametrize("shared_kv_len", [128, 512])
+@pytest.mark.parametrize("shared_kv_len", [128, 512, 2048])
 @pytest.mark.parametrize("num_heads", [8, 16])
 @pytest.mark.parametrize("causal", [False])
-@pytest.mark.parametrize("head_dim", [128])
+@pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("page_size", [1, 16])
 def test_batch_attention_with_shared_prefix_paged_kv_cache(
     stage,
@@ -136,22 +136,19 @@ def test_batch_attention_with_shared_prefix_paged_kv_cache(
         kv_layout,
     )
 
+    multi_level_wrapper = flashinfer.MultiLevelCascadeAttentionWrapper(
+        2, torch.empty(128 * 1024 * 1024, dtype=torch.int8).to(0), kv_layout
+    )
     if stage == "decode":
-        multi_level_wrapper = flashinfer.MultiLevelCascadeAttentionWrapper(
-            2, torch.empty(32 * 1024 * 1024, dtype=torch.int8).to(0), kv_layout
-        )
         shared_prefix_decode_wrapper = (
             flashinfer.BatchDecodeWithSharedPrefixPagedKVCacheWrapper(
-                torch.empty(32 * 1024 * 1024, dtype=torch.int8).to(0), kv_layout
+                torch.empty(128 * 1024 * 1024, dtype=torch.int8).to(0), kv_layout
             )
         )
     else:
-        multi_level_wrapper = flashinfer.MultiLevelCascadeAttentionWrapper(
-            2, torch.empty(32 * 1024 * 1024, dtype=torch.int8).to(0), kv_layout
-        )
         shared_prefix_prefill_wrapper = (
             flashinfer.BatchPrefillWithSharedPrefixPagedKVCacheWrapper(
-                torch.empty(32 * 1024 * 1024, dtype=torch.int8).to(0), kv_layout
+                torch.empty(128 * 1024 * 1024, dtype=torch.int8).to(0), kv_layout
             )
         )
 
@@ -221,9 +218,9 @@ def test_batch_attention_with_shared_prefix_paged_kv_cache(
 @pytest.mark.parametrize("stage", ["decode", "append"])
 @pytest.mark.parametrize("batch_size", [4, 12])
 @pytest.mark.parametrize("unique_kv_len", [17, 37])
-@pytest.mark.parametrize("shared_kv_len", [128, 512])
+@pytest.mark.parametrize("shared_kv_len", [128, 512, 2048])
 @pytest.mark.parametrize("num_heads", [8, 16])
-@pytest.mark.parametrize("head_dim", [128])
+@pytest.mark.parametrize("head_dim", [128, 256])
 @pytest.mark.parametrize("page_size", [16])
 def test_multilevel_cascade_fused_vs_unfused(
     dtype,
@@ -336,7 +333,9 @@ def test_multilevel_cascade_fused_vs_unfused(
 
     def make_wrapper_and_plan():
         w = flashinfer.MultiLevelCascadeAttentionWrapper(
-            2, torch.empty(32 * 1024 * 1024, dtype=torch.int8, device="cuda"), kv_layout
+            2,
+            torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda"),
+            kv_layout,
         )
         qo_indptr_top = torch.tensor([0, q.shape[0]], dtype=torch.int32, device="cuda")
         if stage == "decode":
