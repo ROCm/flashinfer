@@ -4,7 +4,7 @@
 
 When a plan is created and approved, save it to the project memory directory:
 
-**Location:** `$HOME/.claude/projects/-home-demandal-devel-flashinfer/memory/`
+**Location:** the Claude Code project memory directory for this repo (visible via `/memory` in Claude Code)
 
 **Naming:** `plan_<short_descriptive_slug>.md` — use the subject of the plan, not a random name.
 Examples: `plan_mla_hip_port.md`, `plan_rope_cdna3_tuning.md`, `plan_pod_hip_port.md`
