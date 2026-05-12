@@ -143,6 +143,8 @@ void variable_length_merge_states(at::Tensor v, at::Tensor s, at::Tensor indptr,
   CHECK_DIM(3, v);
   CHECK_DIM(2, s);
   CHECK_DIM(1, indptr);
+  TORCH_CHECK(indptr.scalar_type() == at::kInt,
+              "variable_length_merge_states: indptr must be int32, got ", indptr.scalar_type());
   CHECK_EQ(v.size(0), s.size(0));
   CHECK_EQ(v.size(1), s.size(1));
   unsigned int num_heads = v.size(1);
@@ -197,6 +199,8 @@ void variable_length_attention_sum(at::Tensor v, at::Tensor indptr, at::Tensor v
   CHECK_DIM(3, v);
   CHECK_DIM(1, indptr);
   CHECK_DIM(3, v_sum);
+  TORCH_CHECK(indptr.scalar_type() == at::kInt,
+              "variable_length_attention_sum: indptr must be int32, got ", indptr.scalar_type());
   unsigned int num_heads = v.size(1);
   unsigned int head_dim = v.size(2);
   unsigned int seq_len = indptr.size(0) - 1;

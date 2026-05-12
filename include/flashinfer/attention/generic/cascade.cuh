@@ -133,6 +133,7 @@ __device__ __forceinline__ void threadblock_sync_state(state_t<vec_size>& st, DT
   __syncthreads();
 }
 
+// Called by PersistentMergeStatesKernel in persistent.cuh for warp-level state reduction.
 template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>
 __device__ __forceinline__ void warp_sync_state(state_t<vec_size>& st, DTypeIn* v_smem,
                                                 float* s_smem, const uint32_t tx = threadIdx.x,

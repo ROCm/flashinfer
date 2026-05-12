@@ -2198,6 +2198,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 raise ValueError(
                     f"partial_state device {partial_state[0].device} must match output device {out.device}"
                 )
+            if partial_state[1].dtype != torch.float32:
+                raise ValueError(
+                    f"partial_state lse must be float32, got {partial_state[1].dtype}"
+                )
+            if partial_state[1].device != out.device:
+                raise ValueError(
+                    f"partial_state lse device {partial_state[1].device} must match output device {out.device}"
+                )
             # Ensure lse is allocated so the kernel can write the merged LSE output.
             if lse is None:
                 lse = torch.empty(

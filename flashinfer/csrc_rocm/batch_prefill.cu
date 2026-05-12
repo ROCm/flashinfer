@@ -228,6 +228,8 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
     TORCH_CHECK(lse.size(0) == q.size(0), lse.size(0), q.size(0));
     TORCH_CHECK(lse.size(1) == q.size(1), lse.size(1), q.size(1));
   }
+  TORCH_CHECK(maybe_partial_o.has_value() == maybe_partial_lse.has_value(),
+              "partial_o and partial_lse must both be provided or both be absent");
 
   void* float_buffer_ptr = static_cast<void*>(float_workspace_buffer.data_ptr());
   void* int_buffer_ptr = static_cast<void*>(int_workspace_buffer.data_ptr());
