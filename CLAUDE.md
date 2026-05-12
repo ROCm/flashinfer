@@ -45,6 +45,7 @@ pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2
 Other ROCm versions: replace `7.2` with the desired release (e.g. `7.0.2`, `7.1.1`).
 
 If you forgot `--recursive` when cloning:
+
 ```bash
 git submodule update --init --recursive
 ```
@@ -177,6 +178,7 @@ FlashInfer+ROCm's JIT system follows the same three-layer pattern as upstream bu
 FlashInfer uses `CompilationContext` to manage ROCm architecture targets.
 
 **How it works:**
+
 - Auto-detects GPUs or reads `FLASHINFER_ROCM_ARCH_LIST` environment variable (default: `gfx942`)
 - JIT modules compile for architectures in `FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]`
 - If GPU not supported → `RuntimeError: No supported ROCm architectures found`
@@ -218,7 +220,7 @@ If no type specialization is needed, skip the Jinja step and copy source files d
 
 ## Directory Structure
 
-```
+```text
 flashinfer/
 ├── include/flashinfer/           # Header-only HIP/C++ kernel templates
 │   ├── attention/generic/        # Attention kernels (prefill, decode, cascade)
@@ -275,6 +277,7 @@ flashinfer/
 9. Export in `flashinfer/__init__.py`
 
 **Example implementations:**
+
 - **Simple**: `flashinfer/csrc_rocm/norm.cu` — no Jinja, good starting point
 - **Moderate**: `flashinfer/csrc_rocm/rope.cu` — with type dispatch
 - **Complex**: `flashinfer/csrc_rocm/batch_prefill.cu` — plan-run pattern, JIT config
@@ -291,6 +294,7 @@ Two-level caching to avoid recompilation:
 URI computed as: `hash(operation_type + parameters + source_hashes + flags + rocm_arch)`
 
 **Cache management:**
+
 - Clear cache: `rm -rf ~/.cache/flashinfer/`
 - Override location: `export FLASHINFER_WORKSPACE_BASE="/scratch"`
 
