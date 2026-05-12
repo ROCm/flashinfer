@@ -71,6 +71,12 @@ repos:
       - id: cmake-format
         additional_dependencies: [pyyaml>=5.1]
 
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.45.0
+    hooks:
+      - id: markdownlint
+        args: ["--fix"]
+
   # REUSE compliance check for specific directories only
   - repo: local
     hooks:

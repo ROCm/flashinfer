@@ -2,7 +2,7 @@
 
 For development, the easiest way to install flashinfer is through editable installation:
 
-```
+```bash
 git clone git@github.com:flashinfer-ai/flashinfer.git --recursive
 pip install --no-build-isolation -e . -v
 ```
@@ -11,7 +11,7 @@ We recommend using the `--no-build-isolation` flag to ensure compatibility with 
 
 # Code Structure
 
-```
+```text
 flashinfer/
 | --include/  # kernel definitions and common utilities functions
 | --csrc/  # op registration to frameworks (pytorch), and binding codes
@@ -26,6 +26,7 @@ Kernel definitions (framework-agnostic cuda code, accepting raw pointer as input
 The operator registration code (i.e., framework-specific components, accepting torch tensors as input) should reside in the `csrc` directory. This is where Torch headers may be included and operators can be bound to PyTorch. Note that Torch headers must not be included in any files under the `include` directory.
 
 Code Contribution Procedure
+
 * Write kernel definitions in `include/`
 * Write kernel registration and pytorch interface under `csrc/`
 * Write python interface under `python/`
