@@ -3,13 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # HIP/ROCm tests for MLA (Multi-head Latent Attention) batch paged attention.
-#
-# Phase 1 coverage (plan-only):
-# - test_determine_mla_backend: verify determine_mla_backend returns "hip"
-# - test_batch_mla_plan: verify BatchMLAPagedAttentionPlan runs without error
-#   for typical DeepSeek-v2/v3 head dims across batch sizes and dtypes
-# - test_batch_mla_run_raises: verify BatchMLAPagedAttentionRun raises
-#   RuntimeError with a clear "not yet implemented" message (Phase 2 stub)
 
 import math
 
@@ -64,7 +57,7 @@ def _plan(wrapper, batch_size, kv_len, page_size, causal, dtype):
         0, batch_size * pages_per_req, dtype=torch.int32, device="cuda"
     )
     kv_lens = torch.full((batch_size,), kv_len, dtype=torch.int32, device="cuda")
-    sm_scale = 1.0 / ((128 + 64) ** 0.5)
+    sm_scale = 1.0 / ((HEAD_DIM_CKV + HEAD_DIM_KPE) ** 0.5)
     wrapper.plan(
         q_indptr,
         kv_indptr,
@@ -82,6 +75,41 @@ def _plan(wrapper, batch_size, kv_len, page_size, causal, dtype):
     return kv_lens, pages_per_req
 
 
+def _mla_reference(q_nope, q_pe, ckv, kpe, kv_lens, page_size, sm_scale, causal):
+    """Pure-PyTorch MLA reference: S = q_pe @ kpe^T + q_nope @ ckv^T; O = softmax(S) @ ckv."""
+    batch_size, num_heads, _ = q_nope.shape
+    dtype = q_nope.dtype
+
+    # ckv/kpe: [num_pages, page_size, head_dim]
+    # flatten to [batch_size, kv_len, head_dim] using kv_lens
+    max_kv_len = int(kv_lens.max().item())
+    # pages are laid out sequentially per request
+    pages_per_req = math.ceil(max_kv_len / page_size)
+
+    ckv_flat = ckv.reshape(batch_size, pages_per_req * page_size, HEAD_DIM_CKV)[
+        :, :max_kv_len, :
+    ]
+    kpe_flat = kpe.reshape(batch_size, pages_per_req * page_size, HEAD_DIM_KPE)[
+        :, :max_kv_len, :
+    ]
+
+    # q: [batch, heads, dim]  K/V: [batch, kv_len, dim]  scores: [batch, heads, kv_len]
+    # decode is qo_len=1 so causal masking is a no-op; only kv-length padding matters.
+    del causal
+    scores = torch.einsum("bhd,bsd->bhs", q_pe.float(), kpe_flat.float())
+    scores += torch.einsum("bhd,bsd->bhs", q_nope.float(), ckv_flat.float())
+    scores = scores * sm_scale
+
+    for b in range(batch_size):
+        kl = int(kv_lens[b].item())
+        if kl < max_kv_len:
+            scores[b, :, kl:] = float("-inf")
+
+    weights = torch.softmax(scores, dim=-1)
+    out = torch.einsum("bhs,bsd->bhd", weights, ckv_flat.float())
+    return out.to(dtype)
+
+
 def test_determine_mla_backend():
     device = torch.device("cuda")
     backend = determine_mla_backend(device)
@@ -97,17 +125,21 @@ def test_batch_mla_plan(batch_size, kv_len, page_size, causal, dtype):
     if causal and kv_len == 0:
         pytest.skip("causal with kv_len=0 unsupported")
     wrapper = _make_wrapper(batch_size, dtype)
-    # plan must not raise
     _plan(wrapper, batch_size, kv_len, page_size, causal, dtype)
 
 
 @pytest.mark.parametrize("batch_size", [1, 4])
-@pytest.mark.parametrize("kv_len", [64])
+@pytest.mark.parametrize("kv_len", [64, 256])
 @pytest.mark.parametrize("page_size", [16])
+@pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float16])
-def test_batch_mla_run_raises(batch_size, kv_len, page_size, dtype):
+def test_batch_mla_correctness(batch_size, kv_len, page_size, causal, dtype):
+    torch.manual_seed(42)
     wrapper = _make_wrapper(batch_size, dtype)
-    kv_lens, pages_per_req = _plan(wrapper, batch_size, kv_len, page_size, False, dtype)
+    sm_scale = 1.0 / ((HEAD_DIM_CKV + HEAD_DIM_KPE) ** 0.5)
+    kv_lens, pages_per_req = _plan(
+        wrapper, batch_size, kv_len, page_size, causal, dtype
+    )
 
     q_nope = torch.randn(batch_size, 16, HEAD_DIM_CKV, dtype=dtype, device="cuda")
     q_pe = torch.randn(batch_size, 16, HEAD_DIM_KPE, dtype=dtype, device="cuda")
@@ -118,5 +150,21 @@ def test_batch_mla_run_raises(batch_size, kv_len, page_size, dtype):
         batch_size * pages_per_req, page_size, HEAD_DIM_KPE, dtype=dtype, device="cuda"
     )
 
-    with pytest.raises(RuntimeError, match="not yet implemented on HIP"):
-        wrapper.run(q_nope, q_pe, ckv, kpe)
+    out = wrapper.run(q_nope, q_pe, ckv, kpe)
+
+    ref = _mla_reference(
+        q_nope,
+        q_pe,
+        ckv.reshape(batch_size, pages_per_req, page_size, HEAD_DIM_CKV).reshape(
+            batch_size * pages_per_req, page_size, HEAD_DIM_CKV
+        ),
+        kpe.reshape(batch_size, pages_per_req, page_size, HEAD_DIM_KPE).reshape(
+            batch_size * pages_per_req, page_size, HEAD_DIM_KPE
+        ),
+        kv_lens,
+        page_size,
+        sm_scale,
+        causal,
+    )
+
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
