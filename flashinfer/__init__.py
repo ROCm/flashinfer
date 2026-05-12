@@ -259,6 +259,22 @@ elif IS_HIP:
     sys.modules["flashinfer.prefill"] = sys.modules["flashinfer.prefill_rocm"]
     sys.modules["flashinfer.decode"] = sys.modules["flashinfer.decode_rocm"]
 
+    # Cascade imports must come after the sys.modules injection above so that
+    # cascade.py's relative imports of flashinfer.decode / flashinfer.prefill
+    # resolve to the ROCm implementations.
+    from .cascade import (
+        BatchDecodeWithSharedPrefixPagedKVCacheWrapper as BatchDecodeWithSharedPrefixPagedKVCacheWrapper,
+    )
+    from .cascade import (
+        BatchPrefillWithSharedPrefixPagedKVCacheWrapper as BatchPrefillWithSharedPrefixPagedKVCacheWrapper,
+    )
+    from .cascade import (
+        MultiLevelCascadeAttentionWrapper as MultiLevelCascadeAttentionWrapper,
+    )
+    from .cascade import merge_state as merge_state
+    from .cascade import merge_state_in_place as merge_state_in_place
+    from .cascade import merge_states as merge_states
+
     from .utils import next_positive_power_of_2 as next_positive_power_of_2
     from .utils import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled
 else:

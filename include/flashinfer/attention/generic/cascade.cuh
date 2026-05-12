@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2025 FlashInfer team.
-// SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
+// SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -131,6 +131,30 @@ __device__ __forceinline__ void threadblock_sync_state(state_t<vec_size>& st, DT
   // Ensure all threads finish reading shared memory before any thread
   // proceeds to potentially reuse the shared memory in the next iteration.
   __syncthreads();
+}
+
+// Called by PersistentMergeStatesKernel in persistent.cuh for warp-level state reduction.
+template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>
+__device__ __forceinline__ void warp_sync_state(state_t<vec_size>& st, DTypeIn* v_smem,
+                                                float* s_smem, const uint32_t tx = threadIdx.x,
+                                                const uint32_t ty = threadIdx.y) {
+  constexpr uint32_t head_dim = vec_size * bdx;
+  st.o.cast_store(v_smem + ty * head_dim + tx * vec_size);
+  s_smem[ty] = st.get_lse();
+  st.init();
+#ifdef PLATFORM_HIP_DEVICE
+  __builtin_amdgcn_wave_barrier();
+#else
+  __syncwarp();
+#endif
+
+#pragma unroll
+  for (uint32_t iter = 0; iter < bdy; ++iter) {
+    float s = s_smem[iter];
+    vec_t<float, vec_size> v;
+    v.cast_load(v_smem + iter * head_dim + tx * vec_size);
+    st.merge(v, s, 1);
+  }
 }
 
 template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>
@@ -626,11 +650,18 @@ gpuError_t MergeStates(DTypeIn* v, float* s, DTypeO* v_merged, float* s_merged,
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
     if (num_index_sets >= seq_len) {
+#ifdef PLATFORM_HIP_DEVICE
+      // CDNA3 wave-64: fit one wavefront per threadblock for head_dim≤128; stages=1
+      // since pred_load is synchronous (no async pipeline).
+      constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
+      constexpr uint32_t num_smem_stages = 1;
+#else
       constexpr uint32_t num_threads = 128;
+      constexpr uint32_t num_smem_stages = 4;
+#endif
       constexpr uint32_t bdy = num_threads / bdx;
       dim3 nblks(seq_len, num_heads);
       dim3 nthrs(bdx, bdy);
-      constexpr uint32_t num_smem_stages = 4;
       auto kernel =
           MergeStatesLargeNumIndexSetsKernel<vec_size, bdx, bdy, num_smem_stages, DTypeIn, DTypeO>;
       void* args[] = {&v, &s, &v_merged, &s_merged, &num_index_sets, &num_heads};
@@ -681,9 +712,14 @@ gpuError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DType
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
+#ifdef PLATFORM_HIP_DEVICE
+    constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
+    constexpr uint32_t num_smem_stages = 1;
+#else
     constexpr uint32_t num_threads = 128;
-    constexpr uint32_t bdy = num_threads / bdx;
     constexpr uint32_t num_smem_stages = 4;
+#endif
+    constexpr uint32_t bdy = num_threads / bdx;
     uint32_t smem_size =
         num_smem_stages * bdy * head_dim * sizeof(DTypeIn) + num_threads * sizeof(float);
     auto kernel = PersistentVariableLengthMergeStatesKernel<vec_size, bdx, bdy, num_smem_stages,
@@ -715,9 +751,14 @@ gpuError_t VariableLengthAttentionSum(DTypeIn* v, IdType* indptr, DTypeO* v_sum,
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
+#ifdef PLATFORM_HIP_DEVICE
+    constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
+    constexpr uint32_t num_smem_stages = 1;
+#else
     constexpr uint32_t num_threads = 128;
-    constexpr uint32_t bdy = num_threads / bdx;
     constexpr uint32_t num_smem_stages = 4;
+#endif
+    constexpr uint32_t bdy = num_threads / bdx;
     uint32_t smem_size = num_smem_stages * bdy * head_dim * sizeof(DTypeIn);
     auto kernel = PersistentVariableLengthAttentionSumKernel<vec_size, bdx, bdy, num_smem_stages,
                                                              DTypeIn, DTypeO, IdType>;

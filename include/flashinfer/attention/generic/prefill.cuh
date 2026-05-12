@@ -2322,6 +2322,53 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
   // normalize d
   normalize_d<KTraits>(o_frag, m, d);
 
+#ifdef PLATFORM_HIP_DEVICE
+  // Cascade epilogue: merge with a prior cascade level's output in-register.
+  // Skipped for split-KV chunks (partition_kv=true); those are merged in
+  // BatchPrefillWithPagedKVCacheDispatched after VariableLengthMergeStates.
+  if constexpr (AttentionVariant::use_softmax) {
+    if (params.partial_o != nullptr && !partition_kv) {
+      if (get_warp_idx_kv<KTraits>(tid.z) == 0) {
+#pragma unroll
+        for (uint32_t mma_q = 0; mma_q < NUM_MMA_Q; ++mma_q) {
+#pragma unroll
+          for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j) {
+            uint32_t q_idx, r;
+            group_size.divmod(
+                qo_packed_idx_base +
+                    (lane_idx / THREADS_PER_BMATRIX_ROW_SET) * NUM_ACCUM_ROWS_PER_THREAD + j +
+                    mma_q * 16,
+                q_idx, r);
+            const uint32_t qo_head_idx = kv_head_idx * group_size + r;
+            const uint32_t qo_idx = q_idx;
+            if (qo_idx < qo_upper_bound) {
+              const float s_cur = gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+              const float s_partial =
+                  params.partial_lse[(o_indptr[request_idx] + qo_idx) * num_qo_heads + qo_head_idx];
+              const float s_max = fmaxf(s_cur, s_partial);
+              const float scale_a = exp2f(s_cur - s_max);
+              const float scale_b = exp2f(s_partial - s_max);
+              const float inv_denom = 1.0f / (scale_a + scale_b);
+              const uint32_t po_base =
+                  (o_indptr[request_idx] + qo_idx) * o_stride_n + qo_head_idx * o_stride_h;
+#pragma unroll
+              for (uint32_t mma_d = 0; mma_d < NUM_MMA_D_VO; ++mma_d) {
+                const float p_o =
+                    (float)params
+                        .partial_o[po_base + mma_d * 16 + lane_idx % THREADS_PER_BMATRIX_ROW_SET];
+                o_frag[mma_q][mma_d][j] =
+                    (o_frag[mma_q][mma_d][j] * scale_a + p_o * scale_b) * inv_denom;
+              }
+              m[mma_q][j] = static_cast<DTypeQKAccum>(s_max);
+              d[mma_q][j] = scale_a + scale_b;
+            }
+          }
+        }
+      }
+    }
+  }
+#endif  // PLATFORM_HIP_DEVICE
+
   const uint32_t num_kv_chunks = (kv_len_safe + kv_chunk_size - 1) / kv_chunk_size;
 
   // write_back
@@ -2589,6 +2636,13 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
           FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.merge_indptr, o, lse,
                                                 params.max_total_num_rows, params.total_num_rows,
                                                 num_qo_heads, HEAD_DIM_VO, stream));
+#ifdef PLATFORM_HIP_DEVICE
+          if (params.partial_o != nullptr) {
+            FI_GPU_CALL(MergeStateInPlace(o, lse, params.partial_o, params.partial_lse,
+                                          params.max_total_num_rows, num_qo_heads, HEAD_DIM_VO,
+                                          nullptr, stream));
+          }
+#endif
         } else {
           FI_GPU_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
                                                  params.max_total_num_rows, params.total_num_rows,

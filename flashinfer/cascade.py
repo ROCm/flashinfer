@@ -15,14 +15,20 @@ limitations under the License.
 """
 
 import functools
+import os
 from typing import List, Optional, Tuple, Union
 
 import torch
 
 from .decode import BatchDecodeWithPagedKVCacheWrapper
+from .device_utils import IS_HIP
 from .jit.cascade import gen_cascade_module
 from .prefill import BatchPrefillWithPagedKVCacheWrapper, single_prefill_with_kv_cache
 from .utils import register_custom_op, register_fake_op
+
+_HIP_FUSED_CASCADE = (
+    IS_HIP and os.environ.get("FLASHINFER_HIP_FUSED_CASCADE", "0") == "1"
+)
 
 
 @functools.cache
@@ -537,8 +543,13 @@ class MultiLevelCascadeAttentionWrapper:
             return_lse=True,
         )
         for wrapper in self._batch_prefill_wrappers[:-1]:
-            out_i, lse_i = wrapper.run(q, paged_kv_cache, return_lse=True)
-            merge_state_in_place(out, lse, out_i, lse_i)
+            if _HIP_FUSED_CASCADE:
+                out, lse = wrapper.run(
+                    q, paged_kv_cache, return_lse=True, partial_state=(out, lse)
+                )
+            else:
+                out_i, lse_i = wrapper.run(q, paged_kv_cache, return_lse=True)
+                merge_state_in_place(out, lse, out_i, lse_i)
 
         return out
 

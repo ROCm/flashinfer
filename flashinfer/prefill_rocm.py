@@ -670,6 +670,8 @@ def get_batch_prefill_module(backend, *args):
         cum_seq_lens_q: Optional[torch.Tensor] = None,
         cum_seq_lens_kv: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
+        maybe_partial_o: Optional[torch.Tensor] = None,
+        maybe_partial_lse: Optional[torch.Tensor] = None,
     ) -> None:
         if backend != "fa2":
             logger.warning(
@@ -704,6 +706,8 @@ def get_batch_prefill_module(backend, *args):
             1.0 / rope_scale,  # rope_rcp_scale
             1.0 / rope_theta,  # rope_rcp_theta
             # token_pos_in_items_len,  # Not supported by HIP FA2 kernels
+            maybe_partial_o,
+            maybe_partial_lse,
         )
 
     @register_fake_op(f"flashinfer::{uri}_paged_run")
@@ -746,6 +750,8 @@ def get_batch_prefill_module(backend, *args):
         batch_size: Optional[int] = None,
         cum_seq_lens_q: Optional[torch.Tensor] = None,
         cum_seq_lens_kv: Optional[torch.Tensor] = None,
+        maybe_partial_o: Optional[torch.Tensor] = None,
+        maybe_partial_lse: Optional[torch.Tensor] = None,
     ) -> None:
         pass
 
@@ -2061,6 +2067,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
         sinks: Optional[torch.Tensor] = None,
+        partial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Compute batch prefill/append attention between query and paged kv-cache.
 
@@ -2182,6 +2189,28 @@ class BatchPrefillWithPagedKVCacheWrapper:
         sparse_indptr = self._paged_kv_indptr_buf
 
         assert self._plan_info is not None, "plan info is not initialized"
+        if partial_state is not None:
+            if partial_state[0].dtype != out.dtype:
+                raise ValueError(
+                    f"partial_state dtype {partial_state[0].dtype} must match output dtype {out.dtype}"
+                )
+            if partial_state[0].device != out.device:
+                raise ValueError(
+                    f"partial_state device {partial_state[0].device} must match output device {out.device}"
+                )
+            if partial_state[1].dtype != torch.float32:
+                raise ValueError(
+                    f"partial_state lse must be float32, got {partial_state[1].dtype}"
+                )
+            if partial_state[1].device != out.device:
+                raise ValueError(
+                    f"partial_state lse device {partial_state[1].device} must match output device {out.device}"
+                )
+            # Ensure lse is allocated so the kernel can write the merged LSE output.
+            if lse is None:
+                lse = torch.empty(
+                    (q.size(0), q.size(1)), dtype=torch.float32, device=q.device
+                )
         run_args = [
             self._float_workspace_buffer,
             self._int_workspace_buffer,
@@ -2232,6 +2261,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 sinks,
             ]
             if self._backend == "aiter":
+                assert partial_state is None, (
+                    "partial_state (fused cascade epilogue) is only supported with the fa2 backend"
+                )
                 # Pre-computed flat-KV gather info for AITER (None for
                 # natively-supported page sizes).
                 run_args += [
@@ -2240,6 +2272,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     self._aiter_flat_kv_lpl,
                     self._aiter_flat_kv_indices,
                 ]
+            else:
+                po, plse = partial_state if partial_state is not None else (None, None)
+                run_args += [po, plse]
 
         assert self._cached_module is not None, "cached module is not initialized"
         self._cached_module.paged_run(*run_args)

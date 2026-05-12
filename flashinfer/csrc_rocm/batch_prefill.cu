@@ -204,7 +204,9 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                                      at::Tensor paged_kv_indptr, at::Tensor paged_kv_indices,
                                      at::Tensor paged_kv_last_page_len, at::Tensor o,
                                      std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code,
-                                     int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS) {
+                                     int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS,
+                                     std::optional<at::Tensor> maybe_partial_o = std::nullopt,
+                                     std::optional<at::Tensor> maybe_partial_lse = std::nullopt) {
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -226,6 +228,8 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
     TORCH_CHECK(lse.size(0) == q.size(0), lse.size(0), q.size(0));
     TORCH_CHECK(lse.size(1) == q.size(1), lse.size(1), q.size(1));
   }
+  TORCH_CHECK(maybe_partial_o.has_value() == maybe_partial_lse.has_value(),
+              "partial_o and partial_lse must both be provided or both be absent");
 
   void* float_buffer_ptr = static_cast<void*>(float_workspace_buffer.data_ptr());
   void* int_buffer_ptr = static_cast<void*>(int_workspace_buffer.data_ptr());
@@ -267,6 +271,10 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
         params.o = static_cast<DTypeO*>(o.data_ptr());
 
         params.lse = maybe_lse ? static_cast<float*>(maybe_lse->data_ptr()) : nullptr;
+        params.partial_o =
+            maybe_partial_o ? static_cast<DTypeO*>(maybe_partial_o->data_ptr()) : nullptr;
+        params.partial_lse =
+            maybe_partial_lse ? static_cast<float*>(maybe_partial_lse->data_ptr()) : nullptr;
         params.num_qo_heads = num_qo_heads;
         params.group_size = uint_fastdiv(num_qo_heads / paged_kv.num_heads);
         params.q_stride_n = q_stride_n;
