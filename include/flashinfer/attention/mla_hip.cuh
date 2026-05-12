@@ -42,10 +42,16 @@ constexpr uint32_t MLA_HIP_CTA_TILE_KV = 16;
 // (state_t::init uses -math::inf, which has the same numeric value 5e4f).
 constexpr float MLA_HIP_NEG_INF = -5e4f;
 
-// One KV tile in LDS, no swizzle. Phase 2 will introduce swizzling/pipelining.
+// One KV tile in LDS. The CKV row is padded by 8 fp16 (one uint4) so that
+// the stride-row reads in compute_pv_hip don't collide on the same LDS bank
+// — without padding all 4 strided reads from one thread land on bank 0
+// (HEAD_DIM_CKV*2 bytes / 4 % 32 == 0), giving a 4-way bank conflict per
+// thread. With +8 fp16 padding the per-thread reads spread across banks
+// {b, b+8, b+16, b+24}.
+constexpr uint32_t MLA_HIP_CKV_LDS_PAD = 8;
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeKV>
 struct SharedStorageMLAHIP {
-  DTypeKV ckv_smem[MLA_HIP_CTA_TILE_KV][HEAD_DIM_CKV];
+  DTypeKV ckv_smem[MLA_HIP_CTA_TILE_KV][HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD];
   DTypeKV kpe_smem[MLA_HIP_CTA_TILE_KV][HEAD_DIM_KPE];
 };
 
@@ -61,48 +67,110 @@ __device__ __forceinline__ void load_kv_hip(
     const IdType* __restrict__ kv_indices, uint32_t ckv_stride_page, uint32_t ckv_stride_n,
     uint32_t kpe_stride_page, uint32_t kpe_stride_n, uint32_t packed_kv_tile_base,
     uint32_t packed_kv_bound, const uint_fastdiv& block_size, uint32_t tid) {
-  // CKV: CTA_TILE_KV * HEAD_DIM_CKV fp16 = CTA_TILE_KV * (HEAD_DIM_CKV/4) uint2
-  constexpr uint32_t CKV_U2_PER_ROW = HEAD_DIM_CKV / 4;
-  constexpr uint32_t CKV_TOTAL_U2 = MLA_HIP_CTA_TILE_KV * CKV_U2_PER_ROW;
-  constexpr uint32_t CKV_U2_PER_THREAD = CKV_TOTAL_U2 / MLA_HIP_NUM_THREADS;
-  static_assert(CKV_TOTAL_U2 % MLA_HIP_NUM_THREADS == 0, "CKV load not evenly divisible");
+  // 128-bit (uint4 = 8 fp16) loads to maximize per-instruction DRAM throughput.
+  // ckv_smem rows are padded by MLA_HIP_CKV_LDS_PAD fp16 (= 1 uint4); load by
+  // (kv_row, col_u4) to handle the LDS stride correctly.
+  constexpr uint32_t CKV_U4_PER_ROW = HEAD_DIM_CKV / 8;
+  constexpr uint32_t CKV_LDS_U4_STRIDE = (HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD) / 8;
+  constexpr uint32_t CKV_TOTAL_U4 = MLA_HIP_CTA_TILE_KV * CKV_U4_PER_ROW;
+  constexpr uint32_t CKV_U4_PER_THREAD = CKV_TOTAL_U4 / MLA_HIP_NUM_THREADS;
+  static_assert(CKV_TOTAL_U4 % MLA_HIP_NUM_THREADS == 0, "CKV load not evenly divisible");
 
-  uint2* smem_ckv = reinterpret_cast<uint2*>(ckv_smem);
+  uint4* smem_ckv = reinterpret_cast<uint4*>(ckv_smem);
 #pragma unroll
-  for (uint32_t i = 0; i < CKV_U2_PER_THREAD; ++i) {
-    uint32_t u2_idx = tid * CKV_U2_PER_THREAD + i;
-    uint32_t kv_row = u2_idx / CKV_U2_PER_ROW;
-    uint32_t col_u2 = u2_idx % CKV_U2_PER_ROW;
+  for (uint32_t i = 0; i < CKV_U4_PER_THREAD; ++i) {
+    uint32_t u4_idx = tid * CKV_U4_PER_THREAD + i;
+    uint32_t kv_row = u4_idx / CKV_U4_PER_ROW;
+    uint32_t col_u4 = u4_idx % CKV_U4_PER_ROW;
     uint32_t packed = packed_kv_tile_base + kv_row;
     uint32_t page_idx, row_in_page;
     block_size.divmod(packed, page_idx, row_in_page);
     bool valid = (packed < packed_kv_bound);
     const DTypeKV* gptr = ckv_global +
                           (valid ? kv_indices[page_idx] : IdType(0)) * ckv_stride_page +
-                          row_in_page * ckv_stride_n + col_u2 * 4;
-    smem_ckv[u2_idx] = valid ? *reinterpret_cast<const uint2*>(gptr) : uint2{0u, 0u};
+                          row_in_page * ckv_stride_n + col_u4 * 8;
+    smem_ckv[kv_row * CKV_LDS_U4_STRIDE + col_u4] =
+        valid ? *reinterpret_cast<const uint4*>(gptr) : uint4{0u, 0u, 0u, 0u};
   }
 
-  // KPE: CTA_TILE_KV * HEAD_DIM_KPE fp16 = CTA_TILE_KV * (HEAD_DIM_KPE/4) uint2
-  constexpr uint32_t KPE_U2_PER_ROW = HEAD_DIM_KPE / 4;
-  constexpr uint32_t KPE_TOTAL_U2 = MLA_HIP_CTA_TILE_KV * KPE_U2_PER_ROW;
-  constexpr uint32_t KPE_U2_PER_THREAD = KPE_TOTAL_U2 / MLA_HIP_NUM_THREADS;
-  static_assert(KPE_TOTAL_U2 % MLA_HIP_NUM_THREADS == 0, "KPE load not evenly divisible");
-
-  uint2* smem_kpe = reinterpret_cast<uint2*>(kpe_smem);
+  constexpr uint32_t KPE_U4_PER_ROW = HEAD_DIM_KPE / 8;
+  constexpr uint32_t KPE_TOTAL_U4 = MLA_HIP_CTA_TILE_KV * KPE_U4_PER_ROW;
+  constexpr uint32_t KPE_U4_PER_THREAD = KPE_TOTAL_U4 / MLA_HIP_NUM_THREADS;
+  // KPE may be too small for one uint4 per thread; fall back to a per-thread loop only if work
+  // exists. For HEAD_DIM_KPE=64, CTA_TILE_KV=16: total=128 uint4, per-thread=0 (only 128 of 256
+  // threads load). Handle as "first 128 threads do 1 load each".
+  uint4* smem_kpe = reinterpret_cast<uint4*>(kpe_smem);
+  if constexpr (KPE_U4_PER_THREAD >= 1) {
 #pragma unroll
-  for (uint32_t i = 0; i < KPE_U2_PER_THREAD; ++i) {
-    uint32_t u2_idx = tid * KPE_U2_PER_THREAD + i;
-    uint32_t kv_row = u2_idx / KPE_U2_PER_ROW;
-    uint32_t col_u2 = u2_idx % KPE_U2_PER_ROW;
-    uint32_t packed = packed_kv_tile_base + kv_row;
-    uint32_t page_idx, row_in_page;
-    block_size.divmod(packed, page_idx, row_in_page);
-    bool valid = (packed < packed_kv_bound);
-    const DTypeKV* gptr = kpe_global +
-                          (valid ? kv_indices[page_idx] : IdType(0)) * kpe_stride_page +
-                          row_in_page * kpe_stride_n + col_u2 * 4;
-    smem_kpe[u2_idx] = valid ? *reinterpret_cast<const uint2*>(gptr) : uint2{0u, 0u};
+    for (uint32_t i = 0; i < KPE_U4_PER_THREAD; ++i) {
+      uint32_t u4_idx = tid * KPE_U4_PER_THREAD + i;
+      uint32_t kv_row = u4_idx / KPE_U4_PER_ROW;
+      uint32_t col_u4 = u4_idx % KPE_U4_PER_ROW;
+      uint32_t packed = packed_kv_tile_base + kv_row;
+      uint32_t page_idx, row_in_page;
+      block_size.divmod(packed, page_idx, row_in_page);
+      bool valid = (packed < packed_kv_bound);
+      const DTypeKV* gptr = kpe_global +
+                            (valid ? kv_indices[page_idx] : IdType(0)) * kpe_stride_page +
+                            row_in_page * kpe_stride_n + col_u4 * 8;
+      smem_kpe[u4_idx] = valid ? *reinterpret_cast<const uint4*>(gptr) : uint4{0u, 0u, 0u, 0u};
+    }
+  } else {
+    // Less than 1 uint4 per thread: only the first KPE_TOTAL_U4 threads do a load.
+    if (tid < KPE_TOTAL_U4) {
+      uint32_t kv_row = tid / KPE_U4_PER_ROW;
+      uint32_t col_u4 = tid % KPE_U4_PER_ROW;
+      uint32_t packed = packed_kv_tile_base + kv_row;
+      uint32_t page_idx, row_in_page;
+      block_size.divmod(packed, page_idx, row_in_page);
+      bool valid = (packed < packed_kv_bound);
+      const DTypeKV* gptr = kpe_global +
+                            (valid ? kv_indices[page_idx] : IdType(0)) * kpe_stride_page +
+                            row_in_page * kpe_stride_n + col_u4 * 8;
+      smem_kpe[tid] = valid ? *reinterpret_cast<const uint4*>(gptr) : uint4{0u, 0u, 0u, 0u};
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// load_q_frags_hip: read this thread's Q fragments once from global memory.
+// Q is loop-invariant across the kv_tile loop, so caching saves repeated
+// global loads (per work_idx, save (num_kv_tiles - 1) reloads of all Q).
+//
+// q_pe_frag[mma_d][2] holds Q_pe[q=t%16][d=mma_d*16 + col_group*4 + 0..3] as 4 fp16.
+// q_nope_frag is the same for Q_nope across NUM_MMA_D_CKV head_dim tiles.
+// Out-of-range threads (batch_idx >= q_len) get zero-filled fragments.
+// ---------------------------------------------------------------------------
+template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeQ>
+__device__ __forceinline__ void load_q_frags_hip(uint32_t (*q_pe_frag)[2],
+                                                 uint32_t (*q_nope_frag)[2], const DTypeQ* q_nope,
+                                                 const DTypeQ* q_pe, uint32_t q_nope_stride_n,
+                                                 uint32_t q_nope_stride_h, uint32_t q_pe_stride_n,
+                                                 uint32_t q_pe_stride_h, uint32_t batch_idx,
+                                                 uint32_t head_idx, bool q_valid,
+                                                 uint32_t col_group) {
+  constexpr uint32_t NUM_MMA_D_CKV = HEAD_DIM_CKV / 16;
+  constexpr uint32_t NUM_MMA_D_KPE = HEAD_DIM_KPE / 16;
+
+#pragma unroll
+  for (uint32_t mma_d = 0; mma_d < NUM_MMA_D_KPE; ++mma_d) {
+    q_pe_frag[mma_d][0] = 0u;
+    q_pe_frag[mma_d][1] = 0u;
+    if (q_valid) {
+      const DTypeQ* ptr =
+          q_pe + batch_idx * q_pe_stride_n + head_idx * q_pe_stride_h + mma_d * 16 + col_group * 4;
+      *reinterpret_cast<uint2*>(q_pe_frag[mma_d]) = *reinterpret_cast<const uint2*>(ptr);
+    }
+  }
+#pragma unroll
+  for (uint32_t mma_d = 0; mma_d < NUM_MMA_D_CKV; ++mma_d) {
+    q_nope_frag[mma_d][0] = 0u;
+    q_nope_frag[mma_d][1] = 0u;
+    if (q_valid) {
+      const DTypeQ* ptr = q_nope + batch_idx * q_nope_stride_n + head_idx * q_nope_stride_h +
+                          mma_d * 16 + col_group * 4;
+      *reinterpret_cast<uint2*>(q_nope_frag[mma_d]) = *reinterpret_cast<const uint2*>(ptr);
+    }
   }
 }
 
@@ -117,25 +185,15 @@ __device__ __forceinline__ void load_kv_hip(
 // Combined with the column-major D layout, thread t's r-th register =
 // S[q=t%16][kv=(t/16)*4+r].
 // ---------------------------------------------------------------------------
-template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeQ, typename DTypeKV>
-__device__ __forceinline__ void compute_qk_hip(float* s_frag, const DTypeQ* q_nope,
-                                               const DTypeQ* q_pe, uint32_t q_nope_stride_n,
-                                               uint32_t q_nope_stride_h, uint32_t q_pe_stride_n,
-                                               uint32_t q_pe_stride_h, uint32_t qo_packed_idx_base,
-                                               const uint_fastdiv& num_heads, uint32_t q_len,
+template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeKV>
+__device__ __forceinline__ void compute_qk_hip(float* s_frag, const uint32_t (*q_pe_frag)[2],
+                                               const uint32_t (*q_nope_frag)[2],
                                                const DTypeKV* ckv_smem, const DTypeKV* kpe_smem,
-                                               uint32_t lane_idx) {
+                                               uint32_t q_row, uint32_t col_group) {
   constexpr uint32_t NUM_MMA_D_CKV = HEAD_DIM_CKV / 16;
   constexpr uint32_t NUM_MMA_D_KPE = HEAD_DIM_KPE / 16;
-  constexpr uint32_t CKV_U2_PER_ROW = HEAD_DIM_CKV / 4;
+  constexpr uint32_t CKV_LDS_U2_STRIDE = (HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD) / 4;
   constexpr uint32_t KPE_U2_PER_ROW = HEAD_DIM_KPE / 4;
-
-  uint32_t q_row = lane_idx % 16;
-  uint32_t col_group = lane_idx / 16;
-  uint32_t q_packed = qo_packed_idx_base + q_row;
-  uint32_t batch_idx, head_idx;
-  num_heads.divmod(q_packed, batch_idx, head_idx);
-  bool q_valid = (batch_idx < q_len);
 
   const uint2* smem_ckv = reinterpret_cast<const uint2*>(ckv_smem);
   const uint2* smem_kpe = reinterpret_cast<const uint2*>(kpe_smem);
@@ -143,34 +201,23 @@ __device__ __forceinline__ void compute_qk_hip(float* s_frag, const DTypeQ* q_no
   // KPE tiles run first — kInit on tile 0 zeros the accumulator before CKV accumulates.
 #pragma unroll
   for (uint32_t mma_d = 0; mma_d < NUM_MMA_D_KPE; ++mma_d) {
-    uint32_t q_frag[2] = {0u, 0u};
-    if (q_valid) {
-      const DTypeQ* ptr =
-          q_pe + batch_idx * q_pe_stride_n + head_idx * q_pe_stride_h + mma_d * 16 + col_group * 4;
-      *reinterpret_cast<uint2*>(q_frag) = *reinterpret_cast<const uint2*>(ptr);
-    }
     uint32_t k_frag[2];
     *reinterpret_cast<uint2*>(k_frag) = smem_kpe[q_row * KPE_U2_PER_ROW + mma_d * 4 + col_group];
-
     if (mma_d == 0) {
       gpu_iface::mma::mma_sync_m16n16k16_row_col_f16f16f32<DTypeKV, gpu_iface::mma::MMAMode::kInit>(
-          s_frag, k_frag, q_frag);
+          s_frag, k_frag, const_cast<uint32_t*>(q_pe_frag[mma_d]));
     } else {
-      gpu_iface::mma::mma_sync_m16n16k16_row_col_f16f16f32<DTypeKV>(s_frag, k_frag, q_frag);
+      gpu_iface::mma::mma_sync_m16n16k16_row_col_f16f16f32<DTypeKV>(
+          s_frag, k_frag, const_cast<uint32_t*>(q_pe_frag[mma_d]));
     }
   }
 
 #pragma unroll
   for (uint32_t mma_d = 0; mma_d < NUM_MMA_D_CKV; ++mma_d) {
-    uint32_t q_frag[2] = {0u, 0u};
-    if (q_valid) {
-      const DTypeQ* ptr = q_nope + batch_idx * q_nope_stride_n + head_idx * q_nope_stride_h +
-                          mma_d * 16 + col_group * 4;
-      *reinterpret_cast<uint2*>(q_frag) = *reinterpret_cast<const uint2*>(ptr);
-    }
     uint32_t k_frag[2];
-    *reinterpret_cast<uint2*>(k_frag) = smem_ckv[q_row * CKV_U2_PER_ROW + mma_d * 4 + col_group];
-    gpu_iface::mma::mma_sync_m16n16k16_row_col_f16f16f32<DTypeKV>(s_frag, k_frag, q_frag);
+    *reinterpret_cast<uint2*>(k_frag) = smem_ckv[q_row * CKV_LDS_U2_STRIDE + mma_d * 4 + col_group];
+    gpu_iface::mma::mma_sync_m16n16k16_row_col_f16f16f32<DTypeKV>(
+        s_frag, k_frag, const_cast<uint32_t*>(q_nope_frag[mma_d]));
   }
 }
 
@@ -271,7 +318,7 @@ __device__ __forceinline__ void compute_pv_hip(float (*o_frag)[4], const float* 
     DTypeKV v_vals[4];
 #pragma unroll
     for (uint32_t j = 0; j < 4; ++j) {
-      v_vals[j] = ckv_smem[(col_group * 4 + j) * HEAD_DIM_CKV + d_col];
+      v_vals[j] = ckv_smem[(col_group * 4 + j) * (HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD) + d_col];
     }
     uint32_t v_frag[2];
     v_frag[0] = (uint32_t)(*reinterpret_cast<const uint16_t*>(&v_vals[0])) |
@@ -434,6 +481,7 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
   using IdType = typename Params::IdType;
 
   constexpr uint32_t NUM_MMA_D_CKV = HEAD_DIM_CKV / 16;
+  constexpr uint32_t NUM_MMA_D_KPE = HEAD_DIM_KPE / 16;
   constexpr uint32_t NUM_MMA_D_PER_WAVE = NUM_MMA_D_CKV / MLA_HIP_NUM_WAVES;
   static_assert(NUM_MMA_D_CKV % MLA_HIP_NUM_WAVES == 0,
                 "HEAD_DIM_CKV must be divisible by 4 * 16 = 64");
@@ -451,9 +499,14 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
   const uint_fastdiv& block_size = params.block_size;
   const uint32_t block_size_val = static_cast<uint32_t>(block_size);
 
+  const uint32_t q_row = lane_idx % 16;
+  const uint32_t col_group = lane_idx / 16;
+
   float s_frag[4];
   float o_frag[NUM_MMA_D_PER_WAVE][4];
   float m_val, d_scalar;
+  uint32_t q_pe_frag[NUM_MMA_D_KPE][2];
+  uint32_t q_nope_frag[NUM_MMA_D_CKV][2];
 
   for (IdType work_idx = params.work_indptr[blockIdx.y];
        work_idx < params.work_indptr[blockIdx.y + 1]; ++work_idx) {
@@ -467,6 +520,20 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
     const uint32_t packed_qo_start = params.q_start[work_idx];
 
     const uint32_t qo_packed_idx_base = packed_qo_start + blockIdx.x * MLA_HIP_CTA_TILE_Q;
+
+    // Hoist the q_packed → (batch_idx, head_idx) divmod out of the kv-tile loop;
+    // it's the same for every iteration of every helper that consumed it.
+    const uint32_t q_packed = qo_packed_idx_base + q_row;
+    uint32_t batch_idx, head_idx;
+    num_heads.divmod(q_packed, batch_idx, head_idx);
+    const bool q_valid = (batch_idx < q_len);
+
+    // Q is loop-invariant across kv-tiles; load all fragments once into registers.
+    load_q_frags_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeQ>(
+        q_pe_frag, q_nope_frag, params.q_nope + q_indptr * params.q_nope_stride_n,
+        params.q_pe + q_indptr * params.q_pe_stride_n, params.q_nope_stride_n,
+        params.q_nope_stride_h, params.q_pe_stride_n, params.q_pe_stride_h, batch_idx, head_idx,
+        q_valid, col_group);
 
     m_val = MLA_HIP_NEG_INF;
     d_scalar = 1.f;
@@ -491,11 +558,9 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
 
       __syncthreads();
 
-      compute_qk_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeQ, DTypeKV>(
-          s_frag, params.q_nope + q_indptr * params.q_nope_stride_n,
-          params.q_pe + q_indptr * params.q_pe_stride_n, params.q_nope_stride_n,
-          params.q_nope_stride_h, params.q_pe_stride_n, params.q_pe_stride_h, qo_packed_idx_base,
-          num_heads, q_len, smem_storage.ckv_smem[0], smem_storage.kpe_smem[0], lane_idx);
+      compute_qk_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV>(
+          s_frag, q_pe_frag, q_nope_frag, smem_storage.ckv_smem[0], smem_storage.kpe_smem[0], q_row,
+          col_group);
 
       logits_mask_hip<CAUSAL>(s_frag, qo_packed_idx_base, kv_tile_abs_start, q_len, kv_len, kv_end,
                               num_heads, lane_idx);
@@ -506,7 +571,7 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
       compute_pv_hip<HEAD_DIM_CKV, NUM_MMA_D_PER_WAVE, DTypeKV>(
           o_frag, s_frag, smem_storage.ckv_smem[0], wave_idx, lane_idx);
 
-      __syncthreads();
+      if (kv_tile_idx > 0) __syncthreads();
     }
 
     normalize_d_hip<NUM_MMA_D_PER_WAVE>(o_frag, m_val, d_scalar);
