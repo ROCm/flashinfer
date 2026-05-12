@@ -42,17 +42,18 @@ constexpr uint32_t MLA_HIP_CTA_TILE_KV = 16;
 // (state_t::init uses -math::inf, which has the same numeric value 5e4f).
 constexpr float MLA_HIP_NEG_INF = -5e4f;
 
-// One KV tile in LDS. The CKV row is padded by 8 fp16 (one uint4) so that
-// the stride-row reads in compute_pv_hip don't collide on the same LDS bank
-// — without padding all 4 strided reads from one thread land on bank 0
-// (HEAD_DIM_CKV*2 bytes / 4 % 32 == 0), giving a 4-way bank conflict per
-// thread. With +8 fp16 padding the per-thread reads spread across banks
-// {b, b+8, b+16, b+24}.
+// Two KV tiles in LDS to support double-buffered load/compute pipelining.
+// CKV rows are padded by 8 fp16 (one uint4) so that the stride-row reads in
+// compute_pv_hip don't collide on the same LDS bank — without padding all 4
+// strided reads from one thread land on bank 0 (HEAD_DIM_CKV*2/4 % 32 == 0),
+// giving a 4-way bank conflict per thread. With +8 fp16 padding the per-thread
+// reads spread across banks {b, b+8, b+16, b+24}.
 constexpr uint32_t MLA_HIP_CKV_LDS_PAD = 8;
+constexpr uint32_t MLA_HIP_NUM_STAGES = 2;
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeKV>
 struct SharedStorageMLAHIP {
-  DTypeKV ckv_smem[MLA_HIP_CTA_TILE_KV][HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD];
-  DTypeKV kpe_smem[MLA_HIP_CTA_TILE_KV][HEAD_DIM_KPE];
+  DTypeKV ckv_smem[MLA_HIP_NUM_STAGES][MLA_HIP_CTA_TILE_KV][HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD];
+  DTypeKV kpe_smem[MLA_HIP_NUM_STAGES][MLA_HIP_CTA_TILE_KV][HEAD_DIM_KPE];
 };
 
 // ---------------------------------------------------------------------------
@@ -546,32 +547,60 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
     const int32_t num_kv_tiles =
         static_cast<int32_t>(ceil_div(kv_end - kv_start, MLA_HIP_CTA_TILE_KV));
 
-    for (int32_t kv_tile_idx = num_kv_tiles - 1; kv_tile_idx >= 0; --kv_tile_idx) {
-      const uint32_t kv_tile_abs_start =
-          kv_start + static_cast<uint32_t>(kv_tile_idx) * MLA_HIP_CTA_TILE_KV;
-      const uint32_t packed_kv_tile_base = kv_indptr * block_size_val + kv_tile_abs_start;
+    // Double-buffered pipeline: stage 0 loaded outside the loop, then each
+    // iteration N loads stage[(N+1)%2] while computing on stage[N%2]. The hope
+    // is the AMD compiler interleaves the global→VGPR→LDS load chain with the
+    // MFMAs on the previous tile's data, hiding global-load latency.
+    auto kv_tile_to_packed_base = [&](int32_t kv_tile_idx) {
+      return kv_indptr * block_size_val + kv_start +
+             static_cast<uint32_t>(kv_tile_idx) * MLA_HIP_CTA_TILE_KV;
+    };
+    auto kv_tile_to_abs_start = [&](int32_t kv_tile_idx) {
+      return kv_start + static_cast<uint32_t>(kv_tile_idx) * MLA_HIP_CTA_TILE_KV;
+    };
 
+    // Prologue: load tile (num_kv_tiles - 1) into stage 0.
+    {
+      const int32_t first_tile = num_kv_tiles - 1;
       load_kv_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV, IdType>(
-          smem_storage.ckv_smem[0], smem_storage.kpe_smem[0], params.ckv, params.kpe,
+          smem_storage.ckv_smem[0][0], smem_storage.kpe_smem[0][0], params.ckv, params.kpe,
           params.kv_indices, params.ckv_stride_page, params.ckv_stride_n, params.kpe_stride_page,
-          params.kpe_stride_n, packed_kv_tile_base, packed_kv_bound, block_size, tid);
+          params.kpe_stride_n, kv_tile_to_packed_base(first_tile), packed_kv_bound, block_size,
+          tid);
+    }
+
+    uint32_t cur_stage = 0;
+    for (int32_t kv_tile_idx = num_kv_tiles - 1; kv_tile_idx >= 0; --kv_tile_idx) {
+      const uint32_t next_stage = 1 - cur_stage;
+      const bool has_next = (kv_tile_idx > 0);
+
+      // Issue load for tile (kv_tile_idx - 1) into next_stage. Without
+      // cp.async, this still blocks the wave but lets the compiler schedule
+      // the global VGPR loads ahead of compute.
+      if (has_next) {
+        load_kv_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV, IdType>(
+            smem_storage.ckv_smem[next_stage][0], smem_storage.kpe_smem[next_stage][0], params.ckv,
+            params.kpe, params.kv_indices, params.ckv_stride_page, params.ckv_stride_n,
+            params.kpe_stride_page, params.kpe_stride_n, kv_tile_to_packed_base(kv_tile_idx - 1),
+            packed_kv_bound, block_size, tid);
+      }
 
       __syncthreads();
 
       compute_qk_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV>(
-          s_frag, q_pe_frag, q_nope_frag, smem_storage.ckv_smem[0], smem_storage.kpe_smem[0], q_row,
-          col_group);
+          s_frag, q_pe_frag, q_nope_frag, smem_storage.ckv_smem[cur_stage][0],
+          smem_storage.kpe_smem[cur_stage][0], q_row, col_group);
 
-      logits_mask_hip<CAUSAL>(s_frag, qo_packed_idx_base, kv_tile_abs_start, q_len, kv_len, kv_end,
-                              num_heads, lane_idx);
+      logits_mask_hip<CAUSAL>(s_frag, qo_packed_idx_base, kv_tile_to_abs_start(kv_tile_idx), q_len,
+                              kv_len, kv_end, num_heads, lane_idx);
 
       update_mdo_states_hip<DTypeKV, NUM_MMA_D_PER_WAVE>(s_frag, o_frag, m_val, d_scalar,
                                                          sm_scale_log2);
 
       compute_pv_hip<HEAD_DIM_CKV, NUM_MMA_D_PER_WAVE, DTypeKV>(
-          o_frag, s_frag, smem_storage.ckv_smem[0], wave_idx, lane_idx);
+          o_frag, s_frag, smem_storage.ckv_smem[cur_stage][0], wave_idx, lane_idx);
 
-      if (kv_tile_idx > 0) __syncthreads();
+      cur_stage = next_stage;
     }
 
     normalize_d_hip<NUM_MMA_D_PER_WAVE>(o_frag, m_val, d_scalar);
