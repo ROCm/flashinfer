@@ -236,8 +236,6 @@
 
 **Summary**: This release brings full prefill kernel support to ROCm, including single and batch prefill with paged and ragged KV cache. Major performance improvements include k128B swizzle mode and FP8 support. Significant infrastructure improvements include complete pytest coverage, improved build system, and updated to ROCm 7.1.1 / PyTorch 2.8.0.
 
-
-
 # v0.2.5+rocm.1
 
 ## Added

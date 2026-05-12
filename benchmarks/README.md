@@ -5,33 +5,37 @@ The aim of `flashinfer_benchmark.py` is to provide a single framework for benchm
 ## Overview
 
 This framework provides tools to:
+
 - Benchmark FlashInfer's Attention, GEMM, and MOE API performance from different kernel backends such as FlashAttention2/3, cuDNN, cuBLAS, CUTLASS, and TensorRT-LLM
 - Compare performance across different configurations
 - Batch performance test multiple attention test cases
 
 Currently supports testing most attention, gemm, and fused MOE APIs:
+
 - Attention:
-    - `BatchDecodeWithPagedKVCacheWrapper` - Decode attention with paged KV cache.
-        - Also supports computationally similar `cudnn_batch_decode_with_kv_cache` and `trtllm_batch_decode_with_kv_cache`.
-    - `BatchPrefillWithPagedKVCacheWrapper` - Prefill attention with paged KV cache.
-        - Also supports computationally similar `cudnn_batch_prefill_with_kv_cache` and  `trtllm_batch_context_with_kv_cache`.
-    - `BatchPrefillWithRaggedKVCacheWrapper` - Prefill attention with ragged KV cache.
-        - Also supports computationally similar `cudnn_batch_prefill_with_kv_cache` and  `trtllm_ragged_attention_deepseek`.
-    - `BatchMLAPagedAttentionWrapper` - MLA attention proposed in DeepSeek series of models.
-        - Also supports computationally similar `trtllm_batch_decode_with_kv_cache_mla`.
+  - `BatchDecodeWithPagedKVCacheWrapper` - Decode attention with paged KV cache.
+    - Also supports computationally similar `cudnn_batch_decode_with_kv_cache` and `trtllm_batch_decode_with_kv_cache`.
+  - `BatchPrefillWithPagedKVCacheWrapper` - Prefill attention with paged KV cache.
+    - Also supports computationally similar `cudnn_batch_prefill_with_kv_cache` and  `trtllm_batch_context_with_kv_cache`.
+  - `BatchPrefillWithRaggedKVCacheWrapper` - Prefill attention with ragged KV cache.
+    - Also supports computationally similar `cudnn_batch_prefill_with_kv_cache` and  `trtllm_ragged_attention_deepseek`.
+  - `BatchMLAPagedAttentionWrapper` - MLA attention proposed in DeepSeek series of models.
+    - Also supports computationally similar `trtllm_batch_decode_with_kv_cache_mla`.
 - GEMM:
-    - `gemm_fp8_nt_groupwise` - GEMM with FP8 data types using groupwise scaling.
-    - `group_gemm_fp8_nt_groupwise` - Group GEMM with FP8 data types using groupwise scaling.
-    - `bmm_fp8` - Batched matrix multiplication with FP8 inputs.
-    - `mm_fp4` - Matrix multiplication with NVFP4 inputs.
+  - `gemm_fp8_nt_groupwise` - GEMM with FP8 data types using groupwise scaling.
+  - `group_gemm_fp8_nt_groupwise` - Group GEMM with FP8 data types using groupwise scaling.
+  - `bmm_fp8` - Batched matrix multiplication with FP8 inputs.
+  - `mm_fp4` - Matrix multiplication with NVFP4 inputs.
 - MOE:
-    - `trtllm_fp4_block_scale_moe` - MOE with FP4 quantized weights and block-wise scaling.
-    - `trtllm_fp8_block_scale_moe` - MOE with FP8 quantized weights and block-wise scaling.
-    - `trtllm_fp8_per_tensor_scale_moe` - MOE with FP8 quantized weights and per-tensor scaling.
-    - `cutlass_fused_moe` - CUTLASS fused MoE (base/fp8/nvfp4 variants with optional TP/EP)
+  - `trtllm_fp4_block_scale_moe` - MOE with FP4 quantized weights and block-wise scaling.
+  - `trtllm_fp8_block_scale_moe` - MOE with FP8 quantized weights and block-wise scaling.
+  - `trtllm_fp8_per_tensor_scale_moe` - MOE with FP8 quantized weights and per-tensor scaling.
+  - `cutlass_fused_moe` - CUTLASS fused MoE (base/fp8/nvfp4 variants with optional TP/EP)
 
 ## Quick Start
+
 ### Single Test Run
+
 A test case is generally invoked as `python3 flashinfer_benchmark.py --routine <routine_name> <flags>`.
 
 *See samples in samples/sample_testlist.txt for various example test flags.*
@@ -86,6 +90,7 @@ $ python3 flashinfer_benchmark.py --routine BatchPrefillWithRaggedKVCacheWrapper
 ### Batch Testing
 
 Run multiple tests from a file and save results:
+
 ```bash
 python3 flashinfer_benchmark.py --testlist samples/sample_testlist.txt --output_path samples/sample_testlist_output.csv
 ```
@@ -93,6 +98,7 @@ python3 flashinfer_benchmark.py --testlist samples/sample_testlist.txt --output_
 See `samples/sample_testlist.txt` for an example stdout output from the above command; `samples/sample_testlist_output.csv` for csv output from the same run.
 
 The output CSV will contain detailed metrics including:
+
 - Median execution time
 - Standard deviation
 - TFLOPS/sec
@@ -101,7 +107,9 @@ The output CSV will contain detailed metrics including:
 - Reproducer commands if `--generate_repro_command` is provided
 
 ## Command Line Arguments
+
 ### General Flags
+
 | Flag                     | Description                                                                                                 |
 |--------------------------|-------------------------------------------------------------------------------------------------------------|
 | `--routine`              | Test routine to run: `BatchDecodeWithPagedKVCacheWrapper`, `BatchPrefillWithPagedKVCacheWrapper`, `BatchPrefillWithRaggedKVCacheWrapper`, `BatchMLAPagedAttentionWrapper`, `gemm_fp8_nt_groupwise`, `group_gemm_fp8_nt_groupwise`, `bmm_fp8`, `mm_fp4`, `trtllm_fp4_block_scale_moe`, `trtllm_fp8_block_scale_moe`, `trtllm_fp8_per_tensor_scale_moe`, `cutlass_fused_moe` |
@@ -120,6 +128,7 @@ The output CSV will contain detailed metrics including:
 | `--backends`             | Space-separated list of backends to test, e.g. fa2, fa2_tc, fa3, cudnn, cutlass, trtllm, trtllm-gen, trtllm-native, cublas|
 
 ### Attention Flags
+
 | Flag                     | Description                                                                                                 |
 |--------------------------|-------------------------------------------------------------------------------------------------------------|
 | `--page_size`            | Page size for paged attention. Required for paged attention tests.                                          |
@@ -138,6 +147,7 @@ The output CSV will contain detailed metrics including:
 | `--random_actual_seq_len`| Use random sequence lengths up to max length. If False, use max length.                                    |
 
 ### GEMM Flags
+
 | Flag                     | Description                                                                                                 |
 |--------------------------|-------------------------------------------------------------------------------------------------------------|
 | `--m`                    | Number of rows of matrix A and output matrix (GEMM M dimension)                                            |
@@ -155,6 +165,7 @@ The output CSV will contain detailed metrics including:
 | `--autotune`             | Enable autotune for supported operation (`trtllm` and `cutlass` backends for `mm_fp4` and `bmm_fp8` routines)|
 
 ### MOE Flags
+
 | Flag                     | Description                                                                                                 |
 |--------------------------|-------------------------------------------------------------------------------------------------------------|
 | `--num_tokens`           | Number of input tokens                                                                                     |
@@ -194,12 +205,14 @@ The output CSV will contain detailed metrics including:
 | **renormalize_naive**  | `top_k == 1` for FP8 Block Scale, `top_k <= 8` for FP4. Do NOT use `--n_group` or `--topk_group` | FP4 primarily |
 
 Notes:
+
 - Group parameters (`--n_group`, `--topk_group`) are ONLY used with DeepSeekV3 routing method. Using them with other routing methods will cause the error: "Routing kernel with groups implies DeepSeekV3 routing method."
 - Different MOE kernel implementations have different `top_k` constraints. FP8 MOE kernels (both Block Scale and Per-Tensor) have stricter limits than FP4 for non-DeepSeekV3 routing methods.
 - FP8 MOE kernels require integer values for group parameters, while FP4 MOE kernels accept optional values.
 - CUTLASS fused MoE (`cutlass_fused_moe`) ignores `--routing_method`, `--n_group`, and `--topk_group`; it computes routing via softmax+top-k internally from the provided logits.
 
 ## `flashinfer_benchmark.py` Routine & Backend Support Matrix
+
 The following table summarizes the support surface of each routine & backend's on various [CUDA Compute Capabilities](https://developer.nvidia.com/cuda-gpus).
 
 Each column represents a compute capability. Backends inside cells represent supported backends. A blank cell means no backend is supported for that routine at that compute capability.
@@ -231,6 +244,7 @@ Legend:
 | **cutlass_fused_moe** |  |  |  |  |  | cutlass | cutlass |  |
 
 Backend Legend:
+
 - fa2: FlashAttention2
 - fa2_tc: FlashAttention2 (with Tensor Cores for `BatchDecodeWithPagedKVCacheWrapper`)
 - fa3: FlashAttention-3
