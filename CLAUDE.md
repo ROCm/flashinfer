@@ -60,6 +60,9 @@ Check availability in code: `from flashinfer.aiter_utils import HAS_AITER`
 
 ## Key External References
 
+Arch ↔ codename mapping (frequently needed mid-coding): MI300X / MI325X =
+gfx942 = CDNA3; MI350X = gfx950 = CDNA4.
+
 - **Composable Kernel (CK)** — ground truth for LDS layout,
   `sched_group_barrier` ratios, and tiling on CDNA. When tuning a kernel,
   read `qr_ks_vs.hpp` in [CK](https://github.com/ROCmSoftwarePlatform/composable_kernel)
