@@ -19,10 +19,8 @@ namespace flashinfer {
 inline constexpr int32_t kAiterMaskNone = 0;
 inline constexpr int32_t kAiterMaskTopLeft = 1;  // standard causal
 
-// HEAD_DIM_QK/VO come from the JIT-generated config header; Params does not carry output strides.
-// params.lse: caller-allocated [num_qo_heads, qo_len] float32 scratch (AITER natural-log LSE,
-//   transposed vs FlashInfer's [qo_len, num_qo_heads] log2). Pass nullptr to skip LSE output.
-// tmp: unused, accepted for API parity with the FA2 template.
+// params.lse: [num_qo_heads, qo_len] float32 scratch in natural-log scale; nullptr to skip.
+// tmp: unused; accepted for API parity with the FA2 template.
 template <uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO, typename Params>
 hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
                                               const char* dtype_str,

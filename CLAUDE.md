@@ -56,7 +56,7 @@ git clone --recursive https://github.com/ROCm/aiter.git
 cd aiter && python3 setup.py develop
 ```
 
-Check availability in code: `from flashinfer.aiter_utils import HAS_AITER`
+Check availability in code: `from flashinfer.aiter_utils import is_aiter_supported`
 
 ## Key External References
 

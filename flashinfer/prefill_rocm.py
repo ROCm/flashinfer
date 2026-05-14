@@ -144,8 +144,6 @@ def get_single_prefill_module(backend, *args):
     module = gen_single_prefill_module(backend, *args).build_and_load()
     run_func = module.run.default
 
-    # torch library for single_prefill_with_kv_cache
-
     @register_custom_op(
         f"flashinfer::{uri}_run", mutates_args=("tmp", "o", "maybe_lse")
     )
@@ -169,10 +167,6 @@ def get_single_prefill_module(backend, *args):
         rope_scale: float,
         rope_theta: float,
     ) -> None:
-        if backend != "fa2" and backend != "aiter":
-            logger.warning(
-                "FA3 backend not supported on ROCm. Selecting FA2 as the backend."
-            )
         run_func(
             q,
             k,
@@ -214,7 +208,6 @@ def get_single_prefill_module(backend, *args):
     ) -> None:
         pass
 
-    # Register the module
     return SimpleNamespace(run=run_single_prefill)
 
 
@@ -228,6 +221,16 @@ def _aiter_noop_plan(*args, **kwargs):
     return []
 
 
+@functools.cache
+def _aiter_ops_importable() -> bool:
+    try:
+        import aiter.ops  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _require_aiter_runtime(device: torch.device) -> None:
     """Raise a clear error when AITER is requested on an unsupported GPU or without the package."""
     if not is_aiter_supported(device):
@@ -239,15 +242,13 @@ def _require_aiter_runtime(device: torch.device) -> None:
         raise RuntimeError(
             f"The 'aiter' backend requires a gfx942/gfx950 GPU; got '{arch}'."
         )
-    try:
-        import aiter.ops  # noqa: F401
-    except ImportError as exc:
+    if not _aiter_ops_importable():
         raise ImportError(
             "The 'aiter' package is required for the AITER backend. "
             "Install it via:\n"
             "  git clone --recursive https://github.com/ROCm/aiter.git\n"
             "  cd aiter && python3 setup.py develop"
-        ) from exc
+        )
 
 
 _aiter_auto_warned: set = set()
@@ -290,9 +291,7 @@ def _auto_select_prefill_backend(
             logger.warning("auto backend falling back to fa2: %s", reason)
         return "fa2"
 
-    try:
-        import aiter.ops  # noqa: F401
-    except ImportError:
+    if not _aiter_ops_importable():
         key = (device, "import_failed")
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
@@ -2473,12 +2472,12 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             )
         else:
             self._jit_module = None
-        if backend != "fa2":
+        if backend not in ("fa2", "auto"):
             logger.warning(
                 f"{backend} backend is not supported for ragged KV-cache prefill on ROCm "
                 "(AITER ragged is not yet implemented). Selecting FA2."
             )
-            backend = "fa2"
+        backend = "fa2"
         self._kv_layout = kv_layout
         self._float_workspace_buffer = float_workspace_buffer
         self.device = float_workspace_buffer.device

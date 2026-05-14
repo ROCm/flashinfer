@@ -40,7 +40,6 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   const hipStream_t stream = c10::hip::getCurrentHIPStream();
   const bool causal = (mask_mode == MaskMode::kCausal);
 
-  // Done here (not in the template) to avoid HIP type names in framework-agnostic include/.
   const char* dtype_str = (q_dtype == at::kHalf) ? "fp16" : "bf16";
   const auto dtype_enum = (q_dtype == at::kHalf) ? flashinfer::aiter::VariantKey::Dtype::kFp16
                                                  : flashinfer::aiter::VariantKey::Dtype::kBf16;
@@ -75,8 +74,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   params.window_left = static_cast<int32_t>(window_left);
   ADDITIONAL_PARAMS_SETTER
 
-  // AITER JIT variants are compiled for group mode only (FmhaFwdGroupModeKargs).
-  // Provide cu_seqlens as seqstart arrays [0, seqlen] for batch=1 in group mode.
+  // AITER JIT variants use group mode; encode batch=1 as seqstart arrays [0, seqlen].
   int32_t cu_q_host[2] = {0, static_cast<int32_t>(params.qo_len)};
   int32_t cu_k_host[2] = {0, static_cast<int32_t>(params.kv_len)};
   at::Tensor cu_seqlens_q_dev = at::empty({2}, q.options().dtype(at::kInt));
@@ -95,8 +93,6 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
               "AITER SinglePrefill kernel launch failed: ", hipGetErrorString(status));
 
   if (maybe_lse) {
-    // Convert AITER's natural-log LSE [num_qo_heads, qo_len] →
-    // FlashInfer's log2 LSE [qo_len, num_qo_heads].
     aiter_lse_scratch.div_(std::log(2.0));
     maybe_lse->copy_(aiter_lse_scratch.t());
   }
