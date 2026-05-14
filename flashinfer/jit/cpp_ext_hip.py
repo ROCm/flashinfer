@@ -117,6 +117,9 @@ def generate_ninja_build_for_op(
     rocm_home = ROCM_HOME
     amdclang = os.environ.get("PYTORCH_AMDCLANG", "$rocm_home/bin/amdclang++")
 
+    # host_cflags: strip flags the host c++ compiler doesn't understand (--offload-arch)
+    host_cflags = [f for f in cflags if not f.startswith("--offload-arch")]
+
     lines = [
         "ninja_required_version = 1.3",
         f"name = {name}",
@@ -129,13 +132,14 @@ def generate_ninja_build_for_op(
         "",
         "common_cflags = " + join_multiline(common_cflags),
         "cflags = " + join_multiline(cflags),
+        "host_cflags = " + join_multiline(host_cflags),
         "post_cflags =",
         "cuda_cflags = " + join_multiline(cuda_cflags),
         "cuda_post_cflags =",
         "ldflags = " + join_multiline(ldflags),
         "",
         "rule compile",
-        "  command = $cxx -MF $out.d $cflags -c $in -o $out $post_cflags $common_cflags",
+        "  command = $cxx -MD -MF $out.d $host_cflags -c $in -o $out $post_cflags $common_cflags",
         "  depfile = $out.d",
         "  deps = gcc",
         "",

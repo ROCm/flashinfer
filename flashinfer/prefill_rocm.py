@@ -144,102 +144,8 @@ def get_customize_batch_prefill_module(
     ).build_and_load()
 
 
-def _get_aiter_single_prefill_module():
-    """Return a module-like namespace for AITER single prefill.
-
-    Single prefill is a single-sequence, non-paged attention call.  The
-    natural AITER API for this is ``flash_attn_varlen_func``, which takes
-    flat (non-paged) KV tensors of shape
-    ``[total_tokens, num_kv_heads, head_dim]`` together with cumulative
-    sequence-length arrays.  This avoids the complexity of synthesising a
-    paged-KV layout with ``page_size=1`` that was required by
-    ``mha_batch_prefill_func``.
-    """
-
-    # Cache {(qo_len, kv_len, device): (cu_seqlens_q, cu_seqlens_k)}
-    _meta_tensor_cache: dict = {}
-
-    def aiter_single_prefill_run(
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        tmp: torch.Tensor,
-        o: torch.Tensor,
-        maybe_lse: Optional[torch.Tensor],
-        mask_mode: int,
-        layout: int,
-        window_left: int,
-        maybe_packed_custom_mask: Optional[torch.Tensor],
-        maybe_alibi_slopes: Optional[torch.Tensor],
-        logits_soft_cap: float,
-        sm_scale: float,
-        scale_q: Optional[torch.Tensor],
-        scale_k: Optional[torch.Tensor],
-        scale_v: Optional[torch.Tensor],
-        rope_scale: float,
-        rope_theta: float,
-    ) -> None:
-        # Derive causal flag from mask_mode
-        causal = mask_mode == MaskMode.CAUSAL.value
-
-        # q shape: [qo_len, num_qo_heads, head_dim_qk]
-        qo_len = q.shape[0]
-        device = q.device
-
-        # k shape: [kv_len, num_kv_heads, head_dim]
-        kv_len = k.shape[0]
-
-        # Build (or reuse) cached cumulative sequence-length tensors.
-        # These only depend on (qo_len, kv_len, device).
-        _cache_key = (qo_len, kv_len, device)
-        if _cache_key not in _meta_tensor_cache:
-            _meta_tensor_cache[_cache_key] = (
-                torch.tensor([0, qo_len], dtype=torch.int32, device=device),
-                torch.tensor([0, kv_len], dtype=torch.int32, device=device),
-            )
-        cu_seqlens_q, cu_seqlens_k = _meta_tensor_cache[_cache_key]
-
-        need_lse = maybe_lse is not None
-
-        # flash_attn_varlen_func is the correct API for single-sequence
-        # (non-paged) prefill: it accepts flat NHD tensors directly.
-        # NOTE: the AITER CK kernel unconditionally requires return_lse=True;
-        # always request it and discard the result if the caller doesn't need it.
-        aiter_result = aiter_mha_module.flash_attn_varlen_func(
-            q=q.contiguous(),
-            k=k.contiguous(),
-            v=v.contiguous(),
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
-            max_seqlen_q=qo_len,
-            max_seqlen_k=kv_len,
-            dropout_p=0.0,
-            softmax_scale=sm_scale,
-            logits_soft_cap=logits_soft_cap,
-            causal=causal,
-            window_size=(window_left, -1),
-            return_lse=True,
-            return_attn_probs=False,
-            out=o,
-        )
-
-        # aiter_result is always (out, softmax_lse) because return_lse=True.
-        o.copy_(aiter_result[0])
-        if need_lse:
-            # aiter (CK kernels) returns LSE in log2 scale with shape
-            # (num_heads, total_q); FlashInfer expects natural-log scale
-            # with shape (total_q, num_heads), so transpose and convert:
-            #   lse_nats = lse_log2 / ln(2)
-            torch.div(aiter_result[1].t(), math.log(2), out=maybe_lse)
-
-    return SimpleNamespace(run=aiter_single_prefill_run)
-
-
 @functools.cache
 def get_single_prefill_module(backend, *args):
-    if backend == "aiter":
-        return _get_aiter_single_prefill_module()
-
     uri = get_single_prefill_uri(backend, *args)
     module = gen_single_prefill_module(backend, *args).build_and_load()
     run_func = module.run.default
@@ -269,9 +175,10 @@ def get_single_prefill_module(backend, *args):
         rope_scale: float,
         rope_theta: float,
     ) -> None:
-        logger.warning(
-            "FA3 backend not supported on ROCm. Selecting FA2 as the backend."
-        )
+        if backend != "fa2" and backend != "aiter":
+            logger.warning(
+                "FA3 backend not supported on ROCm. Selecting FA2 as the backend."
+            )
         run_func(
             q,
             k,
