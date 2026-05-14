@@ -201,3 +201,38 @@ def test_single_prefill_threadblock_sync_mdo_states(
     torch.testing.assert_close(o, o_ref.to(o.dtype), rtol=1e-3, atol=1e-3)
     if return_lse:
         torch.testing.assert_close(lse, lse_ref.to(lse.dtype), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("head_dim", [64, 128])
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_auto_backend_selects_aiter(head_dim, return_lse):
+    """backend='auto' on gfx942/gfx950 with NHD fp16 should route to AITER and be bit-exact."""
+    if not is_aiter_supported(torch.device("cuda:0")):
+        pytest.skip("AITER auto-selection only active on gfx942/gfx950")
+
+    dtype = torch.float16
+
+    qo_len, kv_len = 64, 128
+    num_qo_heads, num_kv_heads = 8, 8
+
+    q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16)
+    k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
+    v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
+
+    if return_lse:
+        o_auto, lse_auto = flashinfer.single_prefill_with_kv_cache_return_lse(
+            q, k, v, causal=False, kv_layout="NHD", backend="auto"
+        )
+        o_aiter, lse_aiter = flashinfer.single_prefill_with_kv_cache_return_lse(
+            q, k, v, causal=False, kv_layout="NHD", backend="aiter"
+        )
+        torch.testing.assert_close(o_auto, o_aiter, rtol=0, atol=0)
+        torch.testing.assert_close(lse_auto, lse_aiter, rtol=0, atol=0)
+    else:
+        o_auto = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, kv_layout="NHD", backend="auto"
+        )
+        o_aiter = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, kv_layout="NHD", backend="aiter"
+        )
+        torch.testing.assert_close(o_auto, o_aiter, rtol=0, atol=0)

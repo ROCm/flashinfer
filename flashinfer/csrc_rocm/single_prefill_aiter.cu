@@ -36,6 +36,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
               "AITER backend supports fp16/bf16 only; got dtype=", q_dtype);
   TORCH_CHECK(k.scalar_type() == q_dtype && v.scalar_type() == q_dtype, "q, k, v must share dtype");
+  TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
 
   const hipStream_t stream = c10::hip::getCurrentHIPStream();
   const bool causal = (mask_mode == MaskMode::kCausal);
@@ -50,9 +51,9 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   params.v = static_cast<DTypeKV*>(v.data_ptr());
   params.o = static_cast<DTypeO*>(o.data_ptr());
 
-  // AITER LSE layout: [num_qo_heads, qo_len] in natural-log scale.
+  // AITER LSE layout: [num_qo_heads, qo_len] in natural-log scale (nats).
   // FlashInfer expects [qo_len, num_qo_heads] in log2 scale.
-  // Allocate a scratch buffer; post-process after the kernel.
+  // Conversion: log2(x) = ln(x) ÷ ln(2), so divide by ln(2) then transpose.
   at::Tensor aiter_lse_scratch;
   if (maybe_lse) {
     aiter_lse_scratch = at::empty({q.size(1), q.size(0)}, maybe_lse->options().dtype(at::kFloat));

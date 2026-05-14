@@ -251,7 +251,7 @@ def _require_aiter_runtime(device: torch.device) -> None:
         )
 
 
-_aiter_auto_warned: set = set()
+_aiter_auto_warned: set[tuple[torch.device, str]] = set()
 
 
 def _auto_select_prefill_backend(
@@ -529,10 +529,6 @@ def get_batch_prefill_module(backend, *args):
         rope_theta: float,
         token_pos_in_items_len: int,
     ) -> None:
-        if backend != "fa2":
-            logger.warning(
-                f"{backend} backend not supported on ROCm. Selecting FA2 as the backend."
-            )
         ragged_run_func(
             float_workspace_buffer,
             int_workspace_buffer,
@@ -650,10 +646,6 @@ def get_batch_prefill_module(backend, *args):
         maybe_partial_o: Optional[torch.Tensor] = None,
         maybe_partial_lse: Optional[torch.Tensor] = None,
     ) -> None:
-        if backend != "fa2":
-            logger.warning(
-                f"{backend} backend not supported on ROCm. Selecting FA2 as the backend."
-            )
         assert not is_float8(q)
         paged_run_func(
             float_workspace_buffer,

@@ -44,6 +44,10 @@ std::string variant_so_name(VariantKey const& key) {
 
 // Mangled symbol for aiter::mha_fwd(aiter::mha_fwd_args, ck_tile::stream_config const&).
 // Stable across GCC/Clang Itanium ABI; verified by `nm -D` on all shipped variants.
+// Pinned to amd-aiter 0.1.10 (ROCm/aiter main, 2026-05).
+// If AITER changes the function signature, update mha_fwd_args.h and regenerate this symbol with:
+//   python3 -c "import ctypes; print(ctypes.cdll.LoadLibrary('<variant.so>').mha_fwd.__name__)"
+// or: nm -D <variant.so> | grep mha_fwd
 constexpr const char* kMhaFwdSymbol =
     "_ZN5aiter7mha_fwdENS_12mha_fwd_argsERKN7ck_tile13stream_configE";
 
