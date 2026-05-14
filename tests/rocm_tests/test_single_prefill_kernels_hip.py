@@ -10,7 +10,7 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 
 from flashinfer.jit.core import logger
-from flashinfer.aiter_utils import HAS_AITER
+from flashinfer.aiter_utils import is_aiter_supported
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -61,8 +61,8 @@ def test_single_prefill_with_kv_cache(
         qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
     )
 
-    if backend == "aiter" and not HAS_AITER:
-        pytest.skip("AITER is not available")
+    if backend == "aiter" and not is_aiter_supported(torch.device("cuda:0")):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU")
 
     if backend == "aiter" and kv_layout == "HND":
         pytest.skip("AITER does not support HND layout")

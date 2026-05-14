@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
-from .aiter_utils import HAS_AITER
+from .aiter_utils import get_aiter_mha_module, is_aiter_supported
 from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
@@ -45,7 +45,6 @@ from .utils import (
     _get_cache_buf,
     _unpack_paged_kv_cache,
     canonicalize_torch_dtype,
-    determine_attention_backend,
     device_support_pdl,
     is_float8,
     plan_info_vec_as_tensor,
@@ -53,18 +52,13 @@ from .utils import (
     register_fake_op,
 )
 
-aiter_mha_module = None
-_AITER_NATIVE_PAGE_SIZES: frozenset[int] = frozenset()
-
-if HAS_AITER:
-    from .aiter_utils import get_aiter_mha_module
+@functools.cache
+def _aiter_native_page_sizes() -> frozenset:
     from importlib.metadata import version
 
     if version("amd-aiter") == "0.1.10":
-        _AITER_NATIVE_PAGE_SIZES = frozenset({128, 256, 1024})
-    else:
-        _AITER_NATIVE_PAGE_SIZES = frozenset({16, 1024})
-    aiter_mha_module = get_aiter_mha_module()
+        return frozenset({128, 256, 1024})
+    return frozenset({16, 1024})
 
 
 def make_hashable_cache(func):
@@ -234,6 +228,83 @@ def _aiter_noop_plan(*args, **kwargs):
     return []
 
 
+def _require_aiter_runtime(device: torch.device) -> None:
+    """Raise a clear error when AITER is requested on an unsupported GPU or without the package."""
+    if not is_aiter_supported(device):
+        arch = (
+            torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
+            if torch.version.hip
+            else "non-ROCm"
+        )
+        raise RuntimeError(
+            f"The 'aiter' backend requires a gfx942/gfx950 GPU; got '{arch}'."
+        )
+    try:
+        import aiter.ops  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "The 'aiter' package is required for the AITER backend. "
+            "Install it via:\n"
+            "  git clone --recursive https://github.com/ROCm/aiter.git\n"
+            "  cd aiter && python3 setup.py develop"
+        ) from exc
+
+
+_aiter_auto_warned: set = set()
+
+
+def _auto_select_prefill_backend(
+    device: torch.device,
+    *,
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    kv_layout: str,
+    has_custom_mask: bool,
+    head_dim_qk: int,
+    head_dim_vo: int,
+) -> str:
+    """Return 'aiter' when the GPU and call parameters satisfy AITER's constraints; else 'fa2'.
+
+    On gfx942/gfx950, checks NHD layout, no custom mask, fp16/bf16, equal dtypes and head dims.
+    Falls back to 'fa2' with a one-time warning for each distinct skip reason.
+    """
+    if not is_aiter_supported(device):
+        return "fa2"
+
+    reason: Optional[str] = None
+    if kv_layout != "NHD":
+        reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
+    elif has_custom_mask:
+        reason = "custom mask (not supported by AITER)"
+    elif dtype_q not in (torch.float16, torch.bfloat16):
+        reason = f"dtype={dtype_q} (AITER requires fp16/bf16)"
+    elif dtype_q != dtype_kv:
+        reason = f"dtype_q={dtype_q} != dtype_kv={dtype_kv} (AITER requires equal dtypes)"
+    elif head_dim_qk != head_dim_vo:
+        reason = f"head_dim_qk={head_dim_qk} != head_dim_vo={head_dim_vo} (AITER requires equal head dims)"
+
+    if reason is not None:
+        key = (device, reason)
+        if key not in _aiter_auto_warned:
+            _aiter_auto_warned.add(key)
+            logger.warning("auto backend falling back to fa2: %s", reason)
+        return "fa2"
+
+    try:
+        import aiter.ops  # noqa: F401
+    except ImportError:
+        key = (device, "import_failed")
+        if key not in _aiter_auto_warned:
+            _aiter_auto_warned.add(key)
+            logger.warning(
+                "auto backend falling back to fa2: aiter package not installed "
+                "(see https://github.com/ROCm/aiter for install instructions)"
+            )
+        return "fa2"
+
+    return "aiter"
+
+
 def _get_aiter_batch_prefill_module():
     """Return a module-like namespace for the AITER backend.
 
@@ -316,7 +387,7 @@ def _get_aiter_batch_prefill_module():
             # flash_attn_varlen_func is the correct API for the flat
             # (non-paged) token layout produced by the gather.
             # aiter_flat_kv_indptr serves as cu_seqlens_k.
-            aiter_result = aiter_mha_module.flash_attn_varlen_func(
+            aiter_result = get_aiter_mha_module().flash_attn_varlen_func(
                 q=q,
                 k=k_for_aiter,
                 v=v_for_aiter,
@@ -336,7 +407,7 @@ def _get_aiter_batch_prefill_module():
             k_for_aiter = paged_k_cache.contiguous()
             v_for_aiter = paged_v_cache.contiguous()
 
-            aiter_result = aiter_mha_module.mha_batch_prefill_func(
+            aiter_result = get_aiter_mha_module().mha_batch_prefill_func(
                 q=q,
                 k=k_for_aiter,
                 v=v_for_aiter,
@@ -995,9 +1066,10 @@ def single_prefill_with_kv_cache(
     rope_theta : Optional[float]
         The theta used in RoPE, if not provided, will be set to 1e4.
     backend : str
-        The implementation backend, could be ``auto``/``fa2`` or ``fa3``. Defaults to ``auto``.
-        If set to ``auto``, the function will automatically choose the backend based on the
-        device architecture and kernel availability.
+        The implementation backend, could be ``auto``/``fa2``/``aiter``. Defaults to ``auto``.
+        On ROCm gfx942/gfx950, ``auto`` selects the AITER backend when the call parameters
+        satisfy its constraints (NHD layout, fp16/bf16, no custom mask, equal head dims);
+        otherwise falls back to FA2.
     return_lse : bool
         Whether to return the log sum exp value of the attention logits.
 
@@ -1093,17 +1165,17 @@ def single_prefill_with_kv_cache(
             scale_v = torch.ones(v.shape[1], dtype=torch.float32, device=q.device)
 
     if backend == "auto":
-        backend = determine_attention_backend(
+        backend = _auto_select_prefill_backend(
             q.device,
-            PosEncodingMode[pos_encoding_mode].value,
-            use_fp16_qk_reduction,
-            packed_custom_mask is not None,  # use_custom_mask
-            q.dtype,
-            k.dtype,
+            dtype_q=q.dtype,
+            dtype_kv=k.dtype,
+            kv_layout=kv_layout,
+            has_custom_mask=packed_custom_mask is not None,
+            head_dim_qk=q.shape[-1],
+            head_dim_vo=v.shape[-1],
         )
     elif backend == "aiter":
-        if not HAS_AITER:
-            raise ImportError("AITER is not available. Please install it first.")
+        _require_aiter_runtime(q.device)
 
     # o_dtype should be provided for FP8 attention
     if o_dtype is None:
@@ -1343,9 +1415,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
             mask will be used in attention computation.
 
         backend : str
-            The implementation backend, could be ``auto``/``fa2``,``fa3`` or ``cudnn``. Defaults to ``auto``.
-            If set to ``auto``, the wrapper will automatically choose the backend based on the
-            device architecture and kernel availability.
+            The implementation backend, could be ``auto``/``fa2``/``aiter``. Defaults to ``auto``.
+            On ROCm gfx942/gfx950, ``auto`` selects the AITER backend when constraints are met
+            (NHD layout, fp16/bf16, no custom mask, equal head dims); otherwise falls back to FA2.
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
@@ -1367,17 +1439,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._jit_module = None
 
         self._kv_layout = kv_layout
-        if backend not in ("fa2", "aiter"):
+        if backend not in ("fa2", "aiter", "auto"):
             logger.warning(
                 f"{backend} backend not supported on ROCm. Selecting FA2 as the backend."
             )
             backend = "fa2"
         elif backend == "aiter":
-            if not HAS_AITER:
-                raise ImportError(
-                    "The 'aiter' package is required for the 'aiter' backend. "
-                    "Please install it first."
-                )
+            _require_aiter_runtime(float_workspace_buffer.device)
 
         self._float_workspace_buffer = float_workspace_buffer
         self._workspace_size = (
@@ -1443,7 +1511,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._seq_lens_q = None
         self._block_tables = None
         # Pre-computed flat-KV buffers for the AITER backend when the page
-        # size is not natively supported (see _AITER_NATIVE_PAGE_SIZES).
+        # size is not natively supported (see _aiter_native_page_sizes()).
         self._aiter_flat_gather_idx: Optional[torch.Tensor] = None
         self._aiter_flat_kv_indptr: Optional[torch.Tensor] = None
         self._aiter_flat_kv_lpl: Optional[torch.Tensor] = None
@@ -1760,13 +1828,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._cached_module = self._jit_module
         else:
             if self._backend == "auto":
-                self._backend = determine_attention_backend(
+                self._backend = _auto_select_prefill_backend(
                     self.device,
-                    PosEncodingMode[pos_encoding_mode].value,
-                    use_fp16_qk_reduction,
-                    self._custom_mask_buf is not None,  # use_custom_mask
-                    q_data_type,
-                    kv_data_type,
+                    dtype_q=q_data_type,
+                    dtype_kv=kv_data_type,
+                    kv_layout=self._kv_layout,
+                    has_custom_mask=self._custom_mask_buf is not None,
+                    head_dim_qk=head_dim_qk,
+                    head_dim_vo=head_dim_vo,
                 )
             if self._backend != "cudnn":
                 get_module_args = (
@@ -1825,7 +1894,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # page size is not natively supported.  These are stored as GPU
         # tensors so that the ``run()`` path (which may be inside a CUDA graph
         # capture) can use them without any host-side operations.
-        if self._backend == "aiter" and page_size not in _AITER_NATIVE_PAGE_SIZES:
+        if self._backend == "aiter" and page_size not in _aiter_native_page_sizes():
             kv_indptr_h = paged_kv_indptr.cpu()
             kv_indices_h = paged_kv_indices.cpu()
             kv_lpl_h = paged_kv_last_page_len.cpu()
@@ -2383,10 +2452,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             will be used in attention computation.
 
         backend : str
-            The implementation backend, could be ``auto``/``fa2``/``fa3`` or ``trtllm-gen``.
-            Defaults to ``auto``.
-            If set to ``auto``, the wrapper will automatically choose the backend based on the
-            device architecture and kernel availability.
+            The implementation backend, could be ``auto``/``fa2``. Defaults to ``auto``.
+            On ROCm, ragged KV-cache prefill always uses FA2 (AITER ragged is not yet
+            implemented).
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
@@ -2407,7 +2475,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             self._jit_module = None
         if backend != "fa2":
             logger.warning(
-                f"{backend} backend not supported on ROCm. Selecting FA2 as the backend."
+                f"{backend} backend is not supported for ragged KV-cache prefill on ROCm "
+                "(AITER ragged is not yet implemented). Selecting FA2."
             )
             backend = "fa2"
         self._kv_layout = kv_layout
@@ -2685,16 +2754,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
-            if self._backend == "auto":
-                self._backend = determine_attention_backend(
-                    self.device,
-                    PosEncodingMode[pos_encoding_mode].value,
-                    use_fp16_qk_reduction,
-                    self._custom_mask_buf is not None,  # use_custom_mask
-                    q_data_type,
-                    kv_data_type,
-                )
-
             get_module_args = (
                 q_data_type,
                 kv_data_type,
