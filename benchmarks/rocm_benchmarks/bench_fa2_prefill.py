@@ -65,12 +65,14 @@ Model presets (--model):
     mistral-7b — GQA 32/8 hd=128, causal, kv∈{512..8192}
 
 Batch-prefill mode (--batch / --paged):
-    --batch N  Uses BatchPrefillWithRaggedKVCacheWrapper (fa2 backend) with
-               N sequences each of the same seq_len as the single-prefill sweep.
-    --paged N  Uses BatchPrefillWithPagedKVCacheWrapper (fa2 backend) with
-               N sequences.  Runs two page sizes by default (16 and 64).
-               Override with --page-size P to test a single page size.
-    batch_size=1 provides a direct single-vs-batch API overhead comparison.
+    --batch N       Uses BatchPrefillWithRaggedKVCacheWrapper (fa2 backend)
+                    with N sequences.  Each sequence has q_len=--batch-q-len
+                    attending to kv_len swept over the standard range (causal).
+    --paged N       Uses BatchPrefillWithPagedKVCacheWrapper (fa2 backend)
+                    with N sequences.  Same asymmetric shape as --batch.
+                    Runs page_size=16 and page_size=64 by default.
+    --batch-q-len Q Fixed query length per sequence in batch configs.
+                    Default: 256 (chunked-prefill burst, same as AITER bench).
 
 Asymmetric (chunked-prefill) mode (--q-len):
     --q-len Q  Adds single-prefill configs with q_len=Q, kv_len swept over the
@@ -94,7 +96,7 @@ Counter presets available out of the box:
 
     Or pass a path to a YAML file in rocprofv3 native job format.
 
-Design note — why --counters / --model / --q-len / --batch / --paged are parsed at module level
+Design note — why --counters / --model / --q-len / --batch / --batch-q-len / --paged are parsed at module level
 -----------------------------------------------------------------------------------------------
 rocprofv3 re-executes this script as a subprocess (passing the same sys.argv)
 to collect hardware counters.  The RocmProfiler object must therefore be
@@ -125,6 +127,7 @@ from rocm_profiler import KernelConfig, RocmProfiler
 # vLLM max_num_batched_tokens=2048 at seq_len≈512 → ~4 seqs; paged burst mid-range → 8.
 _DEFAULT_BATCH_RAGGED = 4
 _DEFAULT_BATCH_PAGED = 8
+_DEFAULT_BATCH_Q_LEN = 256  # matches AITER bench _Q_LEN; represents a chunked-prefill burst
 
 # ---------------------------------------------------------------------------
 # Bench-script-level argument parsing
@@ -207,6 +210,18 @@ _bench_parser.add_argument(
         "page_size=16 and page_size=64 automatically."
     ),
 )
+_bench_parser.add_argument(
+    "--batch-q-len",
+    type=int,
+    default=_DEFAULT_BATCH_Q_LEN,
+    metavar="Q",
+    help=(
+        "Fixed query length per sequence for --batch and --paged configs. "
+        "Each batch sequence has q_len=Q attending to kv_len swept over the "
+        "standard range (causal only, kv_len > Q). "
+        f"Default: {_DEFAULT_BATCH_Q_LEN} (chunked-prefill burst, matches AITER bench)."
+    ),
+)
 _bench_args, _remaining = _bench_parser.parse_known_args()
 sys.argv = [sys.argv[0]] + _remaining
 
@@ -215,7 +230,7 @@ _model: str = _bench_args.model
 _q_len_asym: int = _bench_args.q_len
 _batch_size: int = _bench_args.batch
 _paged_size: int = _bench_args.paged
-# Page sizes to sweep: explicit override or default [16, 64]
+_batch_q_len: int = _bench_args.batch_q_len
 _page_sizes: list[int] = [_bench_args.page_size] if _bench_args.page_size > 0 else [16, 64]
 _label = (
     _bench_args.label
@@ -338,60 +353,66 @@ def _make_configs() -> list[KernelConfig]:
 
 
 @torch.inference_mode()
-def _make_batch_configs(batch_size: int) -> list[KernelConfig]:
+def _make_batch_configs(batch_size: int, q_len: int) -> list[KernelConfig]:
     workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
     configs = []
     for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
+        kv_len = seq_len
+        if not causal or kv_len <= q_len:
+            continue  # asymmetric (q < kv) is causal-only; need kv_len > q_len
         q = torch.randn(
-            batch_size * seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
+            batch_size * q_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
         )
         k = torch.randn(
-            batch_size * seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+            batch_size * kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
         )
         v = torch.randn(
-            batch_size * seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+            batch_size * kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
         )
-        indptr = torch.arange(
-            0, (batch_size + 1) * seq_len, seq_len, dtype=torch.int32, device="cuda"
+        qo_indptr = torch.arange(
+            0, (batch_size + 1) * q_len, q_len, dtype=torch.int32, device="cuda"
+        )
+        kv_indptr = torch.arange(
+            0, (batch_size + 1) * kv_len, kv_len, dtype=torch.int32, device="cuda"
         )
 
         wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
             workspace, "NHD", backend="fa2"
         )
-        wrapper.plan(indptr, indptr, num_qo_heads, num_kv_heads, head_dim, causal=causal)
+        wrapper.plan(qo_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim, causal=True)
 
-        flops = batch_size * _flops(seq_len, seq_len, num_qo_heads, head_dim, causal)
-        theo_bytes = batch_size * _bytes(seq_len, seq_len, num_qo_heads, num_kv_heads, head_dim)
-        causal_str = "causal" if causal else "nc"
+        flops = batch_size * _flops(q_len, kv_len, num_qo_heads, head_dim, causal=True)
+        theo_bytes = batch_size * _bytes(q_len, kv_len, num_qo_heads, num_kv_heads, head_dim)
         configs.append(
             KernelConfig(
-                name=f"bs{batch_size}_s{seq_len}_{causal_str}",
+                name=f"ragged_bs{batch_size}_q{q_len}_kv{kv_len}",
                 run_fn=torch.inference_mode()(
                     lambda q=q, k=k, v=v, w=wrapper: w.run(q, k, v, return_lse=True)
                 ),
                 theoretical_flops=flops,
                 theoretical_bytes=theo_bytes,
-                num_tokens=batch_size * seq_len,
-                label=(
-                    f"bs={batch_size} seq={seq_len:>5d}  "
-                    f"{'causal' if causal else 'non-causal'}"
-                ),
+                num_tokens=batch_size * q_len,
+                label=f"ragged bs={batch_size} q={q_len:>4d} kv={kv_len:>5d}",
             )
         )
     return configs
 
 
 @torch.inference_mode()
-def _make_paged_configs(batch_size: int, page_size: int) -> list[KernelConfig]:
+def _make_paged_configs(batch_size: int, page_size: int, q_len: int) -> list[KernelConfig]:
     workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
     configs = []
     for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
-        pages_per_seq = math.ceil(seq_len / page_size)
-        last_page_len = seq_len - (pages_per_seq - 1) * page_size
+        kv_len = seq_len
+        if not causal or kv_len <= q_len:
+            continue  # asymmetric (q < kv) is causal-only; need kv_len > q_len
+
+        pages_per_seq = math.ceil(kv_len / page_size)
+        last_page_len = kv_len - (pages_per_seq - 1) * page_size
         total_pages = batch_size * pages_per_seq
 
         q = torch.randn(
-            batch_size * seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
+            batch_size * q_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
         )
         kv_cache = torch.randn(
             total_pages, 2, page_size, num_kv_heads, head_dim,
@@ -399,7 +420,7 @@ def _make_paged_configs(batch_size: int, page_size: int) -> list[KernelConfig]:
         )
 
         qo_indptr = torch.arange(
-            0, (batch_size + 1) * seq_len, seq_len, dtype=torch.int32, device="cuda"
+            0, (batch_size + 1) * q_len, q_len, dtype=torch.int32, device="cuda"
         )
         paged_kv_indptr = torch.arange(
             0, (batch_size + 1) * pages_per_seq, pages_per_seq,
@@ -425,25 +446,21 @@ def _make_paged_configs(batch_size: int, page_size: int) -> list[KernelConfig]:
             num_kv_heads,
             head_dim,
             page_size,
-            causal=causal,
+            causal=True,
         )
 
-        flops = batch_size * _flops(seq_len, seq_len, num_qo_heads, head_dim, causal)
-        theo_bytes = batch_size * _bytes(seq_len, seq_len, num_qo_heads, num_kv_heads, head_dim)
-        causal_str = "causal" if causal else "nc"
+        flops = batch_size * _flops(q_len, kv_len, num_qo_heads, head_dim, causal=True)
+        theo_bytes = batch_size * _bytes(q_len, kv_len, num_qo_heads, num_kv_heads, head_dim)
         configs.append(
             KernelConfig(
-                name=f"paged{page_size}_bs{batch_size}_s{seq_len}_{causal_str}",
+                name=f"paged{page_size}_bs{batch_size}_q{q_len}_kv{kv_len}",
                 run_fn=torch.inference_mode()(
                     lambda q=q, kv=kv_cache, w=wrapper: w.run(q, kv, return_lse=True)
                 ),
                 theoretical_flops=flops,
                 theoretical_bytes=theo_bytes,
-                num_tokens=batch_size * seq_len,
-                label=(
-                    f"paged(ps={page_size:>2d}) bs={batch_size} seq={seq_len:>5d}  "
-                    f"{'causal' if causal else 'non-causal'}"
-                ),
+                num_tokens=batch_size * q_len,
+                label=f"paged(ps={page_size:>2d}) bs={batch_size} q={q_len:>4d} kv={kv_len:>5d}",
             )
         )
     return configs
@@ -456,10 +473,10 @@ if __name__ == "__main__":
     def _build_configs() -> list[KernelConfig]:
         cfgs = _make_configs()
         if _batch_size > 0:
-            cfgs += _make_batch_configs(_batch_size)
+            cfgs += _make_batch_configs(_batch_size, _batch_q_len)
         if _paged_size > 0:
             for ps in _page_sizes:
-                cfgs += _make_paged_configs(_paged_size, ps)
+                cfgs += _make_paged_configs(_paged_size, ps, _batch_q_len)
         return cfgs
 
     # Widen regex when any batch/paged mode is active so counter collection
