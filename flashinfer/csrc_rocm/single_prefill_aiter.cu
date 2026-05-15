@@ -10,13 +10,54 @@
 #include <flashinfer/attention/aiter/single_prefill.cuh>
 #include <gpu_iface/enums.hpp>
 #include <gpu_iface/layout.cuh>
+#include <mutex>
 #include <optional>
+#include <unordered_map>
 
 #include "pytorch_extension_utils.h"
 #include "single_prefill_config.inc"
 
 using flashinfer::MaskMode;
 using flashinfer::QKVLayout;
+
+// Cache of device seqstart tensors keyed by (qo_len, kv_len, device_index).
+// Group-mode AITER variants require seqstart arrays [0, seqlen] on device.
+// Caching eliminates per-call allocation + H2D copy (~15 µs fixed overhead).
+namespace {
+struct SeqstartKey {
+  uint32_t qo_len, kv_len;
+  int device_idx;
+  bool operator==(SeqstartKey const& o) const noexcept {
+    return qo_len == o.qo_len && kv_len == o.kv_len && device_idx == o.device_idx;
+  }
+};
+struct SeqstartKeyHash {
+  size_t operator()(SeqstartKey const& k) const noexcept {
+    size_t h = static_cast<size_t>(k.qo_len);
+    h = h * 2654435761u ^ static_cast<size_t>(k.kv_len);
+    h = h * 2654435761u ^ static_cast<size_t>(k.device_idx);
+    return h;
+  }
+};
+std::mutex s_seqstart_mu;
+std::unordered_map<SeqstartKey, std::pair<at::Tensor, at::Tensor>, SeqstartKeyHash> s_seqstart_cache;
+
+// Return device pointers to [0, qo_len] and [0, kv_len] int32 tensors.
+// First call for a given (qo_len, kv_len, device) allocates; subsequent calls are mutex+lookup only.
+std::pair<const int32_t*, const int32_t*> get_seqstart_ptrs(uint32_t qo_len, uint32_t kv_len,
+                                                              at::Device device) {
+  SeqstartKey key{qo_len, kv_len, device.index()};
+  std::lock_guard<std::mutex> lock(s_seqstart_mu);
+  auto [it, inserted] = s_seqstart_cache.try_emplace(key);
+  if (inserted) {
+    auto opts = at::TensorOptions().dtype(at::kInt).device(device);
+    it->second.first  = at::tensor({0, static_cast<int32_t>(qo_len)}, opts);
+    it->second.second = at::tensor({0, static_cast<int32_t>(kv_len)}, opts);
+  }
+  return {static_cast<const int32_t*>(it->second.first.data_ptr()),
+          static_cast<const int32_t*>(it->second.second.data_ptr())};
+}
+}  // namespace
 
 void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::Tensor tmp,
                                   at::Tensor o, std::optional<at::Tensor> maybe_lse,
@@ -74,21 +115,12 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   ADDITIONAL_PARAMS_SETTER
 
   // AITER JIT variants use group mode; encode batch=1 as seqstart arrays [0, seqlen].
-  int32_t cu_q_host[2] = {0, static_cast<int32_t>(params.qo_len)};
-  int32_t cu_k_host[2] = {0, static_cast<int32_t>(params.kv_len)};
-  at::Tensor cu_seqlens_q_dev = at::empty({2}, q.options().dtype(at::kInt));
-  at::Tensor cu_seqlens_k_dev = at::empty({2}, k.options().dtype(at::kInt));
-  TORCH_CHECK(hipMemcpyAsync(cu_seqlens_q_dev.data_ptr(), cu_q_host, 2 * sizeof(int32_t),
-                             hipMemcpyHostToDevice, stream) == hipSuccess,
-              "hipMemcpyAsync failed for cu_seqlens_q");
-  TORCH_CHECK(hipMemcpyAsync(cu_seqlens_k_dev.data_ptr(), cu_k_host, 2 * sizeof(int32_t),
-                             hipMemcpyHostToDevice, stream) == hipSuccess,
-              "hipMemcpyAsync failed for cu_seqlens_k");
+  auto [cu_seqlens_q_ptr, cu_seqlens_k_ptr] =
+      get_seqstart_ptrs(params.qo_len, params.kv_len, device);
 
   hipError_t status = flashinfer::SinglePrefillWithKVCacheDispatched<HEAD_DIM_QK, HEAD_DIM_VO>(
       params, causal, dtype_str, dtype_enum,
-      static_cast<const int32_t*>(cu_seqlens_q_dev.data_ptr()),
-      static_cast<const int32_t*>(cu_seqlens_k_dev.data_ptr()),
+      cu_seqlens_q_ptr, cu_seqlens_k_ptr,
       static_cast<DTypeO*>(tmp.data_ptr()), stream);
   TORCH_CHECK(status == hipSuccess,
               "AITER SinglePrefill kernel launch failed: ", hipGetErrorString(status));
