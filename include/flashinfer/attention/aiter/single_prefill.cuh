@@ -59,18 +59,16 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   args.qscale_type = 0;
   args.has_sink = false;
 
-  // Data pointers
   args.q_ptr = static_cast<const void*>(params.q);
   args.k_ptr = static_cast<const void*>(params.k);
   args.v_ptr = static_cast<const void*>(params.v);
   args.o_ptr = static_cast<void*>(params.o);
   args.lse_ptr = static_cast<void*>(params.lse);
 
-  // Group mode seqstart arrays: [0, seqlen] for a single sequence.
+  // Group mode with seqstart arrays [0, seqlen] encodes a single-sequence batch.
   args.seqstart_q_ptr = static_cast<const void*>(cu_seqlens_q);
   args.seqstart_k_ptr = static_cast<const void*>(cu_seqlens_k);
 
-  // Dimensions
   args.seqlen_q = static_cast<int32_t>(params.qo_len);
   args.seqlen_k = static_cast<int32_t>(params.kv_len);
   args.batch = 1;
@@ -83,21 +81,19 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   args.scale_s = static_cast<float>(params.sm_scale);
   args.logits_soft_cap = static_cast<float>(params.logits_soft_cap);
 
-  // Q/K/V strides (in elements)
   args.stride_q = static_cast<int32_t>(params.q_stride_n);
   args.stride_k = static_cast<int32_t>(params.k_stride_n);
   args.stride_v = static_cast<int32_t>(params.v_stride_n);
-  // Output: always contiguous NHD [qo_len, num_qo_heads, HEAD_DIM_VO]
+  // Output is always contiguous NHD [qo_len, num_qo_heads, HEAD_DIM_VO]
   args.stride_o = static_cast<int32_t>(params.num_qo_heads * HEAD_DIM_VO);
 
   args.nhead_stride_q = static_cast<int32_t>(params.q_stride_h);
   args.nhead_stride_k = static_cast<int32_t>(params.k_stride_h);
   args.nhead_stride_v = static_cast<int32_t>(params.v_stride_h);
-  // AITER natural-log LSE layout: [num_qo_heads, qo_len] — nhead stride = qo_len
+  // LSE layout is [num_qo_heads, qo_len] in natural-log — nhead stride = qo_len
   args.nhead_stride_lse = static_cast<int32_t>(params.qo_len);
   args.nhead_stride_o = static_cast<int32_t>(HEAD_DIM_VO);
 
-  // Mask
   args.mask_type = causal ? kAiterMaskTopLeft : kAiterMaskNone;
   args.window_size_left = static_cast<int32_t>(params.window_left);
   args.window_size_right = -1;

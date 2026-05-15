@@ -39,4 +39,17 @@ struct VariantKeyHash {
 // Throws std::runtime_error if the variant .so is not found or the symbol is missing.
 void* get_aiter_mha_fwd_handle(VariantKey const& key);
 
+// Batch-prefill variants share the same key fields as mha_fwd variants.
+// page_size is NOT in the key — the .so dispatches all native page sizes at runtime.
+using BatchPrefillVariantKey     = VariantKey;
+using BatchPrefillVariantKeyHash = VariantKeyHash;
+
+// Returns the raw dlsym function pointer for aiter::mha_batch_prefill(...).
+// `jit_dir` is the AITER user JIT directory (~/.aiter/<name>/) where the .so lives.
+// The .so is built lazily by AITER; bootstrap by calling aiter.ops.mha.mha_batch_prefill_func
+// once before invoking this function.
+// Throws std::runtime_error if the variant .so is not found or the symbol is missing.
+void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key,
+                                         std::string const& jit_dir);
+
 }  // namespace flashinfer::aiter
