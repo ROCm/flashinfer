@@ -9,6 +9,7 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 from flashinfer.jit.core import logger
 from flashinfer.aiter_utils import is_aiter_supported
+from flashinfer.prefill_rocm import _aiter_ops_importable
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -68,8 +69,10 @@ def test_batch_prefill_with_paged_kv_cache(
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
 
-    if backend == "aiter" and not is_aiter_supported(torch.device("cuda:0")):
-        pytest.skip("AITER requires a gfx942/gfx950 GPU")
+    if backend == "aiter" and (
+        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
+    ):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal or kv_layout != NHD")
@@ -320,8 +323,10 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
 
-    if backend == "aiter" and not is_aiter_supported(torch.device("cuda:0")):
-        pytest.skip("AITER requires a gfx942/gfx950 GPU")
+    if backend == "aiter" and (
+        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
+    ):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal")
@@ -625,8 +630,8 @@ def test_batch_prefill_with_ragged_kv_cache(
 def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
     """backend='auto' should resolve to 'aiter' on gfx942/gfx950 for NHD fp16."""
     device = torch.device("cuda:0")
-    if not is_aiter_supported(device):
-        pytest.skip("AITER requires a gfx942/gfx950 GPU")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     # Use qo_len < kv_len (prefill-with-history) to exercise the meaningful causal case.
     # Both flat-gather and native-paged paths use mask_bottom_right matching FA2.

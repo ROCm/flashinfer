@@ -279,9 +279,10 @@ pip install amd-aiter --index-url https://pypi.amd.com/simple/
 ### Known Limitations
 
 The AITER backend has the following constraints. With `backend="auto"` (the
-default), the wrapper inspects the call and silently falls back to `fa2` when
-any of the first group is violated; with `backend="aiter"` the call will error
-or, for the second group, run but ignore the unsupported argument.
+default), the wrapper inspects the call and falls back to `fa2` with a
+one-time `logger.warning` when any of the first group is violated; with
+`backend="aiter"` the call will error or, for the second group, run but
+ignore the unsupported argument.
 
 **Conditions that fall back to `fa2` under `backend="auto"`:**
 

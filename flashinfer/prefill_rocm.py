@@ -19,6 +19,7 @@ import functools
 import logging
 import math
 import threading
+from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
@@ -61,7 +62,7 @@ def _aiter_native_page_sizes() -> frozenset:
         if version("amd-aiter") == "0.1.10":
             return frozenset({128, 256, 1024})
         return frozenset({16, 1024})
-    except Exception:
+    except (PackageNotFoundError, ValueError):
         return frozenset({128, 256, 1024})
 
 
@@ -254,11 +255,14 @@ def _aiter_ops_importable() -> bool:
 def _require_aiter_runtime(device: torch.device) -> None:
     """Raise a clear error when AITER is requested on an unsupported GPU or without the package."""
     if not is_aiter_supported(device):
-        arch = (
-            torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
-            if torch.version.hip
-            else "non-ROCm"
-        )
+        try:
+            arch = (
+                torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
+                if torch.version.hip
+                else "non-ROCm"
+            )
+        except Exception:
+            arch = "unknown"
         raise RuntimeError(
             f"The 'aiter' backend requires a gfx942/gfx950 GPU; got '{arch}'."
         )
@@ -283,6 +287,7 @@ def _auto_select_prefill_backend(
     has_custom_mask: bool,
     head_dim_qk: int,
     head_dim_vo: int,
+    pos_encoding_mode: str = "NONE",
 ) -> str:
     """Return 'aiter' when the GPU and call parameters satisfy AITER's constraints; else 'fa2'.
 
@@ -303,6 +308,8 @@ def _auto_select_prefill_backend(
         reason = f"dtype_q={dtype_q} != dtype_kv={dtype_kv} (AITER requires equal dtypes)"
     elif head_dim_qk != head_dim_vo:
         reason = f"head_dim_qk={head_dim_qk} != head_dim_vo={head_dim_vo} (AITER requires equal head dims)"
+    elif pos_encoding_mode != "NONE":
+        reason = f"pos_encoding_mode={pos_encoding_mode!r} (AITER only supports NONE)"
 
     if reason is not None:
         key = (device, reason)
@@ -1169,9 +1176,15 @@ def single_prefill_with_kv_cache(
             has_custom_mask=packed_custom_mask is not None,
             head_dim_qk=q.shape[-1],
             head_dim_vo=v.shape[-1],
+            pos_encoding_mode=pos_encoding_mode,
         )
     elif backend == "aiter":
         _require_aiter_runtime(q.device)
+        if pos_encoding_mode != "NONE":
+            raise ValueError(
+                f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
+                "use backend='fa2' or backend='auto' instead."
+            )
         if logits_soft_cap > 0:
             with _aiter_bootstrap_lock:
                 _aiter_bootstrap_single_prefill(
@@ -1837,6 +1850,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     has_custom_mask=self._custom_mask_buf is not None,
                     head_dim_qk=head_dim_qk,
                     head_dim_vo=head_dim_vo,
+                    pos_encoding_mode=pos_encoding_mode,
+                )
+            if self._backend == "aiter" and pos_encoding_mode != "NONE":
+                raise ValueError(
+                    f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
+                    "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend != "cudnn":
                 get_module_args = (
@@ -2488,7 +2507,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 jit_kwargs = {}
             self._jit_module = get_batch_prefill_jit_module(
                 jit_args[0],
-                get_customize_batch_prefill_module(backend, *jit_args, **jit_kwargs),
+                get_customize_batch_prefill_module("fa2", *jit_args, **jit_kwargs),
             )
         else:
             self._jit_module = None

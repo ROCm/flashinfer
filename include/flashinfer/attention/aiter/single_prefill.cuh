@@ -107,7 +107,7 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   sconfig.stream_id_ = stream;
 
   fn(args, sconfig);
-  return hipSuccess;
+  return hipGetLastError();
 }
 
 }  // namespace flashinfer

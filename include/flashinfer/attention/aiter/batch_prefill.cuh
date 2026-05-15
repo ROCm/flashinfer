@@ -121,7 +121,7 @@ hipError_t BatchPrefillFlatGatherDispatched(
   sconfig.stream_id_ = stream;
 
   fn(args, sconfig);
-  return hipSuccess;
+  return hipGetLastError();
 }
 
 // Native-paged path: paged_k/paged_v layouts: [max_pages, page_size, nhead_kv, head_dim].
@@ -278,7 +278,7 @@ hipError_t BatchPrefillNativePagedDispatched(
   fn(args, sconfig, dtype_str, /*is_group_mode=*/true, args.mask_type, /*bias_type=*/0, has_lse,
      /*qscale_type=*/0, /*use_ext_asm=*/false);
 
-  return hipSuccess;
+  return hipGetLastError();
 }
 
 }  // namespace flashinfer

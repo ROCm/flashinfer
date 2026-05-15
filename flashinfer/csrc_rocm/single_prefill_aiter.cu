@@ -77,6 +77,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
               "AITER backend supports fp16/bf16 only; got dtype=", q_dtype);
   TORCH_CHECK(k.scalar_type() == q_dtype && v.scalar_type() == q_dtype, "q, k, v must share dtype");
+  TORCH_CHECK(o.scalar_type() == q_dtype, "AITER backend requires output dtype to match input dtype; got o=", o.scalar_type(), " q=", q_dtype);
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
 
   const hipStream_t stream = c10::hip::getCurrentHIPStream();

@@ -72,6 +72,18 @@ gfx942 = CDNA3; MI350X = gfx950 = CDNA4.
 - **HipKittens** (arxiv 2511.08083) — producer/consumer patterns underperform
   on CDNA; 4-wave interleave is the recommended approach.
 
+## GitHub CLI
+
+`gh pr edit` fails with a "Projects (classic) is being deprecated" GraphQL error on this repo. Use the REST API instead:
+
+```bash
+# Update PR description
+gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
+
+# Or from a file
+gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
+```
+
 ## Plan Files
 
 Save approved plans to the Claude Code project memory directory for this repo

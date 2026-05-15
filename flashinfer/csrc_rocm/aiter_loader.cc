@@ -90,6 +90,7 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
         ", has_lse=" + (key.has_lse ? "true" : "false") + ").");
   }
 
+  dlerror();  // clear any pre-existing error before dlsym
   void* sym = dlsym(handle, kMhaFwdSymbol);
   if (!sym) {
     const char* err = dlerror();
@@ -150,6 +151,7 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key,
         ", has_lse=" + (key.has_lse ? "true" : "false") + ") before this C++ path.");
   }
 
+  dlerror();  // clear any pre-existing error before dlsym
   void* sym = dlsym(handle, kMhaBatchPrefillSymbol);
   if (!sym) {
     const char* err = dlerror();

@@ -11,6 +11,7 @@ import flashinfer
 
 from flashinfer.jit.core import logger
 from flashinfer.aiter_utils import is_aiter_supported
+from flashinfer.prefill_rocm import _aiter_ops_importable
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -61,8 +62,10 @@ def test_single_prefill_with_kv_cache(
         qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
     )
 
-    if backend == "aiter" and not is_aiter_supported(torch.device("cuda:0")):
-        pytest.skip("AITER requires a gfx942/gfx950 GPU")
+    if backend == "aiter" and (
+        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
+    ):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if backend == "aiter" and kv_layout == "HND":
         pytest.skip("AITER does not support HND layout")
@@ -210,8 +213,8 @@ def test_single_prefill_threadblock_sync_mdo_states(
 @pytest.mark.parametrize("return_lse", [False, True])
 def test_auto_backend_selects_aiter(head_dim, return_lse):
     """backend='auto' on gfx942/gfx950 with NHD fp16 should route to AITER and be bit-exact."""
-    if not is_aiter_supported(torch.device("cuda:0")):
-        pytest.skip("AITER auto-selection only active on gfx942/gfx950")
+    if not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable():
+        pytest.skip("AITER auto-selection only active on gfx942/gfx950 with aiter installed")
 
     dtype = torch.float16
 
