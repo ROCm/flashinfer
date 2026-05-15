@@ -1857,6 +1857,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
                     "use backend='fa2' or backend='auto' instead."
                 )
+            if self._backend == "aiter" and self._kv_layout != "NHD":
+                raise ValueError(
+                    f"AITER backend only supports kv_layout='NHD'; got {self._kv_layout!r}. "
+                    "use backend='fa2' or backend='auto' instead."
+                )
             if self._backend != "cudnn":
                 get_module_args = (
                     q_data_type,
