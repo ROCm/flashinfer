@@ -256,9 +256,14 @@ pytest -n auto --reruns 2 -m "slow"
 ## AITER Support
 
 FlashInfer+ROCm has experimental support to use [AITER](https://github.com/ROCm/aiter) as a
-backend. The `aiter` backend currently is enabled for the `single_prefill` and `batch_prefill`
-kernels only. To use AITER as the backend for these kernels, please set `backend="aiter"` keyword
-argument when invoking the kernels. Unless you are using the prebuilt docker image, AITER should also be installed on your system. You may follow one of the following ways to do so.
+backend. The `aiter` backend is enabled for the `single_prefill` and `batch_prefill` kernels.
+
+**On gfx942/gfx950 GPUs, `backend="auto"` (the default) automatically selects the AITER backend**
+when the call parameters are compatible (fp16/bf16, NHD layout, no custom mask, equal Q/K/V
+dtypes and head dims, `pos_encoding_mode="NONE"`). It falls back to `fa2` with a one-time
+`logger.warning` when any condition is not met. You can also pass `backend="aiter"` explicitly.
+
+Unless you are using the prebuilt docker image, AITER must also be installed on your system. You may follow one of the following ways to do so.
 
 ### Install AITER from source
 
@@ -278,11 +283,9 @@ pip install amd-aiter --index-url https://pypi.amd.com/simple/
 
 ### Known Limitations
 
-The AITER backend has the following constraints. With `backend="auto"` (the
-default), the wrapper inspects the call and falls back to `fa2` with a
-one-time `logger.warning` when any of the first group is violated; with
-`backend="aiter"` the call will error or, for the second group, run but
-ignore the unsupported argument.
+The AITER backend has the following constraints. With `backend="aiter"` the
+call will error on the first group of conditions, or for the second group,
+run but silently ignore the unsupported argument.
 
 **Conditions that fall back to `fa2` under `backend="auto"`:**
 
@@ -338,5 +341,7 @@ k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cu
 v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
 
 # Run single prefill attention with causal masking
-output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True,  backend="aiter")
+# On gfx942/gfx950, backend="auto" (default) routes to AITER automatically.
+# Pass backend="aiter" to require AITER explicitly, or backend="fa2" to skip it.
+output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="auto")
 ```
