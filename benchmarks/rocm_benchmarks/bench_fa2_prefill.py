@@ -13,18 +13,22 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-Single-prefill roofline benchmark using rocm_profiler.
+FA2 prefill benchmark: single-prefill, batch-ragged-prefill, and
+batch-paged-prefill via backend="fa2".
 
 Run:
 
     # Full roofline pipeline (timing + counter collection + roofline PNG):
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py
 
-    # Production shapes, multiple backends (timing compared side-by-side):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --backends fa2,fa3,aiter
+    # Use a production GQA model shape (Llama-3-8B: GQA 32/8 hd=128):
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --model llama3-8b
 
-    # Arithmetic-intensity sweep (old symmetric sweep):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --shape-set intensity
+    # Add asymmetric chunked-prefill configs (q=256, kv sweeps):
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --q-len 256
+
+    # Add batch-prefill configs alongside single-prefill (default batch sizes):
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --batch 4 --paged 8
 
     # Select a different counter preset:
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy
@@ -32,7 +36,7 @@ Run:
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters compute
 
     # Override the output file label prefix:
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy --label my_label
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy --label fa2_occ
 
     # Timing only (no rocprofv3):
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --timing-only
@@ -53,11 +57,29 @@ Output files (all gitignored):
     benchmarks/rocm_benchmarks/<label>_counter_collection.csv
     benchmarks/rocm_benchmarks/<label>_roofline.png   (roofline preset only)
 
-Shape sets:
-    production  — Alibaba production sweep: q=256, GQA 16/4, hd=64,
-                  kv ∈ {512,1024,2048,3072,4096,8192}, causal (default)
-    intensity   — Arithmetic-intensity sweep: q=kv, MHA 32/32, hd=128,
-                  causal + non-causal, crosses MI300X ridge at seq≈1024
+Model presets (--model):
+    intensity  — MHA 32/32 hd=128, causal+non-causal sweep (default).
+                 Good for roofline analysis; covers the MI300X ridge point.
+    llama3-8b  — GQA 32/8 hd=128, causal, kv∈{512..8192}
+    llama3-70b — GQA 64/8 hd=128, causal, kv∈{512..8192}
+    mistral-7b — GQA 32/8 hd=128, causal, kv∈{512..8192}
+
+Batch-prefill mode (--batch / --paged):
+    --batch N  Uses BatchPrefillWithRaggedKVCacheWrapper (fa2 backend) with
+               N sequences each of the same seq_len as the single-prefill sweep.
+    --paged N  Uses BatchPrefillWithPagedKVCacheWrapper (fa2 backend) with
+               N sequences.  Runs two page sizes by default (16 and 64).
+               Override with --page-size P to test a single page size.
+    batch_size=1 provides a direct single-vs-batch API overhead comparison.
+
+Asymmetric (chunked-prefill) mode (--q-len):
+    --q-len Q  Adds single-prefill configs with q_len=Q, kv_len swept over the
+               standard kv sequence lengths.  Models chunked prefill where a
+               short query attends to a long KV context.  Causal only.
+
+Paged KV indices:
+    Indices are drawn from torch.randperm (seed 42) to simulate memory
+    fragmentation in a real page pool.
 
 Counter presets available out of the box:
     roofline  — FetchSize, WriteSize, MFMA ops, TCC DRAM requests,
@@ -72,27 +94,27 @@ Counter presets available out of the box:
 
     Or pass a path to a YAML file in rocprofv3 native job format.
 
-Design note — why --counters/--shape-set/--backends are parsed at module level
--------------------------------------------------------------------------------
+Design note — why --counters / --model / --q-len / --batch / --paged are parsed at module level
+-----------------------------------------------------------------------------------------------
 rocprofv3 re-executes this script as a subprocess (passing the same sys.argv)
 to collect hardware counters.  The RocmProfiler object must therefore be
-constructed at module import time with the correct parameter values, so that
+constructed at module import time with the correct `counters=` value, so that
 both the outer driver and the inner rocprofv3 subprocess use the same preset.
-We extract these flags here (using parse_known_args so we don't conflict with
-the profiler's own argparse), strip them from sys.argv, and then pass the
-values to the RocmProfiler constructor.
+We extract all bench flags here (using parse_known_args so we don't conflict
+with the profiler's own argparse), strip them from sys.argv, and then pass
+the values to the RocmProfiler constructor.
 """
 
 import argparse
+import logging
 import math
 import sys
-import logging
 from pathlib import Path
 
 import torch
+
 import flashinfer
 from flashinfer.jit.core import logger as _jit_logger
-from flashinfer.aiter_utils import HAS_AITER
 
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
 _jit_logger.setLevel(logging.WARNING)
@@ -100,12 +122,16 @@ _jit_logger.setLevel(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
 from rocm_profiler import KernelConfig, RocmProfiler
 
+# vLLM max_num_batched_tokens=2048 at seq_len≈512 → ~4 seqs; paged burst mid-range → 8.
+_DEFAULT_BATCH_RAGGED = 4
+_DEFAULT_BATCH_PAGED = 8
+
 # ---------------------------------------------------------------------------
 # Bench-script-level argument parsing
 #
-# parse_known_args() extracts only these flags and leaves all others (
-# --timing-only, --skip-roofline, --replot, --list-presets, …) in sys.argv
-# for RocmProfiler._parse_args() to consume.
+# parse_known_args() extracts only bench flags and leaves all other
+# flags (--timing-only, --skip-roofline, --replot, --list-presets, …) in
+# sys.argv for RocmProfiler._parse_args() to consume.
 # ---------------------------------------------------------------------------
 _bench_parser = argparse.ArgumentParser(add_help=False)
 _bench_parser.add_argument(
@@ -122,171 +148,303 @@ _bench_parser.add_argument(
     "--label",
     default=None,
     metavar="PREFIX",
-    help="Output-file label prefix. Auto-derived from backends+shape-set if omitted.",
-)
-_bench_parser.add_argument(
-    "--shape-set",
-    default="production",
-    choices=["production", "intensity"],
     help=(
-        "'production' = Alibaba production shapes (q=256, GQA 16/4, hd=64, causal). "
-        "'intensity' = arithmetic-intensity sweep (q=kv, MHA 32/32, hd=128). "
-        "Default: production."
+        "Output-file label prefix (default: 'fa2' for the roofline preset, "
+        "'fa2_<preset>' for all others)."
     ),
 )
 _bench_parser.add_argument(
-    "--backends",
-    default="fa2",
-    metavar="BACKEND[,BACKEND...]",
+    "--model",
+    default="intensity",
+    choices=["intensity", "llama3-8b", "llama3-70b", "mistral-7b"],
     help=(
-        "Comma-separated backends to benchmark: fa2, fa3, aiter. "
-        "Counter collection applies to fa2 and fa3 (SinglePrefillWithKVCacheKernel); "
-        "aiter configs are timed but not counter-collected by default. "
-        "Default: fa2."
+        "Shape preset. 'intensity' = MHA 32/32 hd=128 sweep (default, good for "
+        "roofline). GQA presets match real model architectures: "
+        "llama3-8b (32/8 hd=128), llama3-70b (64/8 hd=128), mistral-7b (32/8 hd=128)."
+    ),
+)
+_bench_parser.add_argument(
+    "--q-len",
+    type=int,
+    default=0,
+    metavar="Q",
+    help=(
+        "When > 0, adds asymmetric single-prefill configs with q_len=Q and "
+        "kv_len swept over the standard sequence lengths (causal only). "
+        "Models chunked prefill / decode-step scenarios. Default: 0 (disabled)."
+    ),
+)
+_bench_parser.add_argument(
+    "--batch",
+    type=int,
+    default=_DEFAULT_BATCH_RAGGED,
+    metavar="N",
+    help=(
+        "batch_size for ragged-KV batch-prefill configs (0 = disabled). "
+        f"Default: {_DEFAULT_BATCH_RAGGED} (~vLLM max_num_batched_tokens=2048 "
+        "at seq_len=512)."
+    ),
+)
+_bench_parser.add_argument(
+    "--paged",
+    type=int,
+    default=_DEFAULT_BATCH_PAGED,
+    metavar="N",
+    help=(
+        "batch_size for paged-KV batch-prefill configs (0 = disabled). "
+        "Runs page_size=16 and page_size=64 by default; override with --page-size. "
+        f"Default: {_DEFAULT_BATCH_PAGED} (mid-range prefill burst in a "
+        "mixed prefill+decode paged system)."
+    ),
+)
+_bench_parser.add_argument(
+    "--page-size",
+    type=int,
+    default=0,
+    metavar="P",
+    help=(
+        "Override page size for --paged mode. When 0 (default), runs both "
+        "page_size=16 and page_size=64 automatically."
     ),
 )
 _bench_args, _remaining = _bench_parser.parse_known_args()
-# Strip these flags so RocmProfiler's own argparse doesn't error on them.
 sys.argv = [sys.argv[0]] + _remaining
 
 _counters = _bench_args.counters
-_shape_set = _bench_args.shape_set
-_backends: list[str] = [b.strip() for b in _bench_args.backends.split(",")]
-
-if _bench_args.label is not None:
-    _label = _bench_args.label
-else:
-    parts = ["-".join(_backends)]
-    if _shape_set != "production":
-        parts.append(_shape_set)
-    if _counters != "roofline":
-        parts.append(_counters)
-    _label = "_".join(parts)
+_model: str = _bench_args.model
+_q_len_asym: int = _bench_args.q_len
+_batch_size: int = _bench_args.batch
+_paged_size: int = _bench_args.paged
+# Page sizes to sweep: explicit override or default [16, 64]
+_page_sizes: list[int] = [_bench_args.page_size] if _bench_args.page_size > 0 else [16, 64]
+_label = (
+    _bench_args.label
+    if _bench_args.label is not None
+    else ("fa2" if _counters == "roofline" else f"fa2_{_counters}")
+)
 
 # ---------------------------------------------------------------------------
-# Shape sweep definitions
-# (q_len, kv_len, num_qo_heads, num_kv_heads, head_dim, causal)
+# Shape presets (seq_len, num_qo_heads, num_kv_heads, head_dim, causal)
 # ---------------------------------------------------------------------------
-
-# Production target: Alibaba inference distribution.
-# q_len=256 (new tokens), GQA 16/4, hd=64, causal-only.
-_PRODUCTION_SHAPES = [
-    (256, 512, 16, 4, 64, True),
-    (256, 1024, 16, 4, 64, True),
-    (256, 2048, 16, 4, 64, True),
-    (256, 3072, 16, 4, 64, True),
-    (256, 4096, 16, 4, 64, True),
-    (256, 8192, 16, 4, 64, True),
-]
-
-# Arithmetic-intensity sweep that crosses the MI300X ridge (~247 FLOPs/B)
-# near seq_len=1024.  Useful for roofline analysis across the memory/compute
-# boundary; not a realistic inference workload.
-_INTENSITY_SHAPES = [
-    # Causal
-    (512, 512, 32, 32, 128, True),
-    (1024, 1024, 32, 32, 128, True),
-    (2048, 2048, 32, 32, 128, True),
-    (4096, 4096, 32, 32, 128, True),
-    (8192, 8192, 32, 32, 128, True),
-    # Non-causal — 2× FLOPs at same bytes → 2× arithmetic intensity
-    (512, 512, 32, 32, 128, False),
-    (1024, 1024, 32, 32, 128, False),
-    (2048, 2048, 32, 32, 128, False),
-    (4096, 4096, 32, 32, 128, False),
-]
-
-_SHAPE_SETS: dict[str, list] = {
-    "production": _PRODUCTION_SHAPES,
-    "intensity": _INTENSITY_SHAPES,
+_MODEL_CONFIGS: dict[str, list[tuple]] = {
+    # MHA sweep — maximises arithmetic intensity range for roofline analysis.
+    # Crosses the MI300X ridge point (~247 FLOPs/B) near seq_len=1024.
+    "intensity": [
+        (512, 32, 32, 128, True),
+        (1024, 32, 32, 128, True),
+        (2048, 32, 32, 128, True),
+        (4096, 32, 32, 128, True),
+        (8192, 32, 32, 128, True),
+        (512, 32, 32, 128, False),
+        (1024, 32, 32, 128, False),
+        (2048, 32, 32, 128, False),
+        (4096, 32, 32, 128, False),
+    ],
+    # Llama-3-8B: GQA 32Q/8KV, hd=128 — causal only
+    "llama3-8b": [(s, 32, 8, 128, True) for s in [512, 1024, 2048, 4096, 8192]],
+    # Llama-3-70B: GQA 64Q/8KV, hd=128 — causal only
+    "llama3-70b": [(s, 64, 8, 128, True) for s in [512, 1024, 2048, 4096, 8192]],
+    # Mistral-7B: GQA 32Q/8KV, hd=128 — causal only
+    "mistral-7b": [(s, 32, 8, 128, True) for s in [512, 1024, 2048, 4096, 8192]],
 }
+_CONFIGS = _MODEL_CONFIGS[_model]
 
 _OUTPUT_DIR = str(Path(__file__).parent)
 
 
+# ---------------------------------------------------------------------------
+# FLOPs / bytes helpers
+# ---------------------------------------------------------------------------
+
+
+def _flops(q_len: int, kv_len: int, num_qo_heads: int, head_dim: int, causal: bool) -> int:
+    # For causal with q_len < kv_len the mask removes only the last q*(q-1)/2
+    # entries of the attended set, not half the matrix (which factor=2 assumes).
+    attended = q_len * kv_len - q_len * (q_len - 1) // 2 if causal else q_len * kv_len
+    return attended * num_qo_heads * head_dim * 4
+
+
+def _bytes(
+    q_len: int, kv_len: int, num_qo_heads: int, num_kv_heads: int, head_dim: int
+) -> int:
+    return 2 * head_dim * (2 * q_len * num_qo_heads + 2 * kv_len * num_kv_heads)
+
+
+# ---------------------------------------------------------------------------
+# Config builders
+# ---------------------------------------------------------------------------
+
+
 @torch.inference_mode()
-def _make_configs(
-    shapes: list,
-    backends: list[str],
-) -> list[KernelConfig]:
-    """
-    Build a KernelConfig list for a cross-product of shapes × backends.
+def _make_configs() -> list[KernelConfig]:
+    configs = []
 
-    For each (shape, backend) pair:
-      - Tensors are allocated at module import time (so rocprofv3 subprocess
-        reuse the same shapes without GPU reallocation).
-      - Q/K/V are scaled by 1/sqrt(head_dim) to keep dot-product magnitudes
-        in a safe fp16 range and avoid misleading NaN output during debug.
-    """
-    skipped: list[str] = []
-    configs: list[KernelConfig] = []
-    multi = len(backends) > 1
+    for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
+        q = torch.randn(seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda")
+        k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
+        v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
 
-    for backend in backends:
-        if backend == "aiter" and not HAS_AITER:
-            skipped.append("aiter")
-            continue
-
-        for q_len, kv_len, num_qo_heads, num_kv_heads, head_dim, causal in shapes:
-            scale = 1.0 / math.sqrt(head_dim)
-            q = torch.randn(q_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda") * scale
-            k = torch.randn(kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda") * scale
-            v = torch.randn(kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda") * scale
-
-            # FLOPs: two GEMMs (QK^T and AV), both of shape attended×head_dim.
-            # For causal with q_len ≤ kv_len, each query token i attends to
-            # kv_len-q_len+i+1 key positions → total attended pairs =
-            #   q_len*(kv_len-q_len) + q_len*(q_len+1)//2
-            #   = q_len*kv_len - q_len*(q_len-1)//2
-            # For non-causal every pair is attended.
-            if causal:
-                attended = q_len * kv_len - q_len * (q_len - 1) // 2
-            else:
-                attended = q_len * kv_len
-            flops = attended * num_qo_heads * head_dim * 4  # ×2 matmuls × ×2 mul-add
-
-            # Bytes (cold-cache lower bound, fp16):
-            #   Q: (q_len, num_qo_heads, head_dim) — read
-            #   K: (kv_len, num_kv_heads, head_dim) — read
-            #   V: (kv_len, num_kv_heads, head_dim) — read
-            #   O: (q_len, num_qo_heads, head_dim) — write
-            #   LSE: (q_len, num_qo_heads) × fp32 — write (return_lse variant)
-            theo_bytes = (
-                (2 * q_len * num_qo_heads + 2 * kv_len * num_kv_heads) * head_dim * 2
-                + q_len * num_qo_heads * 4
+        flops = _flops(seq_len, seq_len, num_qo_heads, head_dim, causal)
+        theo_bytes = _bytes(seq_len, seq_len, num_qo_heads, num_kv_heads, head_dim)
+        causal_str = "causal" if causal else "nc"
+        configs.append(
+            KernelConfig(
+                name=f"s{seq_len}_{causal_str}",
+                run_fn=torch.inference_mode()(
+                    lambda q=q, k=k, v=v, c=causal: (
+                        flashinfer.single_prefill_with_kv_cache_return_lse(
+                            q, k, v, causal=c, backend="fa2"
+                        )
+                    )
+                ),
+                theoretical_flops=flops,
+                theoretical_bytes=theo_bytes,
+                num_tokens=seq_len,
+                label=f"seq={seq_len:>5d}  {'causal' if causal else 'non-causal'}",
             )
+        )
 
-            causal_str = "causal" if causal else "nc"
-            backend_tag = f"_{backend}" if multi else ""
-            name = f"kv{kv_len}h{head_dim}_{causal_str}{backend_tag}"
+    if _q_len_asym > 0:
+        for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
+            if not causal or seq_len <= _q_len_asym:
+                continue  # asymmetric is causal-only; skip if kv not larger than q
+            kv_len = seq_len
+            q = torch.randn(
+                _q_len_asym, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
+            )
+            k = torch.randn(kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
+            v = torch.randn(kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
 
-            if q_len == kv_len:
-                shape_label = f"seq={q_len:>5d}"
-            else:
-                shape_label = f"q={q_len} kv={kv_len:>5d}"
-            label = f"{shape_label} {'causal':6s} {backend}" if causal else f"{shape_label} {'nc':6s} {backend}"
-
+            flops = _flops(_q_len_asym, kv_len, num_qo_heads, head_dim, causal=True)
+            theo_bytes = _bytes(_q_len_asym, kv_len, num_qo_heads, num_kv_heads, head_dim)
             configs.append(
                 KernelConfig(
-                    name=name,
+                    name=f"q{_q_len_asym}_kv{kv_len}_causal",
                     run_fn=torch.inference_mode()(
-                        lambda q=q, k=k, v=v, c=causal, b=backend: (
-                            flashinfer.single_prefill_with_kv_cache(
-                                q, k, v, causal=c, backend=b, return_lse=True
+                        lambda q=q, k=k, v=v: (
+                            flashinfer.single_prefill_with_kv_cache_return_lse(
+                                q, k, v, causal=True, backend="fa2"
                             )
                         )
                     ),
                     theoretical_flops=flops,
                     theoretical_bytes=theo_bytes,
-                    label=label,
+                    num_tokens=_q_len_asym,
+                    label=f"q={_q_len_asym:>4d} kv={kv_len:>5d}  causal",
                 )
             )
 
-    if skipped:
-        print(
-            f"[bench] WARNING: skipping backends {skipped} — "
-            "not installed (install from https://github.com/ROCm/aiter).",
-            file=sys.stderr,
+    return configs
+
+
+@torch.inference_mode()
+def _make_batch_configs(batch_size: int) -> list[KernelConfig]:
+    workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
+    configs = []
+    for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
+        q = torch.randn(
+            batch_size * seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
+        )
+        k = torch.randn(
+            batch_size * seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+        )
+        v = torch.randn(
+            batch_size * seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+        )
+        indptr = torch.arange(
+            0, (batch_size + 1) * seq_len, seq_len, dtype=torch.int32, device="cuda"
+        )
+
+        wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace, "NHD", backend="fa2"
+        )
+        wrapper.plan(indptr, indptr, num_qo_heads, num_kv_heads, head_dim, causal=causal)
+
+        flops = batch_size * _flops(seq_len, seq_len, num_qo_heads, head_dim, causal)
+        theo_bytes = batch_size * _bytes(seq_len, seq_len, num_qo_heads, num_kv_heads, head_dim)
+        causal_str = "causal" if causal else "nc"
+        configs.append(
+            KernelConfig(
+                name=f"bs{batch_size}_s{seq_len}_{causal_str}",
+                run_fn=torch.inference_mode()(
+                    lambda q=q, k=k, v=v, w=wrapper: w.run(q, k, v, return_lse=True)
+                ),
+                theoretical_flops=flops,
+                theoretical_bytes=theo_bytes,
+                num_tokens=batch_size * seq_len,
+                label=(
+                    f"bs={batch_size} seq={seq_len:>5d}  "
+                    f"{'causal' if causal else 'non-causal'}"
+                ),
+            )
+        )
+    return configs
+
+
+@torch.inference_mode()
+def _make_paged_configs(batch_size: int, page_size: int) -> list[KernelConfig]:
+    workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
+    configs = []
+    for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
+        pages_per_seq = math.ceil(seq_len / page_size)
+        last_page_len = seq_len - (pages_per_seq - 1) * page_size
+        total_pages = batch_size * pages_per_seq
+
+        q = torch.randn(
+            batch_size * seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
+        )
+        kv_cache = torch.randn(
+            total_pages, 2, page_size, num_kv_heads, head_dim,
+            dtype=torch.half, device="cuda",
+        )
+
+        qo_indptr = torch.arange(
+            0, (batch_size + 1) * seq_len, seq_len, dtype=torch.int32, device="cuda"
+        )
+        paged_kv_indptr = torch.arange(
+            0, (batch_size + 1) * pages_per_seq, pages_per_seq,
+            dtype=torch.int32, device="cuda",
+        )
+        _rng = torch.Generator(device="cuda").manual_seed(42)
+        paged_kv_indices = torch.randperm(
+            total_pages, dtype=torch.int32, device="cuda", generator=_rng
+        )
+        paged_kv_last_page_len = torch.full(
+            (batch_size,), last_page_len, dtype=torch.int32, device="cuda"
+        )
+
+        wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, "NHD", backend="fa2"
+        )
+        wrapper.plan(
+            qo_indptr,
+            paged_kv_indptr,
+            paged_kv_indices,
+            paged_kv_last_page_len,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim,
+            page_size,
+            causal=causal,
+        )
+
+        flops = batch_size * _flops(seq_len, seq_len, num_qo_heads, head_dim, causal)
+        theo_bytes = batch_size * _bytes(seq_len, seq_len, num_qo_heads, num_kv_heads, head_dim)
+        causal_str = "causal" if causal else "nc"
+        configs.append(
+            KernelConfig(
+                name=f"paged{page_size}_bs{batch_size}_s{seq_len}_{causal_str}",
+                run_fn=torch.inference_mode()(
+                    lambda q=q, kv=kv_cache, w=wrapper: w.run(q, kv, return_lse=True)
+                ),
+                theoretical_flops=flops,
+                theoretical_bytes=theo_bytes,
+                num_tokens=batch_size * seq_len,
+                label=(
+                    f"paged(ps={page_size:>2d}) bs={batch_size} seq={seq_len:>5d}  "
+                    f"{'causal' if causal else 'non-causal'}"
+                ),
+            )
         )
     return configs
 
@@ -294,18 +452,30 @@ def _make_configs(
 if __name__ == "__main__":
     # Defer GPU tensor allocation: --replot and --list-presets don't need a CUDA device.
     _skip_gpu = "--replot" in sys.argv or "--list-presets" in sys.argv
-    shapes = _SHAPE_SETS[_shape_set]
 
-    # Counter collection via kernel_name_regex matches the FA2/FA3 kernel.
-    # AITER dispatches a different kernel; its dispatches won't appear in the
-    # counter CSV (timing is still accurate for all backends).
+    def _build_configs() -> list[KernelConfig]:
+        cfgs = _make_configs()
+        if _batch_size > 0:
+            cfgs += _make_batch_configs(_batch_size)
+        if _paged_size > 0:
+            for ps in _page_sizes:
+                cfgs += _make_paged_configs(_paged_size, ps)
+        return cfgs
+
+    # Widen regex when any batch/paged mode is active so counter collection
+    # covers BatchPrefillWithRaggedKVCacheKernel and BatchPrefillWithPagedKVCacheKernel.
+    _kernel_regex = (
+        "PrefillWith.*KVCacheKernel"
+        if (_batch_size > 0 or _paged_size > 0)
+        else "SinglePrefillWithKVCacheKernel"
+    )
     profiler = RocmProfiler(
-        configs=[] if _skip_gpu else _make_configs(shapes, _backends),
+        configs=[] if _skip_gpu else _build_configs(),
         num_warmup=3,
         dry_run_ms=100,
         repeat_ms=1000,
         counters=_counters,
-        kernel_name_regex="SinglePrefillWithKVCacheKernel",
+        kernel_name_regex=_kernel_regex,
         output_dir=_OUTPUT_DIR,
         label=_label,
         roofline=(_counters == "roofline"),

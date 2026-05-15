@@ -27,6 +27,9 @@ Run:
     # Full roofline pipeline (timing + counter collection + roofline PNG):
     python benchmarks/rocm_benchmarks/bench_aiter_prefill.py
 
+    # Override batch size for paged sections (0 = disable paged sections):
+    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --batch 8
+
     # Select a different counter preset:
     python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --counters occupancy
     python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --counters stall
@@ -46,12 +49,14 @@ Run:
 
 Output files (all gitignored):
     benchmarks/rocm_benchmarks/<label>_timing.csv
+    benchmarks/rocm_benchmarks/<label>_meta.json
     benchmarks/rocm_benchmarks/<label>_counters.yml
     benchmarks/rocm_benchmarks/<label>_counter_collection.csv
     benchmarks/rocm_benchmarks/<label>_roofline.png   (roofline preset only)
 
 Counter presets available out of the box:
-    roofline  — FetchSize, WriteSize, MFMA ops, TCC DRAM requests (default)
+    roofline  — FetchSize, WriteSize, MFMA ops, TCC DRAM requests,
+                SQ_VALU_MFMA_BUSY_CYCLES (default)
     compute   — MFMA ops and cycle counters
     memory    — L2 and DRAM bandwidth breakdown
     basic     — minimal: FetchSize / WriteSize only
@@ -62,32 +67,35 @@ Counter presets available out of the box:
 
     Or pass a path to a YAML file in rocprofv3 native job format.
 
-Design note — why --counters is parsed at module level
--------------------------------------------------------
+Design note — why --counters / --batch are parsed at module level
+-----------------------------------------------------------------
 rocprofv3 re-executes this script as a subprocess (passing the same sys.argv)
 to collect hardware counters. The RocmProfiler object must therefore be
 constructed at module import time with the correct `counters=` value, so that
 both the outer driver and the inner rocprofv3 subprocess use the same preset.
-We extract --counters / --label here (using parse_known_args so we don't
-conflict with the profiler's own argparse), strip them from sys.argv, and then
-pass the values to the RocmProfiler constructor.
+We extract --counters / --label / --batch here (using parse_known_args so we
+don't conflict with the profiler's own argparse), strip them from sys.argv,
+and then pass the values to the RocmProfiler constructor.
 """
 
 import argparse
 import logging
-import math
 import sys
 from pathlib import Path
 
 import torch
 
 import flashinfer
-from flashinfer.jit.core import logger
+from flashinfer.jit.core import logger as _jit_logger
 
-logger.setLevel(logging.ERROR)
+# Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
+_jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "rocm_profiler"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
 from rocm_profiler import KernelConfig, RocmProfiler
+
+# vLLM max_num_seqs=256 with mixed prefill+decode → prefill burst of ~8 seqs is mid-range.
+_DEFAULT_BATCH = 8
 
 # ---------------------------------------------------------------------------
 # Bench-script-level argument parsing
@@ -109,6 +117,16 @@ _bench_parser.add_argument(
     metavar="PREFIX",
     help="Output-file label prefix (default: 'aiter' for roofline, 'aiter_<preset>' otherwise).",
 )
+_bench_parser.add_argument(
+    "--batch",
+    type=int,
+    default=_DEFAULT_BATCH,
+    metavar="N",
+    help=(
+        "batch_size for the paged-KV sections (0 = disable paged sections). "
+        f"Default: {_DEFAULT_BATCH}."
+    ),
+)
 _bench_args, _remaining = _bench_parser.parse_known_args()
 sys.argv = [sys.argv[0]] + _remaining
 
@@ -129,7 +147,7 @@ _NUM_KV_HEADS = 4
 _HEAD_DIM = 64
 _DTYPE = torch.float16
 _CAUSAL = True
-_BATCH = 4
+_BATCH = _bench_args.batch
 
 _OUTPUT_DIR = str(Path(__file__).parent)
 
@@ -137,22 +155,16 @@ _OUTPUT_DIR = str(Path(__file__).parent)
 def _flops(
     q_len: int, kv_len: int, num_qo_heads: int, head_dim: int, causal: bool
 ) -> int:
-    return q_len * kv_len * num_qo_heads * head_dim * (2 if causal else 4)
+    # For causal with q_len < kv_len the mask removes only the last q*(q-1)/2
+    # entries of the attended set, not half the matrix (which factor=2 assumed).
+    attended = q_len * kv_len - q_len * (q_len - 1) // 2 if causal else q_len * kv_len
+    return attended * num_qo_heads * head_dim * 4
 
 
 def _bytes(
     q_len: int, kv_len: int, num_qo_heads: int, num_kv_heads: int, head_dim: int
 ) -> int:
-    return (
-        2
-        * head_dim
-        * (
-            q_len * num_qo_heads
-            + kv_len * num_kv_heads
-            + kv_len * num_kv_heads
-            + q_len * num_qo_heads
-        )
-    )
+    return 2 * head_dim * (2 * q_len * num_qo_heads + 2 * kv_len * num_kv_heads)
 
 
 def _build_paged_kv(batch, kv_len, page_size, num_kv_heads, head_dim, dtype, device):
@@ -164,7 +176,6 @@ def _build_paged_kv(batch, kv_len, page_size, num_kv_heads, head_dim, dtype, dev
         num_full_pages += 1
     total_pages = num_full_pages * batch
 
-    # kv_data layout: [total_pages, 2, page_size, num_kv_heads, head_dim]  (NHD paged)
     kv_data = torch.randn(
         total_pages, 2, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
     )
@@ -172,7 +183,10 @@ def _build_paged_kv(batch, kv_len, page_size, num_kv_heads, head_dim, dtype, dev
     kv_indptr = (
         torch.arange(batch + 1, dtype=torch.int32, device=device) * num_full_pages
     )
-    kv_indices = torch.arange(total_pages, dtype=torch.int32, device=device)
+    _rng = torch.Generator(device=device).manual_seed(42)
+    kv_indices = torch.randperm(
+        total_pages, dtype=torch.int32, device=device, generator=_rng
+    )
     kv_last_page_len = torch.full(
         (batch,), last_tokens, dtype=torch.int32, device=device
     )
@@ -211,11 +225,15 @@ def _make_configs() -> list[KernelConfig]:
                 ),
                 theoretical_flops=flops,
                 theoretical_bytes=theo_bytes,
+                num_tokens=_Q_LEN,
                 label=f"single  kv={kv_len:>5d}",
             )
         )
 
     # ── Batch-paged prefill — native-paged path ──────────────────────────────
+    if _BATCH == 0:
+        return configs
+
     for kv_len in _KV_LENS:
         q, kv_data, qo_indptr, kv_indptr, kv_indices, kv_last_page_len = (
             _build_paged_kv(
@@ -258,6 +276,7 @@ def _make_configs() -> list[KernelConfig]:
                 ),
                 theoretical_flops=flops,
                 theoretical_bytes=theo_bytes,
+                num_tokens=_BATCH * _Q_LEN,
                 label=f"batch(native,p={native_page:>3d})  kv={kv_len:>5d}",
             )
         )
@@ -305,6 +324,7 @@ def _make_configs() -> list[KernelConfig]:
                 ),
                 theoretical_flops=flops,
                 theoretical_bytes=theo_bytes,
+                num_tokens=_BATCH * _Q_LEN,
                 label=f"batch(flat,  p={flat_gather_page:>3d})  kv={kv_len:>5d}",
             )
         )

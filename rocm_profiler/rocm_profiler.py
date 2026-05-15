@@ -267,6 +267,7 @@ class KernelConfig:
     theoretical_bytes: int
     run_fn: Callable[[], Any] | None = None
     label: str = ""
+    num_tokens: int = 0  # when > 0, profiler also reports tokens/sec
     # Called once before each profiling phase to (re-)allocate tensors.
     # run_fn should close over a mutable container that setup_fn refreshes.
     setup_fn: Callable[[], None] | None = None
@@ -523,25 +524,32 @@ class RocmProfiler:
             n_iters = int(len(arr))
             tflops = cfg.theoretical_flops / median_ms / 1e9
             ai_theory = cfg.theoretical_flops / cfg.theoretical_bytes
-            rows.append(
-                {
-                    "name": cfg.name,
-                    "theoretical_flops": cfg.theoretical_flops,
-                    "theoretical_bytes": cfg.theoretical_bytes,
-                    "n_iters": n_iters,
-                    "min_ms": f"{min_ms:.4f}",
-                    "p5_ms": f"{p5_ms:.4f}",
-                    "median_ms": f"{median_ms:.4f}",
-                    "p95_ms": f"{p95_ms:.4f}",
-                    "std_ms": f"{std_ms:.4f}",
-                    "tflops": f"{tflops:.3f}",
-                    "ai_theory": f"{ai_theory:.2f}",
-                }
+            tput_tok_per_s = (
+                cfg.num_tokens / (median_ms * 1e-3) if cfg.num_tokens > 0 else 0
+            )
+            row: dict[str, Any] = {
+                "name": cfg.name,
+                "theoretical_flops": cfg.theoretical_flops,
+                "theoretical_bytes": cfg.theoretical_bytes,
+                "n_iters": n_iters,
+                "min_ms": f"{min_ms:.4f}",
+                "p5_ms": f"{p5_ms:.4f}",
+                "median_ms": f"{median_ms:.4f}",
+                "p95_ms": f"{p95_ms:.4f}",
+                "std_ms": f"{std_ms:.4f}",
+                "tflops": f"{tflops:.3f}",
+                "ai_theory": f"{ai_theory:.2f}",
+            }
+            if cfg.num_tokens > 0:
+                row["tput_tok_per_s"] = f"{tput_tok_per_s:.0f}"
+            rows.append(row)
+            tput_str = (
+                f"  {tput_tok_per_s / 1e3:7.1f} ktok/s" if cfg.num_tokens > 0 else ""
             )
             print(
                 f"  {cfg.label:40s}  {median_ms:8.3f} ms  "
                 f"[p5={p5_ms:.3f} p95={p95_ms:.3f} std={std_ms:.3f}]  "
-                f"{tflops:7.2f} TFLOPS  AI={ai_theory:.1f}"
+                f"{tflops:7.2f} TFLOPS  AI={ai_theory:.1f}{tput_str}"
             )
             sys.stdout.flush()
 
