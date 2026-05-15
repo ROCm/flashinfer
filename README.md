@@ -255,7 +255,7 @@ pytest -n auto --reruns 2 -m "slow"
 
 ## AITER Support
 
-FlashInfer+ROCm has experimental support to use [AITER](https://github.com/ROCm/aiter) as a
+FlashInfer+ROCm supports the use of [AITER](https://github.com/ROCm/aiter) as a
 backend. The `aiter` backend is enabled for the `single_prefill` and `batch_prefill` kernels.
 
 **On gfx942/gfx950 GPUs, `backend="auto"` (the default) automatically selects the AITER backend**
