@@ -17,7 +17,8 @@ namespace flashinfer {
 // CK Tile mask_type codes (from CK example mask.hpp):
 //   no_mask=0, mask_top_left=1 (causal), mask_bottom_right=2, window_generic=3
 inline constexpr int32_t kAiterMaskNone = 0;
-inline constexpr int32_t kAiterMaskTopLeft = 1;  // standard causal
+inline constexpr int32_t kAiterMaskTopLeft = 1;     // standard causal (qo_len == kv_len)
+inline constexpr int32_t kAiterMaskBottomRight = 2; // prefill-with-history causal (kv_len > qo_len)
 
 // params.lse: [num_qo_heads, qo_len] float32 scratch in natural-log scale; nullptr to skip.
 // tmp: unused; accepted for API parity with the FA2 template.
@@ -94,9 +95,13 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   args.nhead_stride_lse = static_cast<int32_t>(params.qo_len);
   args.nhead_stride_o = static_cast<int32_t>(HEAD_DIM_VO);
 
-  args.mask_type = causal ? kAiterMaskTopLeft : kAiterMaskNone;
+  // mask_bottom_right: q[i] attends to kv[kv_len−qo_len+i], correct for prefill-with-history.
+  // When qo_len == kv_len, mask_bottom_right degenerates to mask_top_left.
+  // window_size_right=0 is the CK Tile convention for causal (no future tokens);
+  // -1 means "no right-window constraint" which disables the causal masking.
+  args.mask_type = causal ? kAiterMaskBottomRight : kAiterMaskNone;
   args.window_size_left = static_cast<int32_t>(params.window_left);
-  args.window_size_right = -1;
+  args.window_size_right = causal ? 0 : -1;
 
   ::ck_tile::stream_config sconfig{};
   sconfig.stream_id_ = stream;
