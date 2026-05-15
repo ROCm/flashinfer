@@ -51,9 +51,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   params.v = static_cast<DTypeKV*>(v.data_ptr());
   params.o = static_cast<DTypeO*>(o.data_ptr());
 
-  // AITER LSE layout: [num_qo_heads, qo_len] in natural-log scale (nats).
-  // FlashInfer expects [qo_len, num_qo_heads] in log2 scale.
-  // Conversion: log2(x) = ln(x) ÷ ln(2), so divide by ln(2) then transpose.
+  // AITER LSE layout: [num_qo_heads, qo_len] in nats; FlashInfer expects [qo_len, num_qo_heads] in log2.
   at::Tensor aiter_lse_scratch;
   if (maybe_lse) {
     aiter_lse_scratch = at::empty({q.size(1), q.size(0)}, maybe_lse->options().dtype(at::kFloat));
@@ -80,10 +78,12 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   int32_t cu_k_host[2] = {0, static_cast<int32_t>(params.kv_len)};
   at::Tensor cu_seqlens_q_dev = at::empty({2}, q.options().dtype(at::kInt));
   at::Tensor cu_seqlens_k_dev = at::empty({2}, k.options().dtype(at::kInt));
-  hipMemcpyAsync(cu_seqlens_q_dev.data_ptr(), cu_q_host, 2 * sizeof(int32_t), hipMemcpyHostToDevice,
-                 stream);
-  hipMemcpyAsync(cu_seqlens_k_dev.data_ptr(), cu_k_host, 2 * sizeof(int32_t), hipMemcpyHostToDevice,
-                 stream);
+  TORCH_CHECK(hipMemcpyAsync(cu_seqlens_q_dev.data_ptr(), cu_q_host, 2 * sizeof(int32_t),
+                             hipMemcpyHostToDevice, stream) == hipSuccess,
+              "hipMemcpyAsync failed for cu_seqlens_q");
+  TORCH_CHECK(hipMemcpyAsync(cu_seqlens_k_dev.data_ptr(), cu_k_host, 2 * sizeof(int32_t),
+                             hipMemcpyHostToDevice, stream) == hipSuccess,
+              "hipMemcpyAsync failed for cu_seqlens_k");
 
   hipError_t status = flashinfer::SinglePrefillWithKVCacheDispatched<HEAD_DIM_QK, HEAD_DIM_VO>(
       params, causal, dtype_str, dtype_enum,
