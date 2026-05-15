@@ -130,7 +130,6 @@ hipError_t BatchPrefillFlatGatherDispatched(
 // kv_last_page_lens:  [batch] int32 filled tokens in the last page.
 // qo_seqstarts:       [batch+1] int32 cumulative Q lengths.
 // lse_scratch:        [num_qo_heads, total_qo_len] float32 scratch in nats (nullptr = skip).
-// jit_dir:            AITER user JIT directory (~/.aiter/<name>/), where the .so lives.
 template <uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO, typename DTypeQ, typename DTypeKV,
           typename DTypeO>
 hipError_t BatchPrefillNativePagedDispatched(
@@ -151,7 +150,6 @@ hipError_t BatchPrefillNativePagedDispatched(
     int32_t window_left,
     bool causal,
     flashinfer::aiter::VariantKey::Dtype dtype_enum,
-    std::string const& jit_dir,
     hipStream_t stream) {
   static_assert(HEAD_DIM_QK == HEAD_DIM_VO,
                 "AITER backend requires HEAD_DIM_QK == HEAD_DIM_VO");
@@ -186,7 +184,7 @@ hipError_t BatchPrefillNativePagedDispatched(
   );
 
   auto fn = reinterpret_cast<mha_batch_prefill_fn>(
-      flashinfer::aiter::get_aiter_mha_batch_prefill_handle(key, jit_dir));
+      flashinfer::aiter::get_aiter_mha_batch_prefill_handle(key));
 
   const char* dtype_str =
       (dtype_enum == flashinfer::aiter::VariantKey::Dtype::kFp16) ? "fp16" : "bf16";
@@ -268,7 +266,7 @@ hipError_t BatchPrefillNativePagedDispatched(
   args.p_drop   = 0.0f;
   args.s_randval = false;
   // zero-initialize drop_seed_offset (only read when p_drop > 0)
-  new (&args.drop_seed_offset)
+  args.drop_seed_offset =
       std::variant<std::pair<uint64_t, uint64_t>, std::pair<const void*, const void*>>(
           std::in_place_index<0>, 0ULL, 0ULL);
 

@@ -49,7 +49,6 @@ using BatchPrefillVariantKeyHash = VariantKeyHash;
 // The .so is built lazily by AITER; bootstrap by calling aiter.ops.mha.mha_batch_prefill_func
 // once before invoking this function.
 // Throws std::runtime_error if the variant .so is not found or the symbol is missing.
-void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key,
-                                         std::string const& jit_dir);
+void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key);
 
 }  // namespace flashinfer::aiter

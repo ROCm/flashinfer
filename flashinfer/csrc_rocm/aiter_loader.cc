@@ -124,8 +124,7 @@ std::unordered_map<BatchPrefillVariantKey, void*, BatchPrefillVariantKeyHash> s_
 
 }  // namespace
 
-void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key,
-                                         std::string const& jit_dir) {
+void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
   {
     std::shared_lock rd(s_bp_mu);
     auto it = s_bp_cache.find(key);
@@ -136,6 +135,7 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key,
   auto it = s_bp_cache.find(key);
   if (it != s_bp_cache.end()) return it->second;
 
+  std::string jit_dir = get_jit_dir();
   std::string so_path = jit_dir + "/" + batch_prefill_variant_so_name(key);
 
   void* handle = dlopen(so_path.c_str(), RTLD_LOCAL | RTLD_LAZY);

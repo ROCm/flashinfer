@@ -17,8 +17,7 @@ void batch_prefill_with_paged_kv_cache_aiter(
     double logits_soft_cap, double sm_scale,
     int64_t page_size, int64_t max_q_len, int64_t max_kv_len,
     std::optional<at::Tensor> aiter_flat_gather_idx,
-    std::optional<at::Tensor> aiter_flat_kv_indptr,
-    std::string aiter_user_jit_dir);
+    std::optional<at::Tensor> aiter_flat_kv_indptr);
 
 TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   m.def("paged_run", batch_prefill_with_paged_kv_cache_aiter);

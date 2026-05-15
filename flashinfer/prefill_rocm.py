@@ -58,12 +58,13 @@ from .utils import (
 def _aiter_native_page_sizes() -> frozenset:
     try:
         from importlib.metadata import version
+        from packaging.version import Version
 
-        if version("amd-aiter") == "0.1.10":
+        if Version(version("amd-aiter")) >= Version("0.1.10"):
             return frozenset({128, 256, 1024})
         return frozenset({16, 1024})
     except (PackageNotFoundError, ValueError):
-        return frozenset({128, 256, 1024})
+        return frozenset({16, 1024})
 
 
 def make_hashable_cache(func):
@@ -248,7 +249,7 @@ def _aiter_ops_importable() -> bool:
         import aiter.ops  # noqa: F401
 
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
@@ -409,9 +410,6 @@ def _aiter_bootstrap_batch_prefill(
 @functools.cache
 def get_batch_prefill_module(backend, *args):
     if backend == "aiter":
-        from aiter.jit.core import get_user_jit_dir as _aiter_get_jit_dir
-
-        _aiter_jit_dir = _aiter_get_jit_dir()
         module = gen_batch_prefill_module(backend, *args).build_and_load()
         _c_paged_run = module.paged_run.default
 
@@ -460,8 +458,6 @@ def get_batch_prefill_module(backend, *args):
             sinks: Optional[torch.Tensor] = None,
             aiter_flat_gather_idx: Optional[torch.Tensor] = None,
             aiter_flat_kv_indptr: Optional[torch.Tensor] = None,
-            aiter_flat_kv_lpl: Optional[torch.Tensor] = None,
-            aiter_flat_kv_indices: Optional[torch.Tensor] = None,
         ) -> None:
             _c_paged_run(
                 q,
@@ -482,7 +478,6 @@ def get_batch_prefill_module(backend, *args):
                 max_kv_len,
                 aiter_flat_gather_idx,
                 aiter_flat_kv_indptr,
-                _aiter_jit_dir,
             )
 
         def aiter_ragged_run(*_args, **_kwargs) -> None:
@@ -1528,8 +1523,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # size is not natively supported (see _aiter_native_page_sizes()).
         self._aiter_flat_gather_idx: Optional[torch.Tensor] = None
         self._aiter_flat_kv_indptr: Optional[torch.Tensor] = None
-        self._aiter_flat_kv_lpl: Optional[torch.Tensor] = None
-        self._aiter_flat_kv_indices: Optional[torch.Tensor] = None
 
     @property
     def is_cuda_graph_enabled(self) -> bool:
@@ -1965,11 +1958,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
             flat_indptr[1:] = torch.tensor(
                 token_counts, dtype=torch.int32, device=self.device
             ).cumsum(0)
-            flat_lpl = torch.ones(bs, dtype=torch.int32, device=self.device)
-            flat_indices = torch.arange(
-                total_tokens, dtype=torch.int32, device=self.device
-            )
-
             if self.is_cuda_graph_enabled:
                 # In CUDA-graph mode the tensors used inside the captured
                 # graph must keep the **same addresses and sizes** across
@@ -1983,33 +1971,18 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     self._aiter_flat_gather_idx = torch.zeros(
                         max_flat_tokens, dtype=torch.long, device=self.device
                     )
-                    self._aiter_flat_kv_indices = torch.arange(
-                        max_flat_tokens,
-                        dtype=torch.int32,
-                        device=self.device,
-                    )
                     self._aiter_flat_kv_indptr = torch.zeros(
                         bs + 1, dtype=torch.int32, device=self.device
-                    )
-                    self._aiter_flat_kv_lpl = torch.ones(
-                        bs, dtype=torch.int32, device=self.device
                     )
                 # Fill the used portion, leave the rest as zero-padding.
                 self._aiter_flat_gather_idx[:total_tokens].copy_(gather_t)
                 self._aiter_flat_kv_indptr.copy_(flat_indptr)
-                self._aiter_flat_kv_lpl.copy_(flat_lpl)
-                # _aiter_flat_kv_indices is constant (arange) – no update
-                # needed.
             else:
                 self._aiter_flat_gather_idx = gather_t
                 self._aiter_flat_kv_indptr = flat_indptr
-                self._aiter_flat_kv_lpl = flat_lpl
-                self._aiter_flat_kv_indices = flat_indices
         else:
             self._aiter_flat_gather_idx = None
             self._aiter_flat_kv_indptr = None
-            self._aiter_flat_kv_lpl = None
-            self._aiter_flat_kv_indices = None
 
     begin_forward = plan
 
@@ -2282,8 +2255,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 run_args += [
                     self._aiter_flat_gather_idx,
                     self._aiter_flat_kv_indptr,
-                    self._aiter_flat_kv_lpl,
-                    self._aiter_flat_kv_indices,
                 ]
             else:
                 po, plse = partial_state if partial_state is not None else (None, None)
