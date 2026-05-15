@@ -99,7 +99,7 @@ struct fmha_batch_prefill_args {
   int32_t window_size_left;
   int32_t window_size_right;
   int32_t sink_size;
-  int32_t mask_type;  // 0=no_mask, 1=mask_top_left (causal), 3=window_generic
+  int32_t mask_type;  // 0=no_mask, 1=mask_top_left, 2=mask_bottom_right (causal), 3=window_generic
 
   float p_drop;
   bool s_randval;

@@ -63,6 +63,9 @@ void batch_prefill_with_paged_kv_cache_aiter(
   TORCH_CHECK(paged_k_cache.scalar_type() == q_dtype && paged_v_cache.scalar_type() == q_dtype,
               "q, k, v must share dtype");
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
+  TORCH_CHECK(o.scalar_type() == q_dtype,
+              "AITER backend requires output dtype to match input dtype; got o=",
+              o.scalar_type(), " q=", q_dtype);
   TORCH_CHECK(static_cast<int>(HEAD_DIM_QK) == static_cast<int>(HEAD_DIM_VO),
               "AITER backend requires equal head dims; got HEAD_DIM_QK=", HEAD_DIM_QK,
               " HEAD_DIM_VO=", HEAD_DIM_VO);
@@ -104,8 +107,8 @@ void batch_prefill_with_paged_kv_cache_aiter(
     const auto& gather_idx = *aiter_flat_gather_idx;
 
     // Reshape paged cache to 2D token view: [max_pages * page_size, nhead_k, head_dim]
-    auto k_2d = paged_k_cache.reshape({-1, num_kv_heads, HEAD_DIM_QK});
-    auto v_2d = paged_v_cache.reshape({-1, num_kv_heads, HEAD_DIM_VO});
+    auto k_2d = paged_k_cache.contiguous().reshape({-1, num_kv_heads, HEAD_DIM_QK});
+    auto v_2d = paged_v_cache.contiguous().reshape({-1, num_kv_heads, HEAD_DIM_VO});
 
     // GPU gather: k_flat = k_2d[gather_idx], v_flat = v_2d[gather_idx]
     at::Tensor k_flat = k_2d.index_select(0, gather_idx).contiguous();

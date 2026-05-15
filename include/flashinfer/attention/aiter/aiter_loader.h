@@ -45,9 +45,9 @@ using BatchPrefillVariantKey     = VariantKey;
 using BatchPrefillVariantKeyHash = VariantKeyHash;
 
 // Returns the raw dlsym function pointer for aiter::mha_batch_prefill(...).
-// `jit_dir` is the AITER user JIT directory (~/.aiter/<name>/) where the .so lives.
-// The .so is built lazily by AITER; bootstrap by calling aiter.ops.mha.mha_batch_prefill_func
-// once before invoking this function.
+// The JIT directory is resolved from FLASHINFER_AITER_JIT_DIR / AITER_JIT_DIR env vars at
+// runtime; no jit_dir argument is needed. The .so is built lazily by AITER — bootstrap
+// by calling aiter.ops.mha.mha_batch_prefill_func once before invoking this function.
 // Throws std::runtime_error if the variant .so is not found or the symbol is missing.
 void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key);
 

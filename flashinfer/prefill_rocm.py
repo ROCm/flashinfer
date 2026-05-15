@@ -162,7 +162,7 @@ def get_single_prefill_module(backend, *args):
             run_func(
                 q, k, v, tmp, o, maybe_lse, mask_mode, layout, window_left,
                 None, None, logits_soft_cap, sm_scale,
-                1.0 / rope_scale, 1.0 / rope_theta,
+                1.0, 1.0,  # rope_rcp_scale / rope_rcp_theta ignored by AITER
             )
         return SimpleNamespace(run=run_single_prefill)
 
