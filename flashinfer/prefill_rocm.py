@@ -18,11 +18,12 @@ limitations under the License.
 import functools
 import logging
 import math
+import threading
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
-from .aiter_utils import get_aiter_mha_module, is_aiter_supported
+from .aiter_utils import is_aiter_supported
 from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
@@ -54,11 +55,14 @@ from .utils import (
 
 @functools.cache
 def _aiter_native_page_sizes() -> frozenset:
-    from importlib.metadata import version
+    try:
+        from importlib.metadata import version
 
-    if version("amd-aiter") == "0.1.10":
+        if version("amd-aiter") == "0.1.10":
+            return frozenset({128, 256, 1024})
+        return frozenset({16, 1024})
+    except Exception:
         return frozenset({128, 256, 1024})
-    return frozenset({16, 1024})
 
 
 def make_hashable_cache(func):
@@ -304,186 +308,139 @@ def _auto_select_prefill_backend(
     return "aiter"
 
 
-def _get_aiter_batch_prefill_module():
-    """Return a module-like namespace for the AITER backend.
+_aiter_bootstrap_lock = threading.Lock()
 
-    The returned object exposes the same ``plan`` / ``ragged_run`` /
-    ``paged_run`` interface that the FA2 module does so that
-    :class:`BatchPrefillWithPagedKVCacheWrapper` can treat every backend
-    uniformly.
-    """
 
-    def aiter_paged_run(
-        float_workspace_buffer: torch.Tensor,
-        int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
-        q: torch.Tensor,
-        paged_k_cache: torch.Tensor,
-        paged_v_cache: torch.Tensor,
-        qo_indptr: torch.Tensor,
-        paged_kv_indptr: torch.Tensor,
-        paged_kv_indices: torch.Tensor,
-        paged_kv_last_page_len: torch.Tensor,
-        o: torch.Tensor,
-        maybe_lse: Optional[torch.Tensor],
-        mask_mode: int,
-        layout: int,
-        window_left: int,
-        enable_pdl: bool,
-        maybe_custom_mask: Optional[torch.Tensor],
-        maybe_mask_indptr: Optional[torch.Tensor],
-        maybe_alibi_slopes: Optional[torch.Tensor],
-        maybe_prefix_len_ptr: Optional[torch.Tensor],
-        maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
-        maybe_max_item_len_ptr: Optional[torch.Tensor],
-        logits_soft_cap: float,
-        sm_scale: float,
-        scale_q: Optional[torch.Tensor],
-        scale_k: Optional[torch.Tensor],
-        scale_v: Optional[torch.Tensor],
-        rope_scale: float,
-        rope_theta: float,
-        token_pos_in_items_len: int,
-        workspace_size: int,
-        num_qo_heads: Optional[int] = None,
-        num_kv_heads: Optional[int] = None,
-        block_tables: Optional[torch.Tensor] = None,
-        kv_lens_buffer: Optional[torch.Tensor] = None,
-        page_size: Optional[int] = None,
-        max_q_len: Optional[int] = None,
-        max_kv_len: Optional[int] = None,
-        batch_size: Optional[int] = None,
-        cum_seq_lens_q: Optional[torch.Tensor] = None,
-        cum_seq_lens_kv: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
-        # Pre-computed flat-KV gather info (populated by plan() for
-        # unsupported page sizes).
-        aiter_flat_gather_idx: Optional[torch.Tensor] = None,
-        aiter_flat_kv_indptr: Optional[torch.Tensor] = None,
-        aiter_flat_kv_lpl: Optional[torch.Tensor] = None,
-        aiter_flat_kv_indices: Optional[torch.Tensor] = None,
-    ) -> None:
-        logger.info("###### AITER backend is used for batch prefill ######")
-        # Derive causal flag from mask_mode
-        causal = mask_mode == MaskMode.CAUSAL.value
+@functools.lru_cache(maxsize=None)
+def _aiter_bootstrap_batch_prefill(
+    dtype: torch.dtype,
+    has_logits_cap: bool,
+    causal: bool,
+    has_lse: bool,
+    page_size: int,
+    head_dim: int,
+    device_idx: int,
+) -> None:
+    """Force AITER's lazy JIT to compile mha_batch_prefill_*.so for this variant."""
+    from aiter.ops.mha import mha_batch_prefill_func
 
-        # Use the pre-computed max query length from plan() – this avoids a
-        # device-to-host copy that would be illegal inside CUDA-graph capture.
-        max_seqlen_q = max_q_len
-
-        # If plan() pre-computed flat-KV gather indices (unsupported page
-        # size, or page_size=1), use a single GPU gather to flatten pages
-        # into tokens, then call flash_attn_varlen_func with the flat KV.
-        # This path is safe inside CUDA-graph capture.
-        if aiter_flat_gather_idx is not None:
-            num_heads = paged_k_cache.size(-2)
-            head_dim = paged_k_cache.size(-1)
-            k_2d = paged_k_cache.reshape(-1, num_heads, head_dim)
-            v_2d = paged_v_cache.reshape(-1, num_heads, head_dim)
-            k_for_aiter = k_2d[aiter_flat_gather_idx].contiguous()
-            v_for_aiter = v_2d[aiter_flat_gather_idx].contiguous()
-
-            # flash_attn_varlen_func is the correct API for the flat
-            # (non-paged) token layout produced by the gather.
-            # aiter_flat_kv_indptr serves as cu_seqlens_k.
-            aiter_result = get_aiter_mha_module().flash_attn_varlen_func(
-                q=q,
-                k=k_for_aiter,
-                v=v_for_aiter,
-                cu_seqlens_q=qo_indptr,
-                cu_seqlens_k=aiter_flat_kv_indptr,
-                max_seqlen_q=max_seqlen_q,
-                max_seqlen_k=max_kv_len,
-                dropout_p=0.0,
-                softmax_scale=sm_scale,
-                logits_soft_cap=logits_soft_cap,
-                causal=causal,
-                window_size=(window_left, -1),
-                return_lse=maybe_lse is not None,
-                return_attn_probs=False,
-            )
-        else:
-            k_for_aiter = paged_k_cache.contiguous()
-            v_for_aiter = paged_v_cache.contiguous()
-
-            aiter_result = get_aiter_mha_module().mha_batch_prefill_func(
-                q=q,
-                k=k_for_aiter,
-                v=v_for_aiter,
-                cu_seqlens_q=qo_indptr,
-                kv_indptr=paged_kv_indptr,
-                kv_page_indices=paged_kv_indices,
-                max_seqlen_q=max_seqlen_q,
-                max_seqlen_k=max_kv_len,
-                dropout_p=0.0,
-                softmax_scale=sm_scale,
-                logits_soft_cap=logits_soft_cap,
-                causal=causal,
-                window_size=(window_left, -1),
-                return_lse=maybe_lse is not None,
-                return_attn_probs=False,
-                kv_last_page_lens=paged_kv_last_page_len,
-            )
-
-        if maybe_lse is not None:
-            aiter_out, aiter_lse = aiter_result[0], aiter_result[1]
-            o.copy_(aiter_out)
-            # aiter (CK kernels) return LSE in log2 scale with shape
-            # (num_heads, total_q), but FlashInfer expects natural log (ln)
-            # with shape (total_q, num_heads), so we transpose and convert.
-            # Convert log2 → ln: lse_ln = lse_log2 * ln(2).
-            maybe_lse.copy_(aiter_lse.t() * math.log(2))
-        else:
-            if isinstance(aiter_result, tuple):
-                o.copy_(aiter_result[0])
-            else:
-                o.copy_(aiter_result)
-
-        return o
-
-    def aiter_ragged_run(
-        float_workspace_buffer: torch.Tensor,
-        int_workspace_buffer: torch.Tensor,
-        plan_info_vec: List[int],
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        qo_indptr: torch.Tensor,
-        kv_indptr: torch.Tensor,
-        o: torch.Tensor,
-        maybe_lse: Optional[torch.Tensor],
-        mask_mode: int,
-        layout: int,
-        window_left: int,
-        enable_pdl: bool,
-        maybe_custom_mask: Optional[torch.Tensor],
-        maybe_mask_indptr: Optional[torch.Tensor],
-        maybe_alibi_slopes: Optional[torch.Tensor],
-        maybe_prefix_len_ptr: Optional[torch.Tensor],
-        maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
-        maybe_max_item_len_ptr: Optional[torch.Tensor],
-        logits_soft_cap: float,
-        sm_scale: float,
-        rope_scale: float,
-        rope_theta: float,
-        token_pos_in_items_len: int,
-    ) -> None:
-        raise NotImplementedError(
-            "AITER backend does not yet support ragged (non-paged) KV cache. "
-            "Please use BatchPrefillWithPagedKVCacheWrapper instead."
-        )
-
-    return SimpleNamespace(
-        plan=_aiter_noop_plan,
-        ragged_run=aiter_ragged_run,
-        paged_run=aiter_paged_run,
+    device = torch.device("cuda", device_idx)
+    nhead_q, nhead_k, seq_q, seq_k = 2, 2, 2, page_size
+    q = torch.zeros(seq_q, nhead_q, head_dim, dtype=dtype, device=device)
+    k = torch.zeros(1, page_size, nhead_k, head_dim, dtype=dtype, device=device)
+    v = torch.zeros(1, page_size, nhead_k, head_dim, dtype=dtype, device=device)
+    cu_seqlens_q = torch.tensor([0, seq_q], dtype=torch.int32, device=device)
+    kv_indptr = torch.tensor([0, 1], dtype=torch.int32, device=device)
+    kv_page_indices = torch.tensor([0], dtype=torch.int32, device=device)
+    kv_last_page_lens = torch.tensor([seq_k], dtype=torch.int32, device=device)
+    softmax_scale = head_dim**-0.5
+    mha_batch_prefill_func(
+        q=q,
+        k=k,
+        v=v,
+        cu_seqlens_q=cu_seqlens_q,
+        kv_indptr=kv_indptr,
+        kv_page_indices=kv_page_indices,
+        max_seqlen_q=seq_q,
+        max_seqlen_k=seq_k,
+        softmax_scale=softmax_scale,
+        logits_soft_cap=0.5 if has_logits_cap else 0.0,
+        causal=causal,
+        return_lse=has_lse,
+        kv_last_page_lens=kv_last_page_lens,
     )
 
 
 @functools.cache
 def get_batch_prefill_module(backend, *args):
     if backend == "aiter":
-        return _get_aiter_batch_prefill_module()
+        from aiter.jit.core import get_user_jit_dir as _aiter_get_jit_dir
+
+        _aiter_jit_dir = _aiter_get_jit_dir()
+        module = gen_batch_prefill_module(backend, *args).build_and_load()
+        _c_paged_run = module.paged_run.default
+
+        def aiter_paged_run(
+            float_workspace_buffer: torch.Tensor,
+            int_workspace_buffer: torch.Tensor,
+            plan_info_vec: List[int],
+            q: torch.Tensor,
+            paged_k_cache: torch.Tensor,
+            paged_v_cache: torch.Tensor,
+            qo_indptr: torch.Tensor,
+            paged_kv_indptr: torch.Tensor,
+            paged_kv_indices: torch.Tensor,
+            paged_kv_last_page_len: torch.Tensor,
+            o: torch.Tensor,
+            maybe_lse: Optional[torch.Tensor],
+            mask_mode: int,
+            layout: int,
+            window_left: int,
+            enable_pdl: bool,
+            maybe_custom_mask: Optional[torch.Tensor],
+            maybe_mask_indptr: Optional[torch.Tensor],
+            maybe_alibi_slopes: Optional[torch.Tensor],
+            maybe_prefix_len_ptr: Optional[torch.Tensor],
+            maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
+            maybe_max_item_len_ptr: Optional[torch.Tensor],
+            logits_soft_cap: float,
+            sm_scale: float,
+            scale_q: Optional[torch.Tensor],
+            scale_k: Optional[torch.Tensor],
+            scale_v: Optional[torch.Tensor],
+            rope_scale: float,
+            rope_theta: float,
+            token_pos_in_items_len: int,
+            workspace_size: int,
+            num_qo_heads: Optional[int] = None,
+            num_kv_heads: Optional[int] = None,
+            block_tables: Optional[torch.Tensor] = None,
+            kv_lens_buffer: Optional[torch.Tensor] = None,
+            page_size: Optional[int] = None,
+            max_q_len: Optional[int] = None,
+            max_kv_len: Optional[int] = None,
+            batch_size: Optional[int] = None,
+            cum_seq_lens_q: Optional[torch.Tensor] = None,
+            cum_seq_lens_kv: Optional[torch.Tensor] = None,
+            sinks: Optional[torch.Tensor] = None,
+            aiter_flat_gather_idx: Optional[torch.Tensor] = None,
+            aiter_flat_kv_indptr: Optional[torch.Tensor] = None,
+            aiter_flat_kv_lpl: Optional[torch.Tensor] = None,
+            aiter_flat_kv_indices: Optional[torch.Tensor] = None,
+        ) -> None:
+            _c_paged_run(
+                q,
+                paged_k_cache,
+                paged_v_cache,
+                qo_indptr,
+                paged_kv_indptr,
+                paged_kv_indices,
+                paged_kv_last_page_len,
+                o,
+                maybe_lse,
+                mask_mode,
+                window_left,
+                logits_soft_cap,
+                sm_scale,
+                page_size,
+                max_q_len,
+                max_kv_len,
+                aiter_flat_gather_idx,
+                aiter_flat_kv_indptr,
+                _aiter_jit_dir,
+            )
+
+        def aiter_ragged_run(*_args, **_kwargs) -> None:
+            raise NotImplementedError(
+                "AITER backend does not support ragged (non-paged) KV cache. "
+                "Use BatchPrefillWithPagedKVCacheWrapper instead."
+            )
+
+        return SimpleNamespace(
+            plan=_aiter_noop_plan,
+            ragged_run=aiter_ragged_run,
+            paged_run=aiter_paged_run,
+        )
 
     uri = get_batch_prefill_uri(backend, *args)
     module = gen_batch_prefill_module(backend, *args).build_and_load()
@@ -1880,6 +1837,21 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._rope_theta = rope_theta
         self._seq_lens_kv = seq_lens
         self._seq_lens_q = seq_lens_q if seq_lens_q is not None else seq_lens
+
+        # Bootstrap AITER's lazy JIT for native-paged variants so the C++ dlopen
+        # can find the compiled .so.  Flat-gather path uses pre-built mha_varlen_fwd_*.so.
+        if self._backend == "aiter" and page_size in _aiter_native_page_sizes():
+            dev_idx = self.device.index if self.device.index is not None else 0
+            has_logits = logits_soft_cap > 0
+            with _aiter_bootstrap_lock:
+                # Bootstrap only the (causal, lse) variants that may actually be used.
+                # We don't know at plan() time whether run() will request lse, so compile
+                # both has_lse=True/False; but causal is fixed per plan() call.
+                for _lse_v in (True, False):
+                    _aiter_bootstrap_batch_prefill(
+                        q_data_type, has_logits, causal, _lse_v,
+                        page_size, head_dim_qk, dev_idx,
+                    )
 
         # Pre-compute flat-KV gather indices for the AITER backend when the
         # page size is not natively supported.  These are stored as GPU
