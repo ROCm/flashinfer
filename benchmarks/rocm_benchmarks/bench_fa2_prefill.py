@@ -19,16 +19,17 @@ batch-paged-prefill via backend="fa2".
 Run:
 
     # Full roofline pipeline (timing + counter collection + roofline PNG):
+    # Runs single-prefill + ragged-batch (bs=4) + paged-batch (bs=8) by default.
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py
+
+    # Single-prefill only (disable batch sections):
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --batch 0 --paged 0
 
     # Use a production GQA model shape (Llama-3-8B: GQA 32/8 hd=128):
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --model llama3-8b
 
     # Add asymmetric chunked-prefill configs (q=256, kv sweeps):
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --q-len 256
-
-    # Add batch-prefill configs alongside single-prefill (default batch sizes):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --batch 4 --paged 8
 
     # Select a different counter preset:
     python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy
@@ -96,15 +97,13 @@ Counter presets available out of the box:
 
     Or pass a path to a YAML file in rocprofv3 native job format.
 
-Design note — why --counters / --model / --q-len / --batch / --batch-q-len / --paged are parsed at module level
------------------------------------------------------------------------------------------------
-rocprofv3 re-executes this script as a subprocess (passing the same sys.argv)
-to collect hardware counters.  The RocmProfiler object must therefore be
-constructed at module import time with the correct `counters=` value, so that
-both the outer driver and the inner rocprofv3 subprocess use the same preset.
-We extract all bench flags here (using parse_known_args so we don't conflict
-with the profiler's own argparse), strip them from sys.argv, and then pass
-the values to the RocmProfiler constructor.
+Design note — why bench flags are parsed at module level
+---------------------------------------------------------
+rocprofv3 re-executes this script as a subprocess with the same sys.argv to
+collect hardware counters.  All bench-specific flags must therefore be parsed
+at module import time so the subprocess builds identical configs to the outer
+timing run.  RocmProfiler uses parse_known_args internally, so bench flags
+remaining in sys.argv are silently ignored by its own argparse.
 """
 
 import argparse
@@ -130,11 +129,7 @@ _DEFAULT_BATCH_PAGED = 8
 _DEFAULT_BATCH_Q_LEN = 256  # matches AITER bench _Q_LEN; represents a chunked-prefill burst
 
 # ---------------------------------------------------------------------------
-# Bench-script-level argument parsing
-#
-# parse_known_args() extracts only bench flags and leaves all other
-# flags (--timing-only, --skip-roofline, --replot, --list-presets, …) in
-# sys.argv for RocmProfiler._parse_args() to consume.
+# Bench-script-level argument parsing (see design note above)
 # ---------------------------------------------------------------------------
 _bench_parser = argparse.ArgumentParser(add_help=False)
 _bench_parser.add_argument(
@@ -222,8 +217,7 @@ _bench_parser.add_argument(
         f"Default: {_DEFAULT_BATCH_Q_LEN} (chunked-prefill burst, matches AITER bench)."
     ),
 )
-_bench_args, _remaining = _bench_parser.parse_known_args()
-sys.argv = [sys.argv[0]] + _remaining
+_bench_args, _ = _bench_parser.parse_known_args()
 
 _counters = _bench_args.counters
 _model: str = _bench_args.model

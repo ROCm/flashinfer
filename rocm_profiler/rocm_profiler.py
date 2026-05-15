@@ -540,8 +540,7 @@ class RocmProfiler:
                 "tflops": f"{tflops:.3f}",
                 "ai_theory": f"{ai_theory:.2f}",
             }
-            if cfg.num_tokens > 0:
-                row["tput_tok_per_s"] = f"{tput_tok_per_s:.0f}"
+            row["tput_tok_per_s"] = f"{tput_tok_per_s:.0f}" if cfg.num_tokens > 0 else ""
             rows.append(row)
             tput_str = (
                 f"  {tput_tok_per_s / 1e3:7.1f} ktok/s" if cfg.num_tokens > 0 else ""
@@ -553,8 +552,13 @@ class RocmProfiler:
             )
             sys.stdout.flush()
 
+        _timing_fields = [
+            "name", "theoretical_flops", "theoretical_bytes",
+            "n_iters", "min_ms", "p5_ms", "median_ms", "p95_ms", "std_ms",
+            "tflops", "ai_theory", "tput_tok_per_s",
+        ]
         with open(out_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=_timing_fields)
             writer.writeheader()
             writer.writerows(rows)
 
@@ -1232,7 +1236,15 @@ def _warn_if_regex_unmatched(
     Scan rocprofv3 CSV rows for any Kernel_Name matching `regex`.
     If none match, print a warning so the user knows their regex is stale.
     """
-    pattern = re.compile(regex)
+    try:
+        pattern = re.compile(regex)
+    except re.error as exc:
+        print(
+            f"[rocm_profiler] WARNING: kernel_name_regex '{regex}' is invalid: {exc} "
+            "— skipping regex check.",
+            file=sys.stderr,
+        )
+        return
     kernel_name_candidates = [
         "Kernel_Name",
         "kernel_name",

@@ -67,15 +67,13 @@ Counter presets available out of the box:
 
     Or pass a path to a YAML file in rocprofv3 native job format.
 
-Design note — why --counters / --batch are parsed at module level
------------------------------------------------------------------
-rocprofv3 re-executes this script as a subprocess (passing the same sys.argv)
-to collect hardware counters. The RocmProfiler object must therefore be
-constructed at module import time with the correct `counters=` value, so that
-both the outer driver and the inner rocprofv3 subprocess use the same preset.
-We extract --counters / --label / --batch here (using parse_known_args so we
-don't conflict with the profiler's own argparse), strip them from sys.argv,
-and then pass the values to the RocmProfiler constructor.
+Design note — why bench flags are parsed at module level
+---------------------------------------------------------
+rocprofv3 re-executes this script as a subprocess with the same sys.argv to
+collect hardware counters.  All bench-specific flags must therefore be parsed
+at module import time so the subprocess builds identical configs to the outer
+timing run.  RocmProfiler uses parse_known_args internally, so bench flags
+remaining in sys.argv are silently ignored by its own argparse.
 """
 
 import argparse
@@ -98,7 +96,7 @@ from rocm_profiler import KernelConfig, RocmProfiler
 _DEFAULT_BATCH = 8
 
 # ---------------------------------------------------------------------------
-# Bench-script-level argument parsing
+# Bench-script-level argument parsing (see design note above)
 # ---------------------------------------------------------------------------
 _bench_parser = argparse.ArgumentParser(add_help=False)
 _bench_parser.add_argument(
@@ -127,8 +125,7 @@ _bench_parser.add_argument(
         f"Default: {_DEFAULT_BATCH}."
     ),
 )
-_bench_args, _remaining = _bench_parser.parse_known_args()
-sys.argv = [sys.argv[0]] + _remaining
+_bench_args, _ = _bench_parser.parse_known_args()
 
 _counters = _bench_args.counters
 _label = (
