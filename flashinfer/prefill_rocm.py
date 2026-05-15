@@ -2200,9 +2200,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 sinks,
             ]
             if self._backend == "aiter":
-                assert partial_state is None, (
-                    "partial_state (fused cascade epilogue) is only supported with the fa2 backend"
-                )
                 # Pre-computed flat-KV gather info for AITER (None for
                 # natively-supported page sizes).
                 run_args += [
@@ -2217,6 +2214,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
 
         assert self._cached_module is not None, "cached module is not initialized"
         self._cached_module.paged_run(*run_args)
+        if self._backend == "aiter" and partial_state is not None:
+            # AITER kernel doesn't accept partial_state; merge post-hoc.
+            from .cascade import merge_state_in_place
+
+            merge_state_in_place(partial_state[0], partial_state[1], out, lse)
+            out, lse = partial_state
         if v_scale is not None:
             # TODO(Zihao): fused into kernel
             if is_float8(out):
