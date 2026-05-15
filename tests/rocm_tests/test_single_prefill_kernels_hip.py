@@ -38,7 +38,7 @@ def warmup_jit():
 @pytest.mark.parametrize("num_qo_heads", [4, 32])
 @pytest.mark.parametrize("num_kv_heads", [4])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.parametrize("causal", [False])
+@pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
 @pytest.mark.parametrize("logits_soft_cap", [0.0, 8.0])
@@ -66,6 +66,9 @@ def test_single_prefill_with_kv_cache(
 
     if backend == "aiter" and kv_layout == "HND":
         pytest.skip("AITER does not support HND layout")
+
+    if causal and qo_len > kv_len:
+        pytest.skip("causal attention requires kv_len >= qo_len")
 
     if kv_layout == "HND":
         k = torch.randn(

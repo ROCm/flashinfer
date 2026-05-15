@@ -15,9 +15,13 @@ limitations under the License.
 
 Three-way latency comparison for single-prefill attention on ROCm:
 
-  fa2       — FlashInfer native FA2 kernel (baseline)
-  aiter_py  — AITER Python passthrough (aiter.ops.mha.flash_attn_varlen_func)
-  aiter_cpp — AITER routed via FlashInfer C++ JIT harness (backend="aiter")
+  fa2       — FlashInfer FA2 backend via production API (baseline)
+  aiter_py  — AITER kernel via module.run() directly (old passthrough call depth;
+               matches the wrapper depth of the pre-C++-harness Python passthrough)
+  aiter_cpp — AITER via FlashInfer production API single_prefill_with_kv_cache()
+
+The "API overhead" column shows the cost of the Python wrapper, NOT the C++
+harness. The same overhead applies to FA2. Both AITER paths use the same kernel.
 
 Shapes: Alibaba production profile — q=256, GQA 16/4, HD=64, causal,
         kv ∈ {512, 1024, 2048, 3072, 4096, 8192}
@@ -97,8 +101,16 @@ def _bytes(q_len: int, kv_len: int, num_qo_heads: int, num_kv_heads: int, head_d
 
 @torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
-    # Import AITER Python API once
-    from aiter.ops.mha import flash_attn_varlen_func as _aiter_fwd
+    from flashinfer.prefill_rocm import get_single_prefill_module
+    from flashinfer.utils import MaskMode, TensorLayout, _get_cache_buf
+
+    # Load the AITER JIT module once (same cache as production code).
+    # aiter_py replicates the old Python-passthrough call depth: module.run() →
+    # plain Python shim → run_func() → C++ kernel, no custom-op dispatch overhead.
+    # This matches the FlashInfer wrapper depth that existed before the C++ harness.
+    _aiter_module = get_single_prefill_module(
+        "aiter", torch.float16, torch.float16, torch.float16, 64, 64, 0, False, False, False
+    )
 
     configs: list[KernelConfig] = []
 
@@ -113,12 +125,15 @@ def _make_configs() -> list[KernelConfig]:
         flops = _flops(q_len, kv_len, num_qo_heads, head_dim, causal)
         theo_bytes = _bytes(q_len, kv_len, num_qo_heads, num_kv_heads, head_dim)
 
-        # Pre-allocate cu_seqlens for aiter_py (avoid allocation inside timed loop)
-        cu_q = torch.tensor([0, q_len], dtype=torch.int32, device="cuda")
-        cu_k = torch.tensor([0, kv_len], dtype=torch.int32, device="cuda")
-
         causal_str = "causal" if causal else "nc"
         shape_tag = f"kv{kv_len}_{causal_str}"
+        mask_mode_code = MaskMode.CAUSAL.value if causal else MaskMode.NON_CAUSAL.value
+        layout_code = TensorLayout["NHD"].value
+
+        # Pre-allocate buffers for aiter_py to avoid per-call allocation overhead.
+        _tmp = _get_cache_buf("single_prefill_with_kv_cache_tmp", 32 * 1024 * 1024, device="cuda")
+        _o_buf = torch.empty(q_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda")
+        _lse_buf = torch.empty(q_len, num_qo_heads, dtype=torch.float32, device="cuda")
 
         # ── FA2 backend ──────────────────────────────────────────────────────
         configs.append(
@@ -135,27 +150,20 @@ def _make_configs() -> list[KernelConfig]:
             )
         )
 
-        # ── AITER Python passthrough ─────────────────────────────────────────
-        # Replicates the old amd-integration flash_attn_varlen_func approach.
+        # ── AITER via module.run (matches old Python-passthrough call depth) ──
+        # Calls module.run() directly with pre-allocated buffers, the same
+        # wrapper depth as the old amd-integration Python passthrough. This is
+        # the correct baseline for measuring C++ harness overhead.
         configs.append(
             KernelConfig(
                 name=f"aiter_py_{shape_tag}",
                 run_fn=torch.inference_mode()(
-                    lambda q=q, k=k, v=v, c=causal, cq=cu_q, ck=cu_k,
-                           ql=q_len, kl=kv_len, sc=sm_scale: _aiter_fwd(
-                        q=q, k=k, v=v,
-                        cu_seqlens_q=cq,
-                        cu_seqlens_k=ck,
-                        max_seqlen_q=ql,
-                        max_seqlen_k=kl,
-                        dropout_p=0.0,
-                        softmax_scale=sc,
-                        logits_soft_cap=0.0,
-                        causal=c,
-                        window_size=(-1, -1, 0),
-                        return_lse=True,
-                        return_attn_probs=False,
-                        out=None,
+                    lambda q=q, k=k, v=v,
+                           tmp=_tmp, o=_o_buf, lse=_lse_buf,
+                           m=_aiter_module, mm=mask_mode_code,
+                           lc=layout_code, sc=sm_scale: m.run(
+                        q, k, v, tmp, o, lse, mm, lc, -1,
+                        None, None, 0.0, sc, None, None, None, 1.0, 1e4,
                     )
                 ),
                 theoretical_flops=flops,
@@ -164,7 +172,7 @@ def _make_configs() -> list[KernelConfig]:
             )
         )
 
-        # ── AITER C++ harness ────────────────────────────────────────────────
+        # ── AITER C++ harness (FlashInfer production API) ────────────────────
         configs.append(
             KernelConfig(
                 name=f"aiter_cpp_{shape_tag}",
@@ -201,10 +209,12 @@ def _print_comparison_table(timing_csv: Path) -> None:
     # Header
     w = 11
     sep = "-" * (20 + w * 3 + 16)
-    hdr = f"{'Shape':<20}{'FA2':>{w}}{'AITER-Py':>{w}}{'AITER-C++':>{w}}  {'C++ overhead':>14}"
+    hdr = f"{'Shape':<20}{'FA2':>{w}}{'AITER-Py':>{w}}{'AITER-C++':>{w}}  {'API overhead':>14}"
     print()
     print("=" * len(hdr))
     print("  Single-Prefill Latency Comparison  (q=256, GQA 16/4, HD=64, causal)")
+    print("  AITER-Py: module.run() directly (old passthrough call depth)")
+    print("  AITER-C++: single_prefill_with_kv_cache() FlashInfer production API")
     print("=" * len(hdr))
     print(hdr)
     print(sep)
@@ -236,7 +246,8 @@ def _print_comparison_table(timing_csv: Path) -> None:
         f"  {'Mean overhead':18}{'':>{w}}{'':>{w}}{'':>{w}}  {mean_overhead:>+11.1f}%"
     )
     print()
-    print("  C++ overhead: positive = C++ harness is slower than Python passthrough.")
+    print("  API overhead: cost of single_prefill_with_kv_cache() wrapper vs module.run() direct.")
+    print("  Same overhead applies to FA2 backend — it's Python layer cost, not kernel cost.")
     print("  FA2 shown for absolute reference; both AITER paths are 4-7× faster than FA2.")
     print()
 

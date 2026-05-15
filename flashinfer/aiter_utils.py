@@ -9,6 +9,7 @@ import torch
 from .hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
+@functools.lru_cache(maxsize=8)
 def is_aiter_supported(device: torch.device) -> bool:
     """Return True when the given device is an AMD GPU that AITER targets (gfx942/gfx950)."""
     if torch.version.hip is None:

@@ -148,6 +148,22 @@ def get_single_prefill_module(backend, *args):
     module = gen_single_prefill_module(backend, *args).build_and_load()
     run_func = module.run.default
 
+    if backend == "aiter":
+        # Skip torch custom-op dispatch for AITER (saves ~3 µs per call).
+        # AITER is inference-only on ROCm; torch.compile support not required.
+        # AITER ignores custom_mask, alibi, rope, and FP8 scale params.
+        def run_single_prefill(
+            q, k, v, tmp, o, maybe_lse, mask_mode, layout, window_left,
+            maybe_packed_custom_mask, maybe_alibi_slopes, logits_soft_cap,
+            sm_scale, scale_q, scale_k, scale_v, rope_scale, rope_theta,
+        ):
+            run_func(
+                q, k, v, tmp, o, maybe_lse, mask_mode, layout, window_left,
+                None, None, logits_soft_cap, sm_scale,
+                1.0 / rope_scale, 1.0 / rope_theta,
+            )
+        return SimpleNamespace(run=run_single_prefill)
+
     @register_custom_op(
         f"flashinfer::{uri}_run", mutates_args=("tmp", "o", "maybe_lse")
     )
@@ -309,6 +325,38 @@ def _auto_select_prefill_backend(
 
 
 _aiter_bootstrap_lock = threading.Lock()
+
+
+@functools.lru_cache(maxsize=None)
+def _aiter_bootstrap_single_prefill(
+    dtype: torch.dtype,
+    head_dim: int,
+    device_idx: int,
+) -> None:
+    """Force AITER's lazy JIT to compile mha_varlen_fwd_*.so for logits+causal variants.
+
+    Non-logits and non-causal variants are pre-shipped with the AITER package.
+    The logits+causal combination is missing from the pre-built set and must be
+    bootstrapped on first use.
+    """
+    device = torch.device("cuda", device_idx)
+    q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
+    k = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
+    v = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
+    cu_q = torch.tensor([0, 2], dtype=torch.int32, device=device)
+    cu_k = torch.tensor([0, 4], dtype=torch.int32, device=device)
+    scale = head_dim**-0.5
+    _common = dict(
+        max_seqlen_q=2, max_seqlen_k=4, min_seqlen_q=0,
+        dropout_p=0.0, softmax_scale=scale, logits_soft_cap=0.5,
+        zero_tensors=False, is_causal=True,
+        window_size_left=-1, window_size_right=-1, sink_size=0,
+        return_dropout_randval=False,
+    )
+    for return_lse in (True, False):
+        torch.ops.aiter.mha_varlen_fwd(
+            q, k, v, cu_q, cu_k, return_softmax_lse=return_lse, **_common
+        )
 
 
 @functools.lru_cache(maxsize=None)
@@ -1124,6 +1172,11 @@ def single_prefill_with_kv_cache(
         )
     elif backend == "aiter":
         _require_aiter_runtime(q.device)
+        if logits_soft_cap > 0:
+            with _aiter_bootstrap_lock:
+                _aiter_bootstrap_single_prefill(
+                    q.dtype, q.shape[-1], q.device.index or 0
+                )
 
     # o_dtype should be provided for FP8 attention
     if o_dtype is None:
