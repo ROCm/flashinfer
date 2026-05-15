@@ -10,7 +10,8 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 
 from flashinfer.jit.core import logger
-from flashinfer.aiter_utils import HAS_AITER
+from flashinfer.aiter_utils import is_aiter_supported
+from flashinfer.prefill_rocm import _aiter_ops_importable
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -38,7 +39,7 @@ def warmup_jit():
 @pytest.mark.parametrize("num_qo_heads", [4, 32])
 @pytest.mark.parametrize("num_kv_heads", [4])
 @pytest.mark.parametrize("head_dim", [64, 128, 256])
-@pytest.mark.parametrize("causal", [False])
+@pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
 @pytest.mark.parametrize("logits_soft_cap", [0.0, 8.0])
@@ -61,11 +62,16 @@ def test_single_prefill_with_kv_cache(
         qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
     )
 
-    if backend == "aiter" and not HAS_AITER:
-        pytest.skip("AITER is not available")
+    if backend == "aiter" and (
+        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
+    ):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if backend == "aiter" and kv_layout == "HND":
         pytest.skip("AITER does not support HND layout")
+
+    if causal and qo_len > kv_len:
+        pytest.skip("causal attention requires kv_len >= qo_len")
 
     if kv_layout == "HND":
         k = torch.randn(
@@ -201,3 +207,38 @@ def test_single_prefill_threadblock_sync_mdo_states(
     torch.testing.assert_close(o, o_ref.to(o.dtype), rtol=1e-3, atol=1e-3)
     if return_lse:
         torch.testing.assert_close(lse, lse_ref.to(lse.dtype), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("head_dim", [64, 128])
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_auto_backend_selects_aiter(head_dim, return_lse):
+    """backend='auto' on gfx942/gfx950 with NHD fp16 should route to AITER and be bit-exact."""
+    if not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable():
+        pytest.skip("AITER auto-selection only active on gfx942/gfx950 with aiter installed")
+
+    dtype = torch.float16
+
+    qo_len, kv_len = 64, 128
+    num_qo_heads, num_kv_heads = 8, 8
+
+    q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16)
+    k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
+    v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
+
+    if return_lse:
+        o_auto, lse_auto = flashinfer.single_prefill_with_kv_cache_return_lse(
+            q, k, v, causal=False, kv_layout="NHD", backend="auto"
+        )
+        o_aiter, lse_aiter = flashinfer.single_prefill_with_kv_cache_return_lse(
+            q, k, v, causal=False, kv_layout="NHD", backend="aiter"
+        )
+        torch.testing.assert_close(o_auto, o_aiter, rtol=0, atol=0)
+        torch.testing.assert_close(lse_auto, lse_aiter, rtol=0, atol=0)
+    else:
+        o_auto = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, kv_layout="NHD", backend="auto"
+        )
+        o_aiter = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, kv_layout="NHD", backend="aiter"
+        )
+        torch.testing.assert_close(o_auto, o_aiter, rtol=0, atol=0)

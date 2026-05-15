@@ -2,22 +2,27 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-AITER utilities for ROCm.
+import functools
 
-This module provides utilities for AITER, a library for efficient attention operations.
-"""
+import torch
 
-import importlib
+from .hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
 
-try:
-    HAS_AITER = importlib.util.find_spec("aiter.ops") is not None
-except (ModuleNotFoundError, ValueError):
-    HAS_AITER = False
 
-if HAS_AITER:
+@functools.lru_cache(maxsize=8)
+def is_aiter_supported(device: torch.device) -> bool:
+    """Return True when the given device is an AMD GPU that AITER targets (gfx942/gfx950)."""
+    if torch.version.hip is None:
+        return False
+    try:
+        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
+    except Exception:
+        return False
+    return arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
 
-    def get_aiter_mha_module():
-        from aiter.ops import mha as aiter_mha_module
 
-        return aiter_mha_module
+@functools.cache
+def get_aiter_mha_module():
+    from aiter.ops import mha as aiter_mha_module
+
+    return aiter_mha_module

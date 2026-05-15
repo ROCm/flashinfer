@@ -56,7 +56,7 @@ git clone --recursive https://github.com/ROCm/aiter.git
 cd aiter && python3 setup.py develop
 ```
 
-Check availability in code: `from flashinfer.aiter_utils import HAS_AITER`
+Check availability in code: `from flashinfer.aiter_utils import is_aiter_supported`
 
 ## Key External References
 
@@ -71,6 +71,18 @@ gfx942 = CDNA3; MI350X = gfx950 = CDNA4.
   [AITER repo](https://github.com/ROCm/aiter)
 - **HipKittens** (arxiv 2511.08083) — producer/consumer patterns underperform
   on CDNA; 4-wave interleave is the recommended approach.
+
+## GitHub CLI
+
+`gh pr edit` fails with a "Projects (classic) is being deprecated" GraphQL error on this repo. Use the REST API instead:
+
+```bash
+# Update PR description
+gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
+
+# Or from a file
+gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
+```
 
 ## Plan Files
 

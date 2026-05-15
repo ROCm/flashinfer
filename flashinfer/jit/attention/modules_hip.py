@@ -159,6 +159,17 @@ def get_single_prefill_uri(
         logger.warning(
             "FA3 backend not supported on ROCm. The backend argument will be ignored."
         )
+    if backend == "aiter":
+        # AITER handles mask / sliding-window / logits-cap / fp16-qk-reduction
+        # at runtime — one .so per (dtype, head_dim) combo is enough.
+        return (
+            f"single_prefill_with_kv_cache_aiter_"
+            f"dtype_q_{filename_safe_dtype_map[dtype_q]}_"
+            f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
+            f"dtype_o_{filename_safe_dtype_map[dtype_o]}_"
+            f"head_dim_qk_{head_dim_qk}_"
+            f"head_dim_vo_{head_dim_vo}"
+        )
     return (
         f"single_prefill_with_kv_cache_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
         f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
@@ -188,6 +199,15 @@ def get_batch_prefill_uri(
     if backend == "fa3":
         logger.warning(
             "FA3 backend not supported on ROCm. The backend argument will be ignored."
+        )
+    if backend == "aiter":
+        return (
+            f"batch_prefill_with_paged_kv_cache_aiter_"
+            f"dtype_q_{filename_safe_dtype_map[dtype_q]}_"
+            f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
+            f"dtype_o_{filename_safe_dtype_map[dtype_o]}_"
+            f"head_dim_qk_{head_dim_qk}_"
+            f"head_dim_vo_{head_dim_vo}"
         )
     return (
         f"batch_prefill_with_kv_cache_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
@@ -271,7 +291,9 @@ def gen_single_prefill_module(
         use_logits_soft_cap,
         use_fp16_qk_reduction,
     )
-    if backend == "fa2":
+    if backend in ("fa2", "aiter"):
+        # AITER shares FA2's additional-param signature; the C++ shim ignores
+        # parameters AITER doesn't consume (rope, custom_mask).
         additional_tensor_names = ["maybe_custom_mask", "maybe_alibi_slopes"]
         additional_tensor_dtypes = ["uint8_t", "float"]
         additional_scalar_names = [
@@ -385,6 +407,28 @@ def gen_batch_prefill_module(
         use_logits_soft_cap,
         use_fp16_qk_reduction,
     )
+
+    if backend == "aiter":
+        return gen_customize_batch_prefill_module(
+            backend,
+            uri,
+            dtype_q,
+            dtype_kv,
+            dtype_o,
+            dtype_idx,
+            head_dim_qk,
+            head_dim_vo,
+            [],
+            [],
+            [],
+            [],
+            "",
+            "",
+            pos_encoding_mode=pos_encoding_mode,
+            use_sliding_window=use_sliding_window,
+            use_logits_soft_cap=use_logits_soft_cap,
+            use_fp16_qk_reduction=use_fp16_qk_reduction,
+        )
 
     if backend == "fa2":
         additional_tensor_names = [
@@ -606,6 +650,59 @@ def gen_customize_single_prefill_module(
         write_if_different(generated_config_path, generated_inc_str)
 
         return gen_jit_spec(uri, source_paths)
+    elif backend == "aiter":
+        # Native C++ AITER backend: calls aiter::mha_fwd directly via dlopen/dlsym.
+        # No c10::Dispatcher or IValue boxing — pure C++ call through a cached fn ptr.
+        import aiter as _aiter_mod
+
+        aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
+
+        gen_directory = FLASHINFER_GEN_SRC_DIR / uri
+        additional_params_decl, additional_func_params, additional_params_setter = (
+            generate_additional_params(
+                additional_tensor_names,
+                additional_tensor_dtypes,
+                additional_scalar_names,
+                additional_scalar_dtypes,
+            )
+        )
+
+        with open(FLASHINFER_CSRC_DIR / "single_prefill_customize_config.jinja") as f:
+            config_templ = jinja2.Template(f.read())
+
+        kwargs |= {
+            "additional_func_params": additional_func_params,
+            "additional_params_decl": additional_params_decl,
+            "additional_params_setter": additional_params_setter,
+        }
+
+        generated_inc_str = config_templ.render(**kwargs)
+        os.makedirs(gen_directory, exist_ok=True)
+
+        source_paths = []
+        for filename in [
+            "single_prefill_aiter.cu",
+            "single_prefill_aiter_jit_pybind.cu",
+            "aiter_loader.cc",
+        ]:
+            src_path = FLASHINFER_CSRC_DIR / filename
+            dest_path = gen_directory / filename
+            source_paths.append(dest_path)
+            with open(src_path, "r") as f:
+                source = f.read()
+            write_if_different(dest_path, source)
+
+        generated_config_path = gen_directory / "single_prefill_config.inc"
+        write_if_different(generated_config_path, generated_inc_str)
+
+        # -DFLASHINFER_AITER_JIT_DIR bakes the default jit dir at compile time;
+        # runtime AITER_JIT_DIR env var overrides it (see aiter_loader.cc).
+        return gen_jit_spec(
+            uri,
+            source_paths,
+            extra_cflags=[f'-DFLASHINFER_AITER_JIT_DIR=\\"{aiter_jit_dir}\\"'],
+            extra_ldflags=["-ldl"],
+        )
     elif backend == "fa3":
         raise ValueError("FA3 backend not currently supported for ROCm")
     else:
@@ -798,6 +895,49 @@ def gen_customize_batch_prefill_module(
         return gen_jit_spec(
             uri,
             source_paths,
+        )
+    elif backend == "aiter":
+        import aiter as _aiter_mod
+
+        aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
+
+        gen_directory = FLASHINFER_GEN_SRC_DIR / uri
+
+        with open(
+            FLASHINFER_CSRC_DIR / "batch_prefill_paged_aiter_customize_config.jinja"
+        ) as f:
+            config_templ = jinja2.Template(f.read())
+
+        generated_inc_str = config_templ.render(
+            dtype_q=dtype_map_hip[dtype_q],
+            dtype_kv=dtype_map_hip[dtype_kv],
+            dtype_o=dtype_map_hip[dtype_o],
+            head_dim_qk=head_dim_qk,
+            head_dim_vo=head_dim_vo,
+        )
+        os.makedirs(gen_directory, exist_ok=True)
+
+        source_paths = []
+        for filename in [
+            "batch_prefill_paged_aiter.cu",
+            "batch_prefill_paged_aiter_jit_pybind.cu",
+            "aiter_loader.cc",
+        ]:
+            src_path = FLASHINFER_CSRC_DIR / filename
+            dest_path = gen_directory / filename
+            source_paths.append(dest_path)
+            with open(src_path, "r") as f:
+                source = f.read()
+            write_if_different(dest_path, source)
+
+        generated_config_path = gen_directory / "batch_prefill_paged_aiter_config.inc"
+        write_if_different(generated_config_path, generated_inc_str)
+
+        return gen_jit_spec(
+            uri,
+            source_paths,
+            extra_cflags=[f'-DFLASHINFER_AITER_JIT_DIR=\\"{aiter_jit_dir}\\"'],
+            extra_ldflags=["-ldl"],
         )
     elif backend == "fa3":
         raise ValueError("FA3 backend not currently supported for ROCm")

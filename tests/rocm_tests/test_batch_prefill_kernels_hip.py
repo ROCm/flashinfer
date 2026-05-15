@@ -8,7 +8,8 @@ from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.core import logger
-from flashinfer.aiter_utils import HAS_AITER
+from flashinfer.aiter_utils import is_aiter_supported
+from flashinfer.prefill_rocm import _aiter_ops_importable
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -68,8 +69,10 @@ def test_batch_prefill_with_paged_kv_cache(
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
 
-    if backend == "aiter" and not HAS_AITER:
-        pytest.skip("AITER is not available")
+    if backend == "aiter" and (
+        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
+    ):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal or kv_layout != NHD")
@@ -320,8 +323,10 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
 
-    if backend == "aiter" and not HAS_AITER:
-        pytest.skip("AITER is not available")
+    if backend == "aiter" and (
+        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
+    ):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal")
@@ -617,6 +622,56 @@ def test_batch_prefill_with_ragged_kv_cache(
         )
         o_i = o[q_indptr[i] : q_indptr[i + 1]]
         torch.testing.assert_close(o_i, o_ref_i, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("page_size", [1, 128, 256])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
+    """backend='auto' should resolve to 'aiter' on gfx942/gfx950 for NHD fp16."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    # Use qo_len < kv_len (prefill-with-history) to exercise the meaningful causal case.
+    # Both flat-gather and native-paged paths use mask_bottom_right matching FA2.
+    batch_size, qo_len, kv_len = 4, 16, 128
+    num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
+
+    q = torch.randn(batch_size * qo_len, num_qo_heads, head_dim, device=device, dtype=torch.float16)
+    num_pages = (kv_len + page_size - 1) // page_size
+    total_pages = num_pages * batch_size
+    kv_data = torch.randn(total_pages, 2, page_size, num_kv_heads, head_dim, device=device, dtype=torch.float16)
+
+    qo_indptr = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    kv_indptr = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * num_pages
+    kv_indices = torch.arange(0, total_pages, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.full((batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device)
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    wrapper_auto = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(workspace, "NHD", backend="auto")
+    wrapper_auto.plan(qo_indptr, kv_indptr, kv_indices, kv_last_page_len,
+                      num_qo_heads, num_kv_heads, head_dim, page_size, causal=causal)
+
+    # Verify auto resolved to aiter
+    assert wrapper_auto._backend == "aiter", (
+        f"Expected backend='aiter' on gfx942/gfx950, got '{wrapper_auto._backend}'"
+    )
+
+    wrapper_ref = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(workspace, "NHD", backend="fa2")
+    wrapper_ref.plan(qo_indptr, kv_indptr, kv_indices, kv_last_page_len,
+                     num_qo_heads, num_kv_heads, head_dim, page_size, causal=causal)
+
+    if return_lse:
+        o_auto, lse_auto = wrapper_auto.run(q, kv_data, return_lse=True)
+        o_ref, lse_ref = wrapper_ref.run(q, kv_data, return_lse=True)
+        torch.testing.assert_close(lse_auto, lse_ref, rtol=1e-2, atol=1e-2)
+    else:
+        o_auto = wrapper_auto.run(q, kv_data)
+        o_ref = wrapper_ref.run(q, kv_data)
+
+    torch.testing.assert_close(o_auto, o_ref, rtol=1e-3, atol=1e-3)
 
 
 if __name__ == "__main__":

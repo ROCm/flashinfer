@@ -255,10 +255,15 @@ pytest -n auto --reruns 2 -m "slow"
 
 ## AITER Support
 
-FlashInfer+ROCm has experimental support to use [AITER](https://github.com/ROCm/aiter) as a
-backend. The `aiter` backend currently is enabled for the `single_prefill` and `batch_prefill`
-kernels only. To use AITER as the backend for these kernels, please set `backend="aiter"` keyword
-argument when invoking the kernels. Unless you are using the prebuilt docker image, AITER should also be installed on your system. You may follow one of the following ways to do so.
+FlashInfer+ROCm supports the use of [AITER](https://github.com/ROCm/aiter) as a
+backend. The `aiter` backend is enabled for the `single_prefill` and `batch_prefill` kernels.
+
+**On gfx942/gfx950 GPUs, `backend="auto"` (the default) automatically selects the AITER backend**
+when the call parameters are compatible (fp16/bf16, NHD layout, no custom mask, equal Q/K/V
+dtypes and head dims, `pos_encoding_mode="NONE"`). It falls back to `fa2` with a one-time
+`logger.warning` when any condition is not met. You can also pass `backend="aiter"` explicitly.
+
+Unless you are using the prebuilt docker image, AITER must also be installed on your system. You may follow one of the following ways to do so.
 
 ### Install AITER from source
 
@@ -278,7 +283,43 @@ pip install amd-aiter --index-url https://pypi.amd.com/simple/
 
 ### Known Limitations
 
-The AITER backend only supports `NHD` kv_layout. Further, the only supported page sizes for batch prefill for AITER Multi‑Head Attention (MHA) when it uses CK (Composable Kernel) FMHA kernels (that we use currently) are 1, 16, and 1024.
+The AITER backend has the following constraints. With `backend="aiter"` the
+call will error on the first group of conditions, or for the second group,
+run but silently ignore the unsupported argument.
+
+**Conditions that fall back to `fa2` under `backend="auto"`:**
+
+* GPU is not gfx942 or gfx950
+* `kv_layout` is not `NHD`
+* a custom attention mask tensor is supplied
+* `q_dtype` is not `float16` / `bfloat16` (no fp32, fp8, or int8)
+* `q_dtype != kv_dtype` (mixed-precision Q/KV is unsupported)
+* `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128 head dims)
+* the `aiter` Python package is not importable
+
+**Features silently ignored on the AITER path** (the kwargs are accepted by
+the FlashInfer wrapper but not forwarded to AITER, which can produce wrong
+results — pass `backend="fa2"` explicitly if you need any of these):
+
+* ALiBi slopes (`maybe_alibi_slopes`)
+* in-kernel positional encoding modes (`pos_encoding_mode`, `rope_scale`,
+  `rope_theta`)
+* attention sinks (`sinks`)
+* multi-modal / prefix-cache helpers (`maybe_prefix_len_ptr`,
+  `maybe_token_pos_in_items_ptr`, `maybe_max_item_len_ptr`)
+* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`)
+* `use_fp16_qk_reduction`, `enable_pdl`
+
+**Other notes:**
+
+* Batch prefill: AITER's CK FMHA kernels natively support page sizes
+  `{16, 1024}` (or `{128, 256, 1024}` on `amd-aiter==0.1.10`). Other page
+  sizes still work but go through an extra GPU gather to flatten paged KV
+  before the AITER call.
+* Ragged (non-paged) KV is not yet implemented on the AITER batch-prefill
+  path. `BatchPrefillWithRaggedKVCacheWrapper` therefore forces the backend
+  to `fa2` regardless of whether you pass `backend="auto"` or
+  `backend="aiter"` (a warning is logged in the latter case).
 
 ### Single Prefill Example
 
@@ -300,5 +341,7 @@ k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cu
 v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
 
 # Run single prefill attention with causal masking
-output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True,  backend="aiter")
+# On gfx942/gfx950, backend="auto" (default) routes to AITER automatically.
+# Pass backend="aiter" to require AITER explicitly, or backend="fa2" to skip it.
+output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="auto")
 ```
