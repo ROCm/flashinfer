@@ -278,7 +278,44 @@ pip install amd-aiter --index-url https://pypi.amd.com/simple/
 
 ### Known Limitations
 
-The AITER backend only supports `NHD` kv_layout. Further, the only supported page sizes for batch prefill for AITER Multi‑Head Attention (MHA) when it uses CK (Composable Kernel) FMHA kernels (that we use currently) are 1, 16, and 1024.
+The AITER backend has the following constraints. With `backend="auto"` (the
+default), the wrapper inspects the call and silently falls back to `fa2` when
+any of the first group is violated; with `backend="aiter"` the call will error
+or, for the second group, run but ignore the unsupported argument.
+
+**Conditions that fall back to `fa2` under `backend="auto"`:**
+
+* GPU is not gfx942 or gfx950
+* `kv_layout` is not `NHD`
+* a custom attention mask tensor is supplied
+* `q_dtype` is not `float16` / `bfloat16` (no fp32, fp8, or int8)
+* `q_dtype != kv_dtype` (mixed-precision Q/KV is unsupported)
+* `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128 head dims)
+* the `aiter` Python package is not importable
+
+**Features silently ignored on the AITER path** (the kwargs are accepted by
+the FlashInfer wrapper but not forwarded to AITER, which can produce wrong
+results — pass `backend="fa2"` explicitly if you need any of these):
+
+* ALiBi slopes (`maybe_alibi_slopes`)
+* in-kernel positional encoding modes (`pos_encoding_mode`, `rope_scale`,
+  `rope_theta`)
+* attention sinks (`sinks`)
+* multi-modal / prefix-cache helpers (`maybe_prefix_len_ptr`,
+  `maybe_token_pos_in_items_ptr`, `maybe_max_item_len_ptr`)
+* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`)
+* `use_fp16_qk_reduction`, `enable_pdl`
+
+**Other notes:**
+
+* Batch prefill: AITER's CK FMHA kernels natively support page sizes
+  `{16, 1024}` (or `{128, 256, 1024}` on `amd-aiter==0.1.10`). Other page
+  sizes still work but go through an extra GPU gather to flatten paged KV
+  before the AITER call.
+* Ragged (non-paged) KV is not yet implemented on the AITER batch-prefill
+  path. `BatchPrefillWithRaggedKVCacheWrapper` therefore forces the backend
+  to `fa2` regardless of whether you pass `backend="auto"` or
+  `backend="aiter"` (a warning is logged in the latter case).
 
 ### Single Prefill Example
 
