@@ -13,67 +13,22 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-AITER prefill benchmark: single-prefill and batch-paged-prefill via backend="aiter".
+AITER prefill benchmark: single-prefill and batch-paged via backend="aiter".
 
-Shapes: Sample production profile — q_len=256, GQA 16/4, HD=64, causal,
-        kv ∈ {512, 1024, 2048, 3072, 4096, 8192}
-
-Batch-paged tested over two page-size regimes:
-  page_size=256  — native-paged path (mha_batch_prefill)
-  page_size=16   — flat-gather path  (mha_fwd via index_select + varlen)
+Shapes: q=256, GQA 16/4, HD=64, causal, kv ∈ {512, 1024, 2048, 3072, 4096, 8192}.
+Paged regimes: page_size=256 (native-paged) and page_size=16 (flat-gather).
 
 Run:
-
-    # Full roofline pipeline (timing + counter collection + roofline PNG):
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py
-
-    # Override batch size for paged sections (0 = disable paged sections):
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --batch 8
-
-    # Select a different counter preset:
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --counters occupancy
+    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py               # full pipeline
+    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --timing-only # no profiling
+    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --replot      # regenerate plot
+    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --batch 0    # single only
     python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --counters stall
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --counters compute
-
-    # Override the output file label prefix:
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --label aiter_bench
-
-    # Timing only (no rocprofv3):
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --timing-only
-
-    # Regenerate plot from existing CSVs (no GPU required):
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --replot
-
-    # List all available counter presets:
     python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --list-presets
 
-Output files (all gitignored):
-    benchmarks/rocm_benchmarks/<label>_timing.csv
-    benchmarks/rocm_benchmarks/<label>_meta.json
-    benchmarks/rocm_benchmarks/<label>_counters.yml
-    benchmarks/rocm_benchmarks/<label>_counter_collection.csv
-    benchmarks/rocm_benchmarks/<label>_roofline.png   (roofline preset only)
-
-Counter presets available out of the box:
-    roofline  — FetchSize, WriteSize, MFMA ops, TCC DRAM requests,
-                SQ_VALU_MFMA_BUSY_CYCLES (default)
-    compute   — MFMA ops and cycle counters
-    memory    — L2 and DRAM bandwidth breakdown
-    basic     — minimal: FetchSize / WriteSize only
-    occupancy — SQ_WAVES, SQ_BUSY_CYCLES, SQ_VALU_MFMA_BUSY_CYCLES,
-                SQ_WAIT_INST_ANY, SQ_INSTS_LDS
-    stall     — SQ_INSTS_MFMA, SQ_WAIT_INST_VMEM, SQ_VALU_MFMA_BUSY_CYCLES,
-                SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES
-
-    Or pass a path to a YAML file in rocprofv3 native job format.
-
-Design note — why bench flags are parsed at module level
----------------------------------------------------------
-rocprofv3 re-executes this script as a subprocess with the same sys.argv to
-collect hardware counters.  All bench-specific flags must therefore be parsed
-at module import time so the subprocess builds identical configs to the outer
-timing run.  RocmProfiler uses parse_known_args internally, so bench flags
-remaining in sys.argv are silently ignored by its own argparse.
+Design note: bench flags are parsed at module level because rocprofv3 re-executes this
+script as a subprocess per PMC pass with the same sys.argv.  Module-level parsing ensures
+the subprocess builds identical configs to the outer timing run.
 """
 
 import argparse

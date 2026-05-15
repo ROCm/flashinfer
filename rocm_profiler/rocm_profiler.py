@@ -15,85 +15,35 @@ limitations under the License.
 
 rocm_profiler.py — Generic ROCm kernel profiler with automated rocprofv3 subprocess.
 
-Provides a library (`RocmProfiler`, `KernelConfig`, `TensorSpec`, `HardwareCeilings`) that
-users import in a thin driver script. Calling `profiler.run()` executes the full pipeline:
-
-  1. Timing mode   — repeated GPU launches → median kernel time
-  2. Profile mode  — rocprofv3 spawned as a subprocess; the script auto-detects when it is
-                     running inside rocprofv3 via the _ROCM_PROFILER_INTERNAL env sentinel
-                     and executes only the warmup + profiled-launch protocol.
-  3. Roofline plot — two-panel log-log plot from timing + hardware counter data.
-
-Usage (driver script):
+Pipeline: timing (repeated GPU launches → median) → rocprofv3 counter collection →
+roofline PNG.  Import in a driver script:
 
     from rocm_profiler import RocmProfiler, KernelConfig
-    import torch, flashinfer
-
-    configs = [
-        KernelConfig(
-            name="s1024_causal",
-            run_fn=lambda: flashinfer.single_prefill_with_kv_cache_return_lse(
-                q, k, v, causal=True
-            ),
-            theoretical_flops=1024 * 1024 * 32 * 128 * 2,
-            theoretical_bytes=8 * 1024 * 32 * 128 * 2,
-            label="seq=1024 causal",
-        ),
-    ]
 
     profiler = RocmProfiler(
-        configs=configs,
-        counters="roofline",            # built-in preset or path to YAML/txt file
+        configs=[KernelConfig(name="s1024", run_fn=lambda: kernel(...),
+                              theoretical_flops=..., theoretical_bytes=...)],
+        counters="roofline",          # preset name or path to rocprofv3 YAML
         kernel_name_regex="SinglePrefill",
         output_dir="benchmarks/rocm_benchmarks",
         label="fa2",
     )
-
     if __name__ == "__main__":
         profiler.run()
 
-CLI flags (passed to the driver script):
+CLI flags accepted by all driver scripts:
+    --timing-only    Skip rocprofv3 and roofline
+    --skip-roofline  Profile but skip plot
+    --replot         Regenerate plot from existing CSVs (no GPU)
+    --list-presets   Print counter preset names and exit
+    --num-warmup N   Warmup launches per config in profile mode
+    --dry-run-ms N   Timing dry-run window (ms)
+    --repeat-ms N    Timing measurement window (ms)
 
-    python my_bench.py                  # full pipeline: timing + profile + roofline
-    python my_bench.py --timing-only    # timing CSV only
-    python my_bench.py --skip-roofline  # timing + profile, no plot
-    python my_bench.py --replot         # regenerate plot from existing CSVs
-    python my_bench.py --list-presets   # show built-in counter presets
-    python my_bench.py --num-warmup N   # override warmup count
-    python my_bench.py --dry-run-ms N   # override timing dry-run window (ms)
-    python my_bench.py --repeat-ms N    # override timing measurement window (ms)
-
-Counter presets:
-
-    "roofline"  2 passes — Pass1: FetchSize+MFMA+TCC_RDREQ; Pass2: WriteSize+LDS+TCC_WRREQ+SQ_VALU_MFMA_BUSY_CYCLES
-    "compute"   1 pass  — MFMA ops and cycle counters
-    "memory"    2 passes — Pass1: FetchSize+VALU+TCC_RD; Pass2: WriteSize+LDS+TCC_WR
-    "basic"     2 passes — FetchSize / WriteSize (separate passes, gfx942 hw limit)
-    "occupancy" 2 passes — SQ_WAVES+SQ_BUSY_CYCLES+SQ_VALU_MFMA_BUSY_CYCLES / SQ_WAIT_INST_ANY+SQ_INSTS_LDS
-    "stall"     2 passes — SQ_INSTS_MFMA+SQ_WAIT_INST_VMEM+SQ_VALU_MFMA_BUSY_CYCLES / SQ_WAIT_INST_LDS+SQ_BUSY_CYCLES
-
-    Note: You can also bypass presets entirely and point to a YAML file on disk:
-    `counters="/path/to/my_counters.yml"`.  The file must use rocprofv3's native
-    job format — one `pmc:` list per hardware pass.  Counters that share the same
-    internal resource on gfx942 (e.g. FetchSize + WriteSize) must be split across
-    separate passes or rocprofv3 will abort with error code 38.  Example:
-
-        # my_counters.yml
-        jobs:
-          - pmc: [SQ_WAVES, SQ_INSTS_MFMA, FetchSize]   # Pass 1
-          - pmc: [SQ_WAIT_INST_ANY, WriteSize]            # Pass 2
-
-    Run `rocprofv3 --list-counters` to enumerate all counters available on your GPU.
-
-rocprofv3 notes:
-
-  - rocprofv3 replays the driver script once per PMC pass. Each replay sees
-    _ROCM_PROFILER_INTERNAL=1 and runs only the profile protocol (JIT warmup +
-    measured launches); timing and subprocess spawning are skipped.
-  - The rocprofv3 CSV is long-form (one row per dispatch × counter). The profiler
-    pivots it to wide-form before writing {label}_counter_collection.csv.
-  - Output discovery: rocprofv3 writes to {tmpdir}/{hostname}/pid_{label}*.csv;
-    the profiler globs for the largest CSV in tmpdir after the subprocess exits.
+rocprofv3 behaviour: replays the driver script once per PMC pass with
+_ROCM_PROFILER_INTERNAL=1; each replay runs only the profile protocol and skips
+timing and subprocess spawning.  rocprofv3 is invoked once per config (not once
+for the whole sweep) to avoid ring-buffer overflow (~8 dispatches retained).
 """
 
 from __future__ import annotations

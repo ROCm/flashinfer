@@ -13,97 +13,20 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-FA2 prefill benchmark: single-prefill, batch-ragged-prefill, and
-batch-paged-prefill via backend="fa2".
+FA2 prefill benchmark: single-prefill, batch-ragged, and batch-paged via backend="fa2".
 
 Run:
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py                        # full pipeline
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --timing-only          # no profiling
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --replot               # regenerate plot
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --model llama3-8b      # GQA shape
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --batch 0 --paged 0   # single only
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters stall       # stall preset
+    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --list-presets         # preset names
 
-    # Full roofline pipeline (timing + counter collection + roofline PNG):
-    # Runs single-prefill + ragged-batch (bs=4) + paged-batch (bs=8) by default.
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py
-
-    # Single-prefill only (disable batch sections):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --batch 0 --paged 0
-
-    # Use a production GQA model shape (Llama-3-8B: GQA 32/8 hd=128):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --model llama3-8b
-
-    # Add asymmetric chunked-prefill configs (q=256, kv sweeps):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --q-len 256
-
-    # Select a different counter preset:
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters stall
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters compute
-
-    # Override the output file label prefix:
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters occupancy --label fa2_occ
-
-    # Timing only (no rocprofv3):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --timing-only
-
-    # Skip roofline plot after profiling:
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --skip-roofline
-
-    # Regenerate plot from existing CSVs (no GPU required):
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --replot
-
-    # List all available counter presets:
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --list-presets
-
-Output files (all gitignored):
-    benchmarks/rocm_benchmarks/<label>_timing.csv
-    benchmarks/rocm_benchmarks/<label>_meta.json
-    benchmarks/rocm_benchmarks/<label>_counters.yml
-    benchmarks/rocm_benchmarks/<label>_counter_collection.csv
-    benchmarks/rocm_benchmarks/<label>_roofline.png   (roofline preset only)
-
-Model presets (--model):
-    intensity  — MHA 32/32 hd=128, causal+non-causal sweep (default).
-                 Good for roofline analysis; covers the MI300X ridge point.
-    llama3-8b  — GQA 32/8 hd=128, causal, kv∈{512..8192}
-    llama3-70b — GQA 64/8 hd=128, causal, kv∈{512..8192}
-    mistral-7b — GQA 32/8 hd=128, causal, kv∈{512..8192}
-
-Batch-prefill mode (--batch / --paged):
-    --batch N       Uses BatchPrefillWithRaggedKVCacheWrapper (fa2 backend)
-                    with N sequences.  Each sequence has q_len=--batch-q-len
-                    attending to kv_len swept over the standard range (causal).
-    --paged N       Uses BatchPrefillWithPagedKVCacheWrapper (fa2 backend)
-                    with N sequences.  Same asymmetric shape as --batch.
-                    Runs page_size=16 and page_size=64 by default.
-    --batch-q-len Q Fixed query length per sequence in batch configs.
-                    Default: 256 (chunked-prefill burst, same as AITER bench).
-
-Asymmetric (chunked-prefill) mode (--q-len):
-    --q-len Q  Adds single-prefill configs with q_len=Q, kv_len swept over the
-               standard kv sequence lengths.  Models chunked prefill where a
-               short query attends to a long KV context.  Causal only.
-
-Paged KV indices:
-    Indices are drawn from torch.randperm (seed 42) to simulate memory
-    fragmentation in a real page pool.
-
-Counter presets available out of the box:
-    roofline  — FetchSize, WriteSize, MFMA ops, TCC DRAM requests,
-                SQ_VALU_MFMA_BUSY_CYCLES (default)
-    compute   — MFMA ops and cycle counters
-    memory    — L2 and DRAM bandwidth breakdown
-    basic     — minimal: FetchSize / WriteSize only
-    occupancy — SQ_WAVES, SQ_BUSY_CYCLES, SQ_VALU_MFMA_BUSY_CYCLES,
-                SQ_WAIT_INST_ANY, SQ_INSTS_LDS
-    stall     — SQ_INSTS_MFMA, SQ_WAIT_INST_VMEM, SQ_VALU_MFMA_BUSY_CYCLES,
-                SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES
-
-    Or pass a path to a YAML file in rocprofv3 native job format.
-
-Design note — why bench flags are parsed at module level
----------------------------------------------------------
-rocprofv3 re-executes this script as a subprocess with the same sys.argv to
-collect hardware counters.  All bench-specific flags must therefore be parsed
-at module import time so the subprocess builds identical configs to the outer
-timing run.  RocmProfiler uses parse_known_args internally, so bench flags
-remaining in sys.argv are silently ignored by its own argparse.
+Design note: bench flags are parsed at module level because rocprofv3 re-executes this
+script as a subprocess per PMC pass with the same sys.argv.  Module-level parsing ensures
+the subprocess builds identical configs to the outer timing run.
 """
 
 import argparse
