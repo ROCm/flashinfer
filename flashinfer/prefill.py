@@ -1959,6 +1959,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         return_lse: Literal[False] = False,
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
+        partial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor: ...
 
     @overload
@@ -1974,6 +1975,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         return_lse: Literal[True] = True,
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
+        partial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
     def run(
@@ -1990,6 +1992,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
         sinks: Optional[torch.Tensor] = None,
+        partial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Compute batch prefill/append attention between query and paged kv-cache.
 
