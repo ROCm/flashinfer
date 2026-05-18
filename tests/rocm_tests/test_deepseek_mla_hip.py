@@ -105,7 +105,18 @@ def warmup_jit():
 
 
 @pytest.mark.parametrize("batch_size", [1, 3, 7])
-@pytest.mark.parametrize("kv_len", [17, 33, 96, 514, 1024])
+@pytest.mark.parametrize(
+    "kv_len",
+    [
+        17,
+        33,
+        96,
+        514,
+        1024,
+        pytest.param(4096, marks=pytest.mark.slow),
+        pytest.param(8192, marks=pytest.mark.slow),
+    ],
+)
 @pytest.mark.parametrize("qo_len", [1])
 @pytest.mark.parametrize("num_heads", [16])
 @pytest.mark.parametrize("causal", [False, True])
@@ -192,8 +203,8 @@ def test_batch_mla_page_attention(
     "kv_lens_list",
     [
         [17, 33, 79],
-        [96, 514, 2048],
-        [128, 256, 512, 1024, 2048],
+        pytest.param([96, 514, 2048], marks=pytest.mark.slow),
+        pytest.param([128, 256, 512, 1024, 2048], marks=pytest.mark.slow),
     ],
     ids=lambda v: "x".join(str(x) for x in v),
 )

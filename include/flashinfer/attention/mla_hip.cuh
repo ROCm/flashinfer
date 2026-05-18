@@ -4,8 +4,10 @@
 // HIP MLA kernel for CDNA3 (MI300X).
 //
 // CTA config: dim3(64,4,1) — 4 wavefronts, 256 threads.
-// All 4 wavefronts replicate QK independently; wave w owns
-// head_dim shard [w * (HEAD_DIM_CKV/4) .. (w+1) * (HEAD_DIM_CKV/4)).
+// Wave 0 computes QK (q_pe·kpe^T + q_nope·ckv^T) and softmax, then broadcasts
+// the softmax weights (p_frag) and updated m/d scalars via LDS to waves 1..3.
+// All 4 waves then compute their PV head_dim shard in parallel.
+// Wave w owns head_dim shard [w*(HEAD_DIM_CKV/4) .. (w+1)*(HEAD_DIM_CKV/4)).
 // Q is loaded once into registers per work item (loop-invariant across KV tiles).
 //
 // MFMA layout note: CDNA3 mfma_f32_16x16x16f16 produces D in column-major
@@ -50,10 +52,25 @@ constexpr float MLA_HIP_NEG_INF = -5e4f;
 // reads spread across banks {b, b+8, b+16, b+24}.
 constexpr uint32_t MLA_HIP_CKV_LDS_PAD = 8;
 constexpr uint32_t MLA_HIP_NUM_STAGES = 2;
+
+// Wave-specialization LDS stage: wave 0 writes softmax weights and online-softmax
+// scalars here after QK; waves 1..3 read them to skip QK MFMAs entirely.
+// p_frag row stride is 17 (= CTA_TILE_KV + 1) to reduce LDS bank conflicts:
+// thread (q_row=a, col_group=b) maps to float offset a*17 + b*4, giving a more
+// uniform bank distribution than stride=16 which produces 8-way conflicts.
+constexpr uint32_t MLA_HIP_P_FRAG_STRIDE = MLA_HIP_CTA_TILE_KV + 1;
+struct WaveSpecStageMLAHIP {
+  float p_frag[MLA_HIP_CTA_TILE_Q][MLA_HIP_P_FRAG_STRIDE];
+  float m_stage[MLA_HIP_CTA_TILE_Q];
+  float o_scale_stage[MLA_HIP_CTA_TILE_Q];
+  float d_stage[MLA_HIP_CTA_TILE_Q];
+};
+
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeKV>
 struct SharedStorageMLAHIP {
   DTypeKV ckv_smem[MLA_HIP_NUM_STAGES][MLA_HIP_CTA_TILE_KV][HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD];
   DTypeKV kpe_smem[MLA_HIP_NUM_STAGES][MLA_HIP_CTA_TILE_KV][HEAD_DIM_KPE];
+  WaveSpecStageMLAHIP wave_spec;
 };
 
 // ---------------------------------------------------------------------------
@@ -244,32 +261,28 @@ __device__ __forceinline__ void logits_mask_hip(float* s_frag, uint32_t qo_packe
 }
 
 // ---------------------------------------------------------------------------
-// update_mdo_states_hip: online softmax — rescale (m, d, o), then exp(s - m)
-// in-place into s_frag and accumulate the row sum into d_scalar.
-//
-// Layout: each thread holds 4 kv values for one q_row (s_frag[r] = S[t%16][col_group*4+r]).
-// Row max/sum reduce within the thread, then butterfly-XOR over bits 4 and 5
-// (the col_group dimension) to combine across all 4 threads with the same q_row.
+// broadcast_softmax_hip: called by wave 0 after compute_qk + logits_mask.
+// Inlines update_mdo_states, captures o_scale, and writes p_frag + scalars to
+// the wave_spec LDS stage for waves 1..3 to consume via read_softmax_hip.
 // ---------------------------------------------------------------------------
-template <typename DTypeKV, uint32_t NUM_MMA_D_PER_WAVE>
-__device__ __forceinline__ void update_mdo_states_hip(float* s_frag, float (*o_frag)[4],
+template <uint32_t NUM_MMA_D_PER_WAVE>
+__device__ __forceinline__ void broadcast_softmax_hip(float* s_frag, float (*o_frag)[4],
                                                       float& m_val, float& d_scalar,
-                                                      float sm_scale_log2) {
+                                                      WaveSpecStageMLAHIP& stage, uint32_t q_row,
+                                                      uint32_t col_group, float sm_scale_log2) {
   float m_local = fmaxf(fmaxf(s_frag[0], s_frag[1]), fmaxf(s_frag[2], s_frag[3]));
   m_local = fmaxf(m_local, math::shfl_xor_sync(m_local, 0x10));
   m_local = fmaxf(m_local, math::shfl_xor_sync(m_local, 0x20));
 
   float m_prev = m_val;
   m_val = fmaxf(m_prev, m_local);
-
   float o_scale = math::ptx_exp2((m_prev - m_val) * sm_scale_log2);
   d_scalar *= o_scale;
 
 #pragma unroll
-  for (uint32_t d = 0; d < NUM_MMA_D_PER_WAVE; ++d) {
+  for (uint32_t d = 0; d < NUM_MMA_D_PER_WAVE; ++d)
 #pragma unroll
     for (uint32_t r = 0; r < 4; ++r) o_frag[d][r] *= o_scale;
-  }
 
   const float m_scaled = m_val * sm_scale_log2;
   float partial_d = 0.f;
@@ -282,11 +295,40 @@ __device__ __forceinline__ void update_mdo_states_hip(float* s_frag, float (*o_f
   partial_d += math::shfl_xor_sync(partial_d, 0x10);
   partial_d += math::shfl_xor_sync(partial_d, 0x20);
   d_scalar += partial_d;
+
+  // Broadcast p_frag and per-q_row scalars to LDS for waves 1..3.
+#pragma unroll
+  for (uint32_t r = 0; r < 4; ++r) stage.p_frag[q_row][col_group * 4 + r] = s_frag[r];
+  if (col_group == 0) {
+    stage.m_stage[q_row] = m_val;
+    stage.o_scale_stage[q_row] = o_scale;
+    stage.d_stage[q_row] = d_scalar;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// read_softmax_hip: called by waves 1..3 after the __syncthreads() following
+// broadcast_softmax_hip. Reads p_frag and applies the o_scale / state update
+// that wave 0 already applied to its own o_frag.
+// ---------------------------------------------------------------------------
+template <uint32_t NUM_MMA_D_PER_WAVE>
+__device__ __forceinline__ void read_softmax_hip(float* s_frag, float (*o_frag)[4], float& m_val,
+                                                 float& d_scalar, const WaveSpecStageMLAHIP& stage,
+                                                 uint32_t q_row, uint32_t col_group) {
+#pragma unroll
+  for (uint32_t r = 0; r < 4; ++r) s_frag[r] = stage.p_frag[q_row][col_group * 4 + r];
+  float o_scale = stage.o_scale_stage[q_row];
+#pragma unroll
+  for (uint32_t d = 0; d < NUM_MMA_D_PER_WAVE; ++d)
+#pragma unroll
+    for (uint32_t r = 0; r < 4; ++r) o_frag[d][r] *= o_scale;
+  m_val = stage.m_stage[q_row];
+  d_scalar = stage.d_stage[q_row];
 }
 
 // ---------------------------------------------------------------------------
 // compute_pv_hip: accumulate P*V into o_frag for this wave's head_dim shard.
-// s_frag must already hold exp-scaled values (output of update_mdo_states_hip).
+// s_frag must already hold exp-scaled softmax weights (output of broadcast/read_softmax_hip).
 //
 // As with compute_qk_hip, we swap A/B so the column-major D output gives a
 // row-major o_frag: thread t's r-th register = O[q=t%16][d=mma_d_abs*16+col_group*4+r].
@@ -573,15 +615,23 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
 
       __syncthreads();
 
-      compute_qk_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV>(
-          s_frag, q_pe_frag, q_nope_frag, smem_storage.ckv_smem[cur_stage][0],
-          smem_storage.kpe_smem[cur_stage][0], q_row, col_group);
-
-      logits_mask_hip<CAUSAL>(s_frag, qo_packed_idx_base, kv_tile_to_abs_start(kv_tile_idx), q_len,
-                              kv_len, kv_end, num_heads, lane_idx);
-
-      update_mdo_states_hip<DTypeKV, NUM_MMA_D_PER_WAVE>(s_frag, o_frag, m_val, d_scalar,
-                                                         sm_scale_log2);
+      // Wave 0 computes QK and softmax, then broadcasts via LDS.
+      // Waves 1..3 skip QK (saves 75% of MFMA work) and read p_frag from LDS.
+      if (wave_idx == 0) {
+        compute_qk_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV>(
+            s_frag, q_pe_frag, q_nope_frag, smem_storage.ckv_smem[cur_stage][0],
+            smem_storage.kpe_smem[cur_stage][0], q_row, col_group);
+        logits_mask_hip<CAUSAL>(s_frag, qo_packed_idx_base, kv_tile_to_abs_start(kv_tile_idx),
+                                q_len, kv_len, kv_end, num_heads, lane_idx);
+        broadcast_softmax_hip<NUM_MMA_D_PER_WAVE>(s_frag, o_frag, m_val, d_scalar,
+                                                  smem_storage.wave_spec, q_row, col_group,
+                                                  sm_scale_log2);
+      }
+      __syncthreads();  // wave_spec visible to all waves
+      if (wave_idx > 0) {
+        read_softmax_hip<NUM_MMA_D_PER_WAVE>(s_frag, o_frag, m_val, d_scalar,
+                                             smem_storage.wave_spec, q_row, col_group);
+      }
 
       compute_pv_hip<HEAD_DIM_CKV, NUM_MMA_D_PER_WAVE, DTypeKV>(
           o_frag, s_frag, smem_storage.ckv_smem[cur_stage][0], wave_idx, lane_idx);
