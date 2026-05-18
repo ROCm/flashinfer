@@ -15,91 +15,43 @@ limitations under the License.
 
 rocm_profiler.py — Generic ROCm kernel profiler with automated rocprofv3 subprocess.
 
-Provides a library (`RocmProfiler`, `KernelConfig`, `TensorSpec`, `HardwareCeilings`) that
-users import in a thin driver script. Calling `profiler.run()` executes the full pipeline:
-
-  1. Timing mode   — repeated GPU launches → median kernel time
-  2. Profile mode  — rocprofv3 spawned as a subprocess; the script auto-detects when it is
-                     running inside rocprofv3 via the _ROCM_PROFILER_INTERNAL env sentinel
-                     and executes only the warmup + profiled-launch protocol.
-  3. Roofline plot — two-panel log-log plot from timing + hardware counter data.
-
-Usage (driver script):
+Pipeline: timing (repeated GPU launches → median) → rocprofv3 counter collection →
+roofline PNG.  Import in a driver script:
 
     from rocm_profiler import RocmProfiler, KernelConfig
-    import torch, flashinfer
-
-    configs = [
-        KernelConfig(
-            name="s1024_causal",
-            run_fn=lambda: flashinfer.single_prefill_with_kv_cache_return_lse(
-                q, k, v, causal=True
-            ),
-            theoretical_flops=1024 * 1024 * 32 * 128 * 2,
-            theoretical_bytes=8 * 1024 * 32 * 128 * 2,
-            label="seq=1024 causal",
-        ),
-    ]
 
     profiler = RocmProfiler(
-        configs=configs,
-        counters="roofline",            # built-in preset or path to YAML/txt file
+        configs=[KernelConfig(name="s1024", run_fn=lambda: kernel(...),
+                              theoretical_flops=..., theoretical_bytes=...)],
+        counters="roofline",          # preset name or path to rocprofv3 YAML
         kernel_name_regex="SinglePrefill",
         output_dir="benchmarks/rocm_benchmarks",
         label="fa2",
     )
-
     if __name__ == "__main__":
         profiler.run()
 
-CLI flags (passed to the driver script):
+CLI flags accepted by all driver scripts:
+    --timing-only    Skip rocprofv3 and roofline
+    --skip-roofline  Profile but skip plot
+    --replot         Regenerate plot from existing CSVs (no GPU)
+    --list-presets   Print counter preset names and exit
+    --num-warmup N   Warmup launches per config in profile mode
+    --dry-run-ms N   Timing dry-run window (ms)
+    --repeat-ms N    Timing measurement window (ms)
 
-    python my_bench.py                  # full pipeline: timing + profile + roofline
-    python my_bench.py --timing-only    # timing CSV only
-    python my_bench.py --skip-roofline  # timing + profile, no plot
-    python my_bench.py --replot         # regenerate plot from existing CSVs
-    python my_bench.py --list-presets   # show built-in counter presets
-    python my_bench.py --num-warmup N   # override warmup count
-    python my_bench.py --dry-run-ms N   # override timing dry-run window (ms)
-    python my_bench.py --repeat-ms N    # override timing measurement window (ms)
-
-Counter presets:
-
-    "roofline"  2 passes — Pass1: FetchSize+MFMA+TCC_RDREQ; Pass2: WriteSize+LDS+TCC_WRREQ
-    "compute"   1 pass  — MFMA ops and cycle counters
-    "memory"    2 passes — Pass1: FetchSize+VALU+TCC_RD; Pass2: WriteSize+LDS+TCC_WR
-    "basic"     2 passes — FetchSize / WriteSize (separate passes, gfx942 hw limit)
-    "occupancy" 2 passes — SQ_WAVES+SQ_BUSY_CYCLES+SQ_VALU_MFMA_BUSY_CYCLES / SQ_WAIT_INST_ANY+SQ_INSTS_LDS
-    "stall"     2 passes — SQ_INSTS_MFMA+SQ_WAIT_INST_VMEM+SQ_VALU_MFMA_BUSY_CYCLES / SQ_WAIT_INST_LDS+SQ_BUSY_CYCLES
-
-    Note: You can also bypass presets entirely and point to a YAML file on disk:
-    `counters="/path/to/my_counters.yml"`.  The file must use rocprofv3's native
-    job format — one `pmc:` list per hardware pass.  Counters that share the same
-    internal resource on gfx942 (e.g. FetchSize + WriteSize) must be split across
-    separate passes or rocprofv3 will abort with error code 38.  Example:
-
-        # my_counters.yml
-        jobs:
-          - pmc: [SQ_WAVES, SQ_INSTS_MFMA, FetchSize]   # Pass 1
-          - pmc: [SQ_WAIT_INST_ANY, WriteSize]            # Pass 2
-
-    Run `rocprofv3 --list-counters` to enumerate all counters available on your GPU.
-
-rocprofv3 notes:
-
-  - rocprofv3 replays the driver script once per PMC pass. Each replay sees
-    _ROCM_PROFILER_INTERNAL=1 and runs only the profile protocol (JIT warmup +
-    measured launches); timing and subprocess spawning are skipped.
-  - The rocprofv3 CSV is long-form (one row per dispatch × counter). The profiler
-    pivots it to wide-form before writing {label}_counter_collection.csv.
-  - Output discovery: rocprofv3 writes to {tmpdir}/{hostname}/pid_{label}*.csv;
-    the profiler globs for the largest CSV in tmpdir after the subprocess exits.
+rocprofv3 behaviour: replays the driver script once per PMC pass with
+_ROCM_PROFILER_INTERNAL=1; each replay runs only the profile protocol and skips
+timing and subprocess spawning.  rocprofv3 is invoked once per config (not once
+for the whole sweep) to avoid ring-buffer overflow (~8 dispatches retained).
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import datetime
+import json
 import os
 import re
 import subprocess
@@ -127,8 +79,8 @@ _COUNTER_PRESETS: dict[str, str] = {
 jobs:
   # Pass 1: L2 read traffic + MFMA throughput + HBM reads
   - pmc: [FetchSize, SQ_INSTS_VALU_MFMA_MOPS_F16, SQ_INSTS_MFMA, TCC_EA0_RDREQ_DRAM_sum]
-  # Pass 2: L2 write traffic + LDS conflicts + HBM writes
-  - pmc: [WriteSize, SQ_LDS_BANK_CONFLICT, TCC_EA0_WRREQ_DRAM_sum]
+  # Pass 2: L2 write traffic + LDS conflicts + HBM writes + MFMA duty-cycle cycles
+  - pmc: [WriteSize, SQ_LDS_BANK_CONFLICT, TCC_EA0_WRREQ_DRAM_sum, SQ_VALU_MFMA_BUSY_CYCLES]
 """,
     # Single-pass MFMA compute counters only
     "compute": """\
@@ -265,6 +217,7 @@ class KernelConfig:
     theoretical_bytes: int
     run_fn: Callable[[], Any] | None = None
     label: str = ""
+    num_tokens: int = 0  # when > 0, profiler also reports tokens/sec
     # Called once before each profiling phase to (re-)allocate tensors.
     # run_fn should close over a mutable container that setup_fn refreshes.
     setup_fn: Callable[[], None] | None = None
@@ -484,8 +437,8 @@ class RocmProfiler:
 
     def _timing_mode(self) -> Path:
         """
-        Repeated GPU launches for each config → median kernel time.
-        Writes {label}_timing.csv and returns its path.
+        Repeated GPU launches for each config → timing statistics.
+        Writes {label}_timing.csv and {label}_meta.json; returns the CSV path.
         """
         from flashinfer.testing.utils import bench_gpu_time
 
@@ -500,37 +453,141 @@ class RocmProfiler:
         for cfg in self.configs:
             if cfg.setup_fn:
                 cfg.setup_fn()
+
+            # One pre-check launch: verify the kernel produces finite output
+            # before entering the measurement loop.
+            result = cfg.run_fn()
+            torch.cuda.synchronize()
+            _check_finite(result, cfg.name)
+
             times_ms = bench_gpu_time(
                 cfg.run_fn,
                 dry_run_time_ms=int(self.dry_run_ms),
                 repeat_time_ms=int(self.repeat_ms),
             )
-            median_ms = float(np.median(times_ms))
+            arr = np.asarray(times_ms, dtype=np.float64)
+            median_ms = float(np.median(arr))
+            min_ms = float(np.min(arr))
+            p5_ms = float(np.percentile(arr, 5))
+            p95_ms = float(np.percentile(arr, 95))
+            std_ms = float(np.std(arr))
+            n_iters = int(len(arr))
             tflops = cfg.theoretical_flops / median_ms / 1e9
             ai_theory = cfg.theoretical_flops / cfg.theoretical_bytes
-            rows.append(
-                {
-                    "name": cfg.name,
-                    "theoretical_flops": cfg.theoretical_flops,
-                    "theoretical_bytes": cfg.theoretical_bytes,
-                    "median_ms": f"{median_ms:.4f}",
-                    "tflops": f"{tflops:.3f}",
-                    "ai_theory": f"{ai_theory:.2f}",
-                }
+            tput_tok_per_s = (
+                cfg.num_tokens / (median_ms * 1e-3) if cfg.num_tokens > 0 else 0
+            )
+            row: dict[str, Any] = {
+                "name": cfg.name,
+                "theoretical_flops": cfg.theoretical_flops,
+                "theoretical_bytes": cfg.theoretical_bytes,
+                "n_iters": n_iters,
+                "min_ms": f"{min_ms:.4f}",
+                "p5_ms": f"{p5_ms:.4f}",
+                "median_ms": f"{median_ms:.4f}",
+                "p95_ms": f"{p95_ms:.4f}",
+                "std_ms": f"{std_ms:.4f}",
+                "tflops": f"{tflops:.3f}",
+                "ai_theory": f"{ai_theory:.2f}",
+            }
+            row["tput_tok_per_s"] = f"{tput_tok_per_s:.0f}" if cfg.num_tokens > 0 else ""
+            rows.append(row)
+            tput_str = (
+                f"  {tput_tok_per_s / 1e3:7.1f} ktok/s" if cfg.num_tokens > 0 else ""
             )
             print(
-                f"  {cfg.label:36s}  {median_ms:8.3f} ms  "
-                f"{tflops:7.2f} TFLOPS  AI={ai_theory:.1f}"
+                f"  {cfg.label:40s}  {median_ms:8.3f} ms  "
+                f"[p5={p5_ms:.3f} p95={p95_ms:.3f} std={std_ms:.3f}]  "
+                f"{tflops:7.2f} TFLOPS  AI={ai_theory:.1f}{tput_str}"
             )
             sys.stdout.flush()
 
+        _timing_fields = [
+            "name", "theoretical_flops", "theoretical_bytes",
+            "n_iters", "min_ms", "p5_ms", "median_ms", "p95_ms", "std_ms",
+            "tflops", "ai_theory", "tput_tok_per_s",
+        ]
         with open(out_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=_timing_fields)
             writer.writeheader()
             writer.writerows(rows)
 
         print(f"[rocm_profiler] Timing done → {out_path}\n")
+
+        self._write_meta(out_path)
         return out_path
+
+    def _write_meta(self, timing_csv: Path) -> None:
+        """Write a sidecar JSON with provenance metadata for this bench run."""
+        import platform
+
+        meta: dict[str, Any] = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "label": self.label,
+            "timing_csv": str(timing_csv),
+            "num_configs": len(self.configs),
+        }
+
+        # Git provenance
+        try:
+            meta["git_commit"] = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text=True, timeout=5
+            ).strip()
+        except Exception:
+            meta["git_commit"] = None
+        try:
+            dirty = subprocess.check_output(
+                ["git", "status", "--porcelain"], text=True, timeout=5
+            ).strip()
+            meta["git_dirty"] = bool(dirty)
+        except Exception:
+            meta["git_dirty"] = None
+
+        # Python / Torch / FlashInfer versions
+        meta["python_version"] = platform.python_version()
+        try:
+            meta["torch_version"] = torch.__version__
+        except Exception:
+            meta["torch_version"] = None
+        try:
+            import flashinfer
+
+            meta["flashinfer_version"] = getattr(flashinfer, "__version__", None)
+        except Exception:
+            meta["flashinfer_version"] = None
+
+        # ROCm version
+        for vpath in ["/opt/rocm/VERSION", "/opt/rocm/.info/version"]:
+            try:
+                meta["rocm_version"] = Path(vpath).read_text().strip()
+                break
+            except Exception:
+                pass
+        else:
+            meta["rocm_version"] = None
+
+        # GPU info
+        if self.hw_ceilings:
+            meta["gpu_name"] = self.hw_ceilings.gpu_name
+            meta["peak_tflops_fp16"] = self.hw_ceilings.peak_tflops_fp16
+            meta["peak_bw_tbs"] = self.hw_ceilings.peak_bw_tbs
+
+        # Relevant env vars
+        meta["env"] = {
+            k: os.environ.get(k)
+            for k in [
+                "FLASHINFER_ROCM_ARCH_LIST",
+                "FLASHINFER_JIT_DEBUG",
+                "FLASHINFER_JIT_VERBOSE",
+                "MAX_JOBS",
+                "ROCR_VISIBLE_DEVICES",
+                "HIP_VISIBLE_DEVICES",
+            ]
+        }
+
+        out = self.output_dir / f"{self.label}_meta.json"
+        out.write_text(json.dumps(meta, indent=2))
+        print(f"[rocm_profiler] Metadata → {out}")
 
     # ── Profile mode (executes inside rocprofv3 subprocess) ───────────────────
 
@@ -761,6 +818,10 @@ class RocmProfiler:
                     )
                     continue
 
+                # Warn if rocprofv3 produced rows but none matched the kernel regex.
+                if self.kernel_name_regex:
+                    _warn_if_regex_unmatched(csv_files, self.kernel_name_regex, cfg.name)
+
                 row = _merge_pass_csvs(csv_files)
                 if row is None:
                     print(
@@ -858,6 +919,7 @@ class RocmProfiler:
 
             mfma_mops = _float(c.get("SQ_INSTS_VALU_MFMA_MOPS_F16", 0))
             actual_flops_mfma = mfma_mops * 512
+            mfma_busy_cycles = _float(c.get("SQ_VALU_MFMA_BUSY_CYCLES", 0))
 
             results.append(
                 dict(
@@ -876,6 +938,7 @@ class RocmProfiler:
                     actual_flops_mfma=actual_flops_mfma,
                     flops_theory=flops,
                     lds_conflict=_float(c.get("SQ_LDS_BANK_CONFLICT", 0)),
+                    mfma_busy_cycles=mfma_busy_cycles,
                     mfma_util_pct=(
                         actual_flops_mfma
                         / (self.hw_ceilings.peak_tflops_fp16 * 1e12 * duration_s)
@@ -1101,6 +1164,72 @@ def _float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _check_finite(result: Any, name: str) -> None:
+    """Warn if the kernel returned NaN or Inf in any output tensor."""
+    tensors = result if isinstance(result, (list, tuple)) else (result,)
+    for t in tensors:
+        if not isinstance(t, torch.Tensor) or not t.is_floating_point():
+            continue
+        if not torch.isfinite(t).all():
+            print(
+                f"[rocm_profiler] WARNING: '{name}' produced NaN/Inf output — "
+                "kernel may be incorrectly compiled or have numerical issues.",
+                file=sys.stderr,
+            )
+            return
+
+
+def _warn_if_regex_unmatched(
+    csv_files: list[Path], regex: str, config_name: str
+) -> None:
+    """
+    Scan rocprofv3 CSV rows for any Kernel_Name matching `regex`.
+    If none match, print a warning so the user knows their regex is stale.
+    """
+    try:
+        pattern = re.compile(regex)
+    except re.error as exc:
+        print(
+            f"[rocm_profiler] WARNING: kernel_name_regex '{regex}' is invalid: {exc} "
+            "— skipping regex check.",
+            file=sys.stderr,
+        )
+        return
+    kernel_name_candidates = [
+        "Kernel_Name",
+        "kernel_name",
+        "KernelName",
+    ]
+    any_kernel_seen = False
+    any_match = False
+    for csv_file in csv_files:
+        try:
+            with open(csv_file, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                name_col = _find_col(reader.fieldnames or [], kernel_name_candidates)
+                if name_col is None:
+                    continue
+                for row in reader:
+                    kname = row.get(name_col, "").strip()
+                    if kname:
+                        any_kernel_seen = True
+                    if kname and pattern.search(kname):
+                        any_match = True
+                        break
+        except Exception:
+            continue
+        if any_match:
+            break
+
+    if any_kernel_seen and not any_match:
+        print(
+            f"[rocm_profiler] WARNING: kernel_name_regex '{regex}' matched no "
+            f"kernels for config '{config_name}'. The kernel may have been "
+            "renamed. Check rocprofv3 CSV Kernel_Name column.",
+            file=sys.stderr,
+        )
+
+
 def _print_presets() -> None:
     print("Available counter presets:\n")
     for name, content in _COUNTER_PRESETS.items():
@@ -1123,17 +1252,19 @@ def _print_metrics_table(
     header = (
         f"{'Config':>30} | {'ms':>7} | {'TFLOPS':>7} | {'AI_th':>7} | "
         f"{'AI_meas':>8} | {'BW_TB/s':>8} | {'BW_HBM':>8} | "
-        f"{'MFMA_util%':>10} | {'LDS_bank_cf':>11}"
+        f"{'MFMA_util%':>10} | {'MFMA_busy_cy':>12} | {'LDS_bank_cf':>11}"
     )
     print(header)
     print("-" * len(header))
 
     for r in results:
+        mfma_busy = r.get("mfma_busy_cycles", 0)
         print(
             f"{r['label']:>30} | {r['median_ms']:>7.3f} | {r['tflops']:>7.2f} | "
             f"{r['ai_theory']:>7.0f} | {r['ai_measured']:>8.1f} | "
             f"{r['bw_tbs']:>8.3f} | {r['bw_hbm_tbs']:>8.3f} | "
-            f"{r['mfma_util_pct']:>10.1f} | {r['lds_conflict']:>11.0f}"
+            f"{r['mfma_util_pct']:>10.1f} | {mfma_busy:>12.0f} | "
+            f"{r['lds_conflict']:>11.0f}"
         )
 
     print()
