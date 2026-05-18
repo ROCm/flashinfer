@@ -1199,6 +1199,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             check_shape_dtype_device(out, q.shape, q.dtype, q.device, "out")
 
         if self.use_tensor_cores:
+            assert self._plan_info is not None, "plan info is not initialized; call plan() first"
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
