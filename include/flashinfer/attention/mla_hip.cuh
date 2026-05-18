@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Phase 1 correctness-first HIP MLA kernel for CDNA3 (MI300X).
+// HIP MLA kernel for CDNA3 (MI300X).
 //
 // CTA config: dim3(64,4,1) — 4 wavefronts, 256 threads.
 // All 4 wavefronts replicate QK independently; wave w owns
 // head_dim shard [w * (HEAD_DIM_CKV/4) .. (w+1) * (HEAD_DIM_CKV/4)).
-// Q is re-read from global memory each mma_d step to avoid the 64 KB LDS limit.
+// Q is loaded once into registers per work item (loop-invariant across KV tiles).
 //
 // MFMA layout note: CDNA3 mfma_f32_16x16x16f16 produces D in column-major
 // per-thread layout (each thread holds D[m=(t/16)*4+r][n=t%16] for r=0..3).
@@ -35,7 +35,7 @@ namespace mla {
 
 constexpr uint32_t MLA_HIP_WAVE_SIZE = 64;
 constexpr uint32_t MLA_HIP_NUM_WAVES = 4;
-constexpr uint32_t MLA_HIP_NUM_THREADS = MLA_HIP_WAVE_SIZE * MLA_HIP_NUM_WAVES;  // 256
+constexpr uint32_t MLA_HIP_NUM_THREADS = MLA_HIP_WAVE_SIZE * MLA_HIP_NUM_WAVES;
 constexpr uint32_t MLA_HIP_CTA_TILE_Q = 16;
 constexpr uint32_t MLA_HIP_CTA_TILE_KV = 16;
 // Sentinel for the running max in online softmax. Matches the CUDA path
@@ -302,13 +302,11 @@ __device__ __forceinline__ void compute_pv_hip(float (*o_frag)[4], const float* 
   uint32_t col_group = lane_idx / 16;
   uint32_t d_start = wave_idx * NUM_MMA_D_PER_WAVE;
 
-  // Pack s_frag (4 floats) into 2 uint32_t in fp16 format for MFMA B input
   DTypeKV p_f16[4];
 #pragma unroll
   for (uint32_t r = 0; r < 4; ++r) p_f16[r] = static_cast<DTypeKV>(s_frag[r]);
   uint32_t p_frag[2];
-  p_frag[0] = *reinterpret_cast<const uint32_t*>(&p_f16[0]);
-  p_frag[1] = *reinterpret_cast<const uint32_t*>(&p_f16[2]);
+  *reinterpret_cast<uint2*>(p_frag) = *reinterpret_cast<const uint2*>(p_f16);
 
 #pragma unroll
   for (uint32_t wave_mma_d = 0; wave_mma_d < NUM_MMA_D_PER_WAVE; ++wave_mma_d) {
@@ -322,18 +320,12 @@ __device__ __forceinline__ void compute_pv_hip(float (*o_frag)[4], const float* 
       v_vals[j] = ckv_smem[(col_group * 4 + j) * (HEAD_DIM_CKV + MLA_HIP_CKV_LDS_PAD) + d_col];
     }
     uint32_t v_frag[2];
-    v_frag[0] = (uint32_t)(*reinterpret_cast<const uint16_t*>(&v_vals[0])) |
-                ((uint32_t)(*reinterpret_cast<const uint16_t*>(&v_vals[1])) << 16);
-    v_frag[1] = (uint32_t)(*reinterpret_cast<const uint16_t*>(&v_vals[2])) |
-                ((uint32_t)(*reinterpret_cast<const uint16_t*>(&v_vals[3])) << 16);
+    *reinterpret_cast<uint2*>(v_frag) = *reinterpret_cast<const uint2*>(v_vals);
     gpu_iface::mma::mma_sync_m16n16k16_row_col_f16f16f32<DTypeKV>(o_frag[wave_mma_d], v_frag,
                                                                   p_frag);
   }
 }
 
-// ---------------------------------------------------------------------------
-// normalize_d_hip: divide o_frag by the softmax denominator.
-// ---------------------------------------------------------------------------
 template <uint32_t NUM_MMA_D_PER_WAVE>
 __device__ __forceinline__ void normalize_d_hip(float (*o_frag)[4], float m_val, float d_scalar) {
   float d_rcp = (m_val != MLA_HIP_NEG_INF) ? math::ptx_rcp(d_scalar) : 0.f;
@@ -470,9 +462,6 @@ __device__ void DevicePersistentMergeStatesHIP(
   }
 }
 
-// ---------------------------------------------------------------------------
-// BatchMLAPagedAttentionKernelHIP: main GPU kernel
-// ---------------------------------------------------------------------------
 template <bool CAUSAL, uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename Params>
 __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKernelHIP(
     Params params) {
@@ -522,14 +511,11 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
 
     const uint32_t qo_packed_idx_base = packed_qo_start + blockIdx.x * MLA_HIP_CTA_TILE_Q;
 
-    // Hoist the q_packed → (batch_idx, head_idx) divmod out of the kv-tile loop;
-    // it's the same for every iteration of every helper that consumed it.
     const uint32_t q_packed = qo_packed_idx_base + q_row;
     uint32_t batch_idx, head_idx;
     num_heads.divmod(q_packed, batch_idx, head_idx);
     const bool q_valid = (batch_idx < q_len);
 
-    // Q is loop-invariant across kv-tiles; load all fragments once into registers.
     load_q_frags_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeQ>(
         q_pe_frag, q_nope_frag, params.q_nope + q_indptr * params.q_nope_stride_n,
         params.q_pe + q_indptr * params.q_pe_stride_n, params.q_nope_stride_n,
@@ -628,9 +614,6 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
       params.return_lse_base_on_e);
 }
 
-// ---------------------------------------------------------------------------
-// BatchMLAPagedAttentionHIP: host-side launcher
-// ---------------------------------------------------------------------------
 template <MaskMode MASK_MODE, uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename Params>
 hipError_t BatchMLAPagedAttentionHIP(Params params, uint32_t num_blks_x, uint32_t num_blks_y,
                                      hipStream_t stream) {

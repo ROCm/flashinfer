@@ -114,11 +114,10 @@ def warmup_jit():
 def test_batch_mla_page_attention(
     batch_size, kv_len, qo_len, num_heads, causal, page_size, dtype
 ):
-    # The Phase-1/2 HIP MLA kernel uses CTA_TILE_Q = 16, while the shared
-    # MLA planner assumes CTA_TILE_Q = 64. As long as a single batch's
-    # packed_qo_len = qo_len * num_heads <= 16 the planner generates one
-    # work item per batch and our CTA covers it exactly. Prefill paths
-    # (qo_len > 1) need an inner Q-sub-tile loop in the kernel — TODO.
+    # The HIP MLA kernel uses CTA_TILE_Q = 16, while the MLA planner assumes
+    # CTA_TILE_Q = 64. For decode (packed_qo_len = qo_len * num_heads <= 16)
+    # the planner generates one work item per batch and the CTA covers it exactly.
+    # Prefill (qo_len > 1) requires an inner Q-sub-tile loop — not yet implemented.
     assert qo_len * num_heads <= 16, "Prefill MLA on HIP not yet supported"
     if causal and qo_len > kv_len:
         pytest.skip("qo_len > kv_len not supported for causal attention")

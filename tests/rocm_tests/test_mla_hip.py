@@ -63,7 +63,7 @@ def _plan(wrapper, batch_size, kv_len, page_size, causal, dtype):
         kv_indptr,
         kv_indices,
         kv_lens,
-        16,  # num_heads
+        16,
         HEAD_DIM_CKV,
         HEAD_DIM_KPE,
         page_size,
@@ -155,12 +155,8 @@ def test_batch_mla_correctness(batch_size, kv_len, page_size, causal, dtype):
     ref = _mla_reference(
         q_nope,
         q_pe,
-        ckv.reshape(batch_size, pages_per_req, page_size, HEAD_DIM_CKV).reshape(
-            batch_size * pages_per_req, page_size, HEAD_DIM_CKV
-        ),
-        kpe.reshape(batch_size, pages_per_req, page_size, HEAD_DIM_KPE).reshape(
-            batch_size * pages_per_req, page_size, HEAD_DIM_KPE
-        ),
+        ckv,
+        kpe,
         kv_lens,
         page_size,
         sm_scale,
