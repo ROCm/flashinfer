@@ -87,6 +87,11 @@ def test_eager_without_custom_ops():
     assert result.returncode == 0, f"eager (custom ops off) failed:\n{result.stderr}"
 
 
+@pytest.mark.skipif(
+    torch.torch_version.TorchVersion(torch.__version__)
+    < torch.torch_version.TorchVersion("2.4"),
+    reason="torch.compile custom ops require torch >= 2.4",
+)
 def test_eager_with_custom_ops():
     """append_paged_kv_cache works in eager mode with custom ops enabled."""
     snippet = _PREAMBLE + textwrap.dedent(

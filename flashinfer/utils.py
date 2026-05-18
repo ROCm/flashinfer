@@ -16,6 +16,7 @@ limitations under the License.
 
 import contextlib
 import functools
+import warnings
 import math
 import os
 from enum import Enum
@@ -33,18 +34,19 @@ from .jit.spdlog import gen_spdlog_module
 def plan_info_vec_as_tensor(
     plan_info: Union[torch.Tensor, Sequence[int]],
     *,
-    device: torch.device,
+    device: Optional[torch.device] = None,
 ) -> torch.Tensor:
-    """Normalize JIT ``plan`` output to int64 on ``device`` for custom-op boundaries.
+    """Normalize JIT ``plan`` output to a CPU int64 tensor for custom-op boundaries.
 
-    ``plan()`` returns a tensor on HIP/CUDA; some call sites may still use a Python
-    sequence — accept both.
+    The ROCm C++ ops read ``plan_info_vec.data_ptr<int64_t>()`` on the host, so the
+    tensor must stay on CPU regardless of where the workspace lives.  ``device`` is
+    accepted for API compatibility but is intentionally ignored.
     """
     if isinstance(plan_info, torch.Tensor):
-        if plan_info.dtype == torch.int64 and plan_info.device == device:
+        if plan_info.dtype == torch.int64 and plan_info.device.type == "cpu":
             return plan_info
-        return plan_info.to(device=device, dtype=torch.int64)
-    return torch.tensor(list(plan_info), dtype=torch.int64, device=device)
+        return plan_info.to(device="cpu", dtype=torch.int64)
+    return torch.tensor(list(plan_info), dtype=torch.int64, device="cpu")
 
 
 class PosEncodingMode(Enum):
@@ -412,6 +414,13 @@ else:
                 # supported by torch.library.custom_op's schema inference.  Fall
                 # back to the compile guard so torch.compile still raises a
                 # clear error instead of tracing into the extension.
+                warnings.warn(
+                    f"Could not register '{name}' as a torch.library custom op "
+                    "(unsupported parameter type in schema inference); falling back "
+                    "to compile guard. torch.compile will raise a RuntimeError if it "
+                    "traces into this op.",
+                    stacklevel=2,
+                )
                 return _guard_compile(f, name)
 
         if fn is not None:
