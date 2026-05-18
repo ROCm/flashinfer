@@ -46,7 +46,7 @@ def plan_info_vec_as_tensor(
         if plan_info.dtype == torch.int64 and plan_info.device.type == "cpu":
             return plan_info
         return plan_info.to(device="cpu", dtype=torch.int64)
-    return torch.tensor(list(plan_info), dtype=torch.int64)
+    return torch.tensor(list(plan_info), dtype=torch.int64, device="cpu")
 
 
 class PosEncodingMode(Enum):
