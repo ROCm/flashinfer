@@ -9,9 +9,8 @@
 | Task | Command |
 |------|---------|
 | Install for development | `python -m pip install --no-build-isolation -ve.` |
-| Run tests (fast) | `pytest tests/rocm_tests/ -m "not slow"` |
-| Run all tests | `pytest tests/rocm_tests/` |
-| Run tests in parallel | `pytest tests/rocm_tests/ -n auto` |
+| Run tests (fast) | `pytest -n auto --reruns 2 -m "not slow"` |
+| Run all tests | `pytest -n auto --reruns 2` |
 | Clear JIT cache | `rm -rf ~/.cache/flashinfer/` |
 | Set target arch | `export FLASHINFER_ROCM_ARCH_LIST="gfx942,gfx950"` |
 | Limit parallel build | `export MAX_JOBS=4` |
