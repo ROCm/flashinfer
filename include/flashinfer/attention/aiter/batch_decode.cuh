@@ -12,9 +12,16 @@
 #include <flashinfer/attention/aiter/aiter_loader.h>
 #include <hip/hip_runtime.h>
 
+#include <cstdint>
 #include <string>
+#include <type_traits>
 
 namespace flashinfer {
+
+// The PA v1 jinja template uses plain `int*` for block_tables/context_lens.
+// Guard against exotic platforms where int != int32_t (would cause silent ABI mismatch).
+static_assert(sizeof(int) == 4 && std::is_same_v<int, int32_t>,
+              "AiterPaV1Fn assumes int == int32_t; platform not supported");
 
 // Extern-C signature emitted by aiter/csrc/cpp_itfs/pa/pa_v1.cpp.jinja.
 // Pinned to amd-aiter 0.1.10 — regenerate alongside any AITER pa_v1 template change.

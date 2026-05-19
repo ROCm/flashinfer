@@ -21,6 +21,7 @@
 #include <flashinfer/attention/aiter/batch_decode.cuh>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 #include "pytorch_extension_utils.h"
 
@@ -29,13 +30,14 @@
 // pass two on-device float[1] sentinels = 1.0f. Cache them per-device so we
 // don't allocate every call.
 static at::Tensor get_unit_scale(at::Device device) {
-  static thread_local std::array<at::Tensor, 16> cache;
+  static thread_local std::unordered_map<int, at::Tensor> cache;
   const int idx = device.index() >= 0 ? device.index() : 0;
-  TORCH_CHECK(idx < 16, "device index out of range for AITER decode scale cache");
-  if (!cache[idx].defined()) {
-    cache[idx] = at::ones({1}, at::TensorOptions().dtype(at::kFloat).device(device));
+  auto it = cache.find(idx);
+  if (it == cache.end()) {
+    it = cache.emplace(idx, at::ones({1}, at::TensorOptions().dtype(at::kFloat).device(device)))
+             .first;
   }
-  return cache[idx];
+  return it->second;
 }
 
 // Convert flat (paged_kv_indices, paged_kv_indptr, paged_kv_last_page_len) into:
@@ -62,8 +64,6 @@ static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
   // For each seq i and page-slot j < npages[i], block_tables[i, j] = indices[indptr[i] + j].
   // Vectorized: build a (num_seqs, max_blocks_per_seq) mask of valid slots, then a flat
   // gather index = indptr[i] + j, scattered into block_tables.
-  at::Tensor seq_ids =
-      at::arange(num_seqs, int32_opts).unsqueeze(1).expand({num_seqs, max_blocks_per_seq});
   at::Tensor slot_ids = at::arange(max_blocks_per_seq, int32_opts)
                             .unsqueeze(0)
                             .expand({num_seqs, max_blocks_per_seq});

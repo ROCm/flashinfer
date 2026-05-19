@@ -69,6 +69,12 @@ def rmsnorm(
     enable_pdl: bool
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
+    backend: str
+        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's rms_norm — ROCm (gfx942/gfx950) only; requires the
+        ``aiter`` package and only supports 2D inputs. Precision is slightly lower than
+        ``"native"`` at ``hidden_size >= 1024`` (fp16 atol ~4e-3, bf16 ~7e-2).
 
     Returns
     -------

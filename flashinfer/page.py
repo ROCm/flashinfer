@@ -398,6 +398,11 @@ def append_paged_kv_cache(
         shape: ``[batch_size]``.
     kv_layout : str
         The layout of the paged kv-cache, either ``NHD`` or ``HND``.
+    backend : str
+        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's ``reshape_and_cache_flash`` — ROCm (gfx942/gfx950) only;
+        requires the ``aiter`` package, NHD layout, and fp16/bf16 dtype.
 
     Example
     -------

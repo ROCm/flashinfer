@@ -421,6 +421,10 @@ def _aiter_pa_v1_resolve(
             f"AITER PA v1 supports fp16/bf16 only; got dtype_kv={dtype_kv}"
         )
 
+    if num_qo_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_qo_heads ({num_qo_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+        )
     gqa_ratio = num_qo_heads // num_kv_heads
     max_num_partitions = (max_context_len + partition_size - 1) // partition_size
     npar_loops = (max_num_partitions + warp_size - 1) // warp_size
