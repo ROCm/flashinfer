@@ -73,11 +73,6 @@ struct SharedStorageMLAHIP {
   WaveSpecStageMLAHIP wave_spec;
 };
 
-// ---------------------------------------------------------------------------
-// load_kv_hip: cooperative KV tile load, all 256 threads participate.
-// packed_kv_tile_base = kv_indptr * block_size + kv_tile_abs_start
-// packed_kv_bound     = kv_indptr * block_size + kv_len
-// ---------------------------------------------------------------------------
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeKV, typename IdType>
 __device__ __forceinline__ void load_kv_hip(
     DTypeKV* __restrict__ ckv_smem, DTypeKV* __restrict__ kpe_smem,
@@ -150,15 +145,10 @@ __device__ __forceinline__ void load_kv_hip(
   }
 }
 
-// ---------------------------------------------------------------------------
-// load_q_frags_hip: read this thread's Q fragments once from global memory.
-// Q is loop-invariant across the kv_tile loop, so caching saves repeated
-// global loads (per work_idx, save (num_kv_tiles - 1) reloads of all Q).
-//
+// Q is loop-invariant across the kv_tile loop; caching saves (num_kv_tiles - 1) reloads.
 // q_pe_frag[mma_d][2] holds Q_pe[q=t%16][d=mma_d*16 + col_group*4 + 0..3] as 4 fp16.
 // q_nope_frag is the same for Q_nope across NUM_MMA_D_CKV head_dim tiles.
 // Out-of-range threads (batch_idx >= q_len) get zero-filled fragments.
-// ---------------------------------------------------------------------------
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeQ>
 __device__ __forceinline__ void load_q_frags_hip(uint32_t (*q_pe_frag)[2],
                                                  uint32_t (*q_nope_frag)[2], const DTypeQ* q_nope,
@@ -192,9 +182,6 @@ __device__ __forceinline__ void load_q_frags_hip(uint32_t (*q_pe_frag)[2],
   }
 }
 
-// ---------------------------------------------------------------------------
-// compute_qk_hip: accumulate s_frag = Q_pe*KPE^T + Q_nope*CKV^T
-//
 // CDNA3 MFMA computes D = A*B where the D output is column-major per-thread:
 // thread t holds D[m=(t/16)*4+r][n=t%16]. To get the natural row-major s_frag
 // layout (thread t holds s_frag[r] = S[q=t%16][kv=col_group*4+r]) we swap the
@@ -202,7 +189,6 @@ __device__ __forceinline__ void load_q_frags_hip(uint32_t (*q_pe_frag)[2],
 //   D[m=kv][n=q] = sum_d K[kv=m][d=k] * Q[q=n][d=k] = (K@Q^T)[kv][q] = S[q][kv].
 // Combined with the column-major D layout, thread t's r-th register =
 // S[q=t%16][kv=(t/16)*4+r].
-// ---------------------------------------------------------------------------
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename DTypeKV>
 __device__ __forceinline__ void compute_qk_hip(float* s_frag, const uint32_t (*q_pe_frag)[2],
                                                const uint32_t (*q_nope_frag)[2],
@@ -239,10 +225,7 @@ __device__ __forceinline__ void compute_qk_hip(float* s_frag, const uint32_t (*q
   }
 }
 
-// ---------------------------------------------------------------------------
-// logits_mask_hip: zero out scores for out-of-bounds or causally-masked positions.
 // s_frag[r] = S[q_row=lane%16][kv_col = kv_idx_base + (lane/16)*4 + r]
-// ---------------------------------------------------------------------------
 template <bool CAUSAL>
 __device__ __forceinline__ void logits_mask_hip(float* s_frag, uint32_t qo_packed_idx_base,
                                                 uint32_t kv_idx_base, uint32_t q_len,
@@ -260,11 +243,6 @@ __device__ __forceinline__ void logits_mask_hip(float* s_frag, uint32_t qo_packe
   }
 }
 
-// ---------------------------------------------------------------------------
-// broadcast_softmax_hip: called by wave 0 after compute_qk + logits_mask.
-// Inlines update_mdo_states, captures o_scale, and writes p_frag + scalars to
-// the wave_spec LDS stage for waves 1..3 to consume via read_softmax_hip.
-// ---------------------------------------------------------------------------
 template <uint32_t NUM_MMA_D_PER_WAVE>
 __device__ __forceinline__ void broadcast_softmax_hip(float* s_frag, float (*o_frag)[4],
                                                       float& m_val, float& d_scalar,
@@ -306,11 +284,6 @@ __device__ __forceinline__ void broadcast_softmax_hip(float* s_frag, float (*o_f
   }
 }
 
-// ---------------------------------------------------------------------------
-// read_softmax_hip: called by waves 1..3 after the __syncthreads() following
-// broadcast_softmax_hip. Reads p_frag and applies the o_scale / state update
-// that wave 0 already applied to its own o_frag.
-// ---------------------------------------------------------------------------
 template <uint32_t NUM_MMA_D_PER_WAVE>
 __device__ __forceinline__ void read_softmax_hip(float* s_frag, float (*o_frag)[4], float& m_val,
                                                  float& d_scalar, const WaveSpecStageMLAHIP& stage,
@@ -326,16 +299,11 @@ __device__ __forceinline__ void read_softmax_hip(float* s_frag, float (*o_frag)[
   d_scalar = stage.d_stage[q_row];
 }
 
-// ---------------------------------------------------------------------------
-// compute_pv_hip: accumulate P*V into o_frag for this wave's head_dim shard.
-// s_frag must already hold exp-scaled softmax weights (output of broadcast/read_softmax_hip).
-//
 // As with compute_qk_hip, we swap A/B so the column-major D output gives a
 // row-major o_frag: thread t's r-th register = O[q=t%16][d=mma_d_abs*16+col_group*4+r].
 // We pass A=V (loaded strided so f16x4[j]=V[kv=col_group*4+j][d=mma_d_abs*16+t%16])
 // and B=P (s_frag, with f16x4[r]=P[q=t%16][kv=col_group*4+r]).
 // The math: D[m=d_local][n=q] = sum_kv V[kv][d] * P[q][kv] = O[q][d_global].
-// ---------------------------------------------------------------------------
 template <uint32_t HEAD_DIM_CKV, uint32_t NUM_MMA_D_PER_WAVE, typename DTypeKV>
 __device__ __forceinline__ void compute_pv_hip(float (*o_frag)[4], const float* s_frag,
                                                const DTypeKV* ckv_smem, uint32_t wave_idx,
@@ -378,15 +346,9 @@ __device__ __forceinline__ void normalize_d_hip(float (*o_frag)[4], float m_val,
   }
 }
 
-// ---------------------------------------------------------------------------
-// write_o_hip: store results to final_o or partial_o.
-//
 // Each thread writes for q_row = lane_idx%16 and its wave's head_dim shard.
 // Only wave_idx==0 && col_group==0 (lane_idx<16) writes the LSE scalar.
-//
-// partial_o / partial_lse are the GLOBAL arrays; partial_indptr is the start
-// row index into these arrays for this CTA's work item. Pass -1 if no partial.
-// ---------------------------------------------------------------------------
+// partial_o / partial_lse are the GLOBAL arrays; partial_indptr = -1 when single-tile.
 template <uint32_t HEAD_DIM_CKV, uint32_t NUM_MMA_D_PER_WAVE, typename DTypeO, typename IdType>
 __device__ __forceinline__ void write_o_hip(
     float (*o_frag)[4], float m_val, float d_scalar, DTypeO* final_o, float* final_lse,
@@ -434,13 +396,9 @@ __device__ __forceinline__ void write_o_hip(
   }
 }
 
-// ---------------------------------------------------------------------------
-// DevicePersistentMergeStatesHIP: reduce partial outputs → final output.
-//
 // partial_o[row * HEAD_DIM_CKV + col] stores DTypeO (normalized by each partial's d).
 // partial_lse[row] = log2(d) + m for each partial block.
 // Merge treats partial_lse as the combined log-sum-exp weight for each partial.
-// ---------------------------------------------------------------------------
 template <uint32_t HEAD_DIM_CKV, typename DTypeO, typename IdType>
 __device__ void DevicePersistentMergeStatesHIP(
     const IdType* merge_packed_offset_start, const IdType* merge_packed_offset_end,
@@ -600,12 +558,11 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
     uint32_t cur_stage = 0;
     for (int32_t kv_tile_idx = num_kv_tiles - 1; kv_tile_idx >= 0; --kv_tile_idx) {
       const uint32_t next_stage = 1 - cur_stage;
-      const bool has_next = (kv_tile_idx > 0);
 
       // Issue load for tile (kv_tile_idx - 1) into next_stage. Without
       // cp.async, this still blocks the wave but lets the compiler schedule
       // the global VGPR loads ahead of compute.
-      if (has_next) {
+      if (kv_tile_idx > 0) {
         load_kv_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV, IdType>(
             smem_storage.ckv_smem[next_stage][0], smem_storage.kpe_smem[next_stage][0], params.ckv,
             params.kpe, params.kv_indices, params.ckv_stride_page, params.ckv_stride_n,
@@ -615,8 +572,6 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
 
       __syncthreads();
 
-      // Wave 0 computes QK and softmax, then broadcasts via LDS.
-      // Waves 1..3 skip QK (saves 75% of MFMA work) and read p_frag from LDS.
       if (wave_idx == 0) {
         compute_qk_hip<HEAD_DIM_CKV, HEAD_DIM_KPE, DTypeKV>(
             s_frag, q_pe_frag, q_nope_frag, smem_storage.ckv_smem[cur_stage][0],
