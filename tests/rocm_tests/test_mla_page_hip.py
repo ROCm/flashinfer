@@ -94,7 +94,6 @@ def test_append_mla_paged_kv_cache(kv_lens, page_size):
         torch.testing.assert_close(
             kpe_append[acc_kv : acc_kv + kl], kpe_flat[acc_pad : acc_pad + kl]
         )
-        # Padding slots must remain zero.
         assert torch.all(ckv_flat[acc_pad + kl : acc_pad + pages_i * page_size] == 0)
         assert torch.all(kpe_flat[acc_pad + kl : acc_pad + pages_i * page_size] == 0)
         acc_kv += kl

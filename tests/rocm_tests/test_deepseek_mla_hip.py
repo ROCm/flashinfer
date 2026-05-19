@@ -116,19 +116,18 @@ def warmup_jit():
         pytest.param(8192, marks=pytest.mark.slow),
     ],
 )
-@pytest.mark.parametrize("qo_len", [1])
 @pytest.mark.parametrize("num_heads", [16])
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("page_size", [1, 16])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_batch_mla_page_attention(
-    batch_size, kv_len, qo_len, num_heads, causal, page_size, dtype
+    batch_size, kv_len, num_heads, causal, page_size, dtype
 ):
     # The HIP MLA kernel uses CTA_TILE_Q = 16, while the MLA planner assumes
     # CTA_TILE_Q = 64. For decode (packed_qo_len = qo_len * num_heads <= 16)
     # the planner generates one work item per batch and the CTA covers it exactly.
     # Prefill (qo_len > 1) requires an inner Q-sub-tile loop — not yet implemented.
-    assert qo_len * num_heads <= 16, "Prefill MLA on HIP not yet supported"
+    qo_len = 1
     if causal and qo_len > kv_len:
         pytest.skip("qo_len > kv_len not supported for causal attention")
     device = torch.device("cuda")
@@ -207,10 +206,10 @@ def test_batch_mla_page_attention(
     ],
     ids=lambda v: "x".join(str(x) for x in v),
 )
-@pytest.mark.parametrize("qo_len", [1])
 @pytest.mark.parametrize("causal", [False, True])
-def test_batch_mla_varlen_kv(batch_size, kv_lens_list, qo_len, causal):
+def test_batch_mla_varlen_kv(batch_size, kv_lens_list, causal):
     """Each request in the batch has a different kv_len (still page_size=1)."""
+    qo_len = 1
     if causal and qo_len > min(kv_lens_list):
         pytest.skip("qo_len > min(kv_len) not supported for causal attention")
     device = torch.device("cuda")

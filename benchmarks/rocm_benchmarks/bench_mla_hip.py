@@ -20,6 +20,7 @@ from flashinfer.testing.utils import bench_gpu_time
 
 HEAD_DIM_CKV = 512
 HEAD_DIM_KPE = 64
+_PAGE_SIZE = 1
 
 
 def _warmup_jit(dtype: torch.dtype) -> None:
@@ -42,7 +43,6 @@ def _warmup_jit(dtype: torch.dtype) -> None:
 
 @torch.inference_mode()
 def bench(batch_size: int, seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
-    page_size = 1
     sm_scale = 1.0 / math.sqrt(HEAD_DIM_CKV + HEAD_DIM_KPE)
 
     q_nope = torch.randn(
@@ -50,10 +50,10 @@ def bench(batch_size: int, seq_len: int, num_heads: int, dtype: torch.dtype) -> 
     )
     q_pe = torch.randn(batch_size, num_heads, HEAD_DIM_KPE, dtype=dtype, device="cuda")
     ckv = torch.randn(
-        batch_size * seq_len, page_size, HEAD_DIM_CKV, dtype=dtype, device="cuda"
+        batch_size * seq_len, _PAGE_SIZE, HEAD_DIM_CKV, dtype=dtype, device="cuda"
     )
     kpe = torch.randn(
-        batch_size * seq_len, page_size, HEAD_DIM_KPE, dtype=dtype, device="cuda"
+        batch_size * seq_len, _PAGE_SIZE, HEAD_DIM_KPE, dtype=dtype, device="cuda"
     )
 
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
@@ -74,7 +74,7 @@ def bench(batch_size: int, seq_len: int, num_heads: int, dtype: torch.dtype) -> 
         num_heads,
         HEAD_DIM_CKV,
         HEAD_DIM_KPE,
-        page_size,
+        _PAGE_SIZE,
         False,
         sm_scale,
         dtype,

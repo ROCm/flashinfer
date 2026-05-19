@@ -15,6 +15,7 @@ from flashinfer.utils import determine_mla_backend
 
 HEAD_DIM_CKV = 512
 HEAD_DIM_KPE = 64
+NUM_HEADS = 16
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -62,7 +63,7 @@ def _plan(wrapper, batch_size, kv_len, page_size, causal, dtype):
         kv_indptr,
         kv_indices,
         kv_lens,
-        16,
+        NUM_HEADS,
         HEAD_DIM_CKV,
         HEAD_DIM_KPE,
         page_size,
@@ -74,13 +75,11 @@ def _plan(wrapper, batch_size, kv_len, page_size, causal, dtype):
     return kv_lens, pages_per_req
 
 
-def _mla_reference(q_nope, q_pe, ckv, kpe, kv_lens, page_size, sm_scale, causal):
+def _mla_reference(q_nope, q_pe, ckv, kpe, kv_lens, page_size, sm_scale, _causal):
     """Pure-PyTorch MLA reference: S = q_pe @ kpe^T + q_nope @ ckv^T; O = softmax(S) @ ckv."""
     batch_size, num_heads, _ = q_nope.shape
     dtype = q_nope.dtype
 
-    # ckv/kpe: [num_pages, page_size, head_dim]
-    # flatten to [batch_size, kv_len, head_dim] using kv_lens
     max_kv_len = int(kv_lens.max().item())
     # pages are laid out sequentially per request
     pages_per_req = math.ceil(max_kv_len / page_size)
@@ -92,9 +91,7 @@ def _mla_reference(q_nope, q_pe, ckv, kpe, kv_lens, page_size, sm_scale, causal)
         :, :max_kv_len, :
     ]
 
-    # q: [batch, heads, dim]  K/V: [batch, kv_len, dim]  scores: [batch, heads, kv_len]
     # decode is qo_len=1 so causal masking is a no-op; only kv-length padding matters.
-    del causal
     scores = torch.einsum("bhd,bsd->bhs", q_pe.float(), kpe_flat.float())
     scores += torch.einsum("bhd,bsd->bhs", q_nope.float(), ckv_flat.float())
     scores = scores * sm_scale
@@ -140,8 +137,10 @@ def test_batch_mla_correctness(batch_size, kv_len, page_size, causal, dtype):
         wrapper, batch_size, kv_len, page_size, causal, dtype
     )
 
-    q_nope = torch.randn(batch_size, 16, HEAD_DIM_CKV, dtype=dtype, device="cuda")
-    q_pe = torch.randn(batch_size, 16, HEAD_DIM_KPE, dtype=dtype, device="cuda")
+    q_nope = torch.randn(
+        batch_size, NUM_HEADS, HEAD_DIM_CKV, dtype=dtype, device="cuda"
+    )
+    q_pe = torch.randn(batch_size, NUM_HEADS, HEAD_DIM_KPE, dtype=dtype, device="cuda")
     ckv = torch.randn(
         batch_size * pages_per_req, page_size, HEAD_DIM_CKV, dtype=dtype, device="cuda"
     )
