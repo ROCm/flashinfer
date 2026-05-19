@@ -57,6 +57,12 @@ if IS_CUDA:
     )
 elif IS_HIP:
     from .modules_hip import gen_batch_decode_module as gen_batch_decode_module
+    from .modules_hip import (
+        gen_batch_decode_aiter_module as gen_batch_decode_aiter_module,
+    )
+    from .modules_hip import (
+        get_batch_decode_aiter_uri as get_batch_decode_aiter_uri,
+    )
     from .modules_hip import gen_batch_prefill_module as gen_batch_prefill_module
     from .modules_hip import (
         gen_customize_batch_decode_module as gen_customize_batch_decode_module,

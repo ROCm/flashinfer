@@ -3,9 +3,8 @@
 
 // No AITER or CK Tile headers needed here — we work with void* function pointers.
 
-#include <flashinfer/attention/aiter/aiter_loader.h>
-
 #include <dlfcn.h>
+#include <flashinfer/attention/aiter/aiter_loader.h>
 
 #include <cstdlib>
 #include <mutex>
@@ -81,13 +80,11 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
   if (!handle) {
     const char* err = dlerror();
     throw std::runtime_error(
-        "AITER variant not found: " + so_path + "\n  dlerror: " +
-        (err ? err : "unknown") +
+        "AITER variant not found: " + so_path + "\n  dlerror: " + (err ? err : "unknown") +
         "\n  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
         "calling mha_varlen_fwd with matching (dtype=" +
-        std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-        ", causal=" + (key.causal ? "true" : "false") +
-        ", has_lse=" + (key.has_lse ? "true" : "false") + ").");
+        std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") + ", causal=" +
+        (key.causal ? "true" : "false") + ", has_lse=" + (key.has_lse ? "true" : "false") + ").");
   }
 
   dlerror();  // clear any pre-existing error before dlsym
@@ -141,14 +138,13 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
   void* handle = dlopen(so_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
   if (!handle) {
     const char* err = dlerror();
-    throw std::runtime_error(
-        "AITER batch-prefill variant not found: " + so_path + "\n  dlerror: " +
-        (err ? err : "unknown") +
-        "\n  Hint: trigger AITER's lazy JIT build by calling "
-        "aiter.ops.mha.mha_batch_prefill_func() once with matching (dtype=" +
-        std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-        ", causal=" + (key.causal ? "true" : "false") +
-        ", has_lse=" + (key.has_lse ? "true" : "false") + ") before this C++ path.");
+    throw std::runtime_error("AITER batch-prefill variant not found: " + so_path +
+                             "\n  dlerror: " + (err ? err : "unknown") +
+                             "\n  Hint: trigger AITER's lazy JIT build by calling "
+                             "aiter.ops.mha.mha_batch_prefill_func() once with matching (dtype=" +
+                             std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
+                             ", causal=" + (key.causal ? "true" : "false") + ", has_lse=" +
+                             (key.has_lse ? "true" : "false") + ") before this C++ path.");
   }
 
   dlerror();  // clear any pre-existing error before dlsym
@@ -159,10 +155,70 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
     throw std::runtime_error("dlsym(" + std::string(kMhaBatchPrefillSymbol) + ") failed in " +
                              so_path + ": " + (err ? err : "unknown") +
                              "\n  This usually means the AITER ABI changed. "
-                             "Run: nm -D " + so_path + " | grep mha_batch_prefill");
+                             "Run: nm -D " +
+                             so_path + " | grep mha_batch_prefill");
   }
 
   s_bp_cache.emplace(key, sym);
+  return sym;
+}
+
+// ----- generic extern "C" JIT handle loader -----
+
+namespace {
+
+struct ExternCKey {
+  std::string so_path;
+  std::string func_name;
+  bool operator==(ExternCKey const& o) const noexcept {
+    return so_path == o.so_path && func_name == o.func_name;
+  }
+};
+
+struct ExternCKeyHash {
+  std::size_t operator()(ExternCKey const& k) const noexcept {
+    std::size_t h1 = std::hash<std::string>{}(k.so_path);
+    std::size_t h2 = std::hash<std::string>{}(k.func_name);
+    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+  }
+};
+
+std::shared_mutex s_ec_mu;
+std::unordered_map<ExternCKey, void*, ExternCKeyHash> s_ec_cache;
+
+}  // namespace
+
+void* get_aiter_extern_c_handle(const std::string& so_path, const std::string& func_name) {
+  ExternCKey key{so_path, func_name};
+  {
+    std::shared_lock rd(s_ec_mu);
+    auto it = s_ec_cache.find(key);
+    if (it != s_ec_cache.end()) return it->second;
+  }
+
+  std::unique_lock wr(s_ec_mu);
+  auto it = s_ec_cache.find(key);
+  if (it != s_ec_cache.end()) return it->second;
+
+  void* handle = dlopen(so_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+  if (!handle) {
+    const char* err = dlerror();
+    throw std::runtime_error(
+        "AITER extern-C .so not found: " + so_path + "\n  dlerror: " + (err ? err : "unknown") +
+        "\n  Hint: ensure the AITER compile() helper was invoked from the Python "
+        "plan() side to bootstrap this variant.");
+  }
+
+  dlerror();  // clear any pre-existing error before dlsym
+  void* sym = dlsym(handle, func_name.c_str());
+  if (!sym) {
+    const char* err = dlerror();
+    dlclose(handle);
+    throw std::runtime_error("dlsym(" + func_name + ") failed in " + so_path + ": " +
+                             (err ? err : "unknown"));
+  }
+
+  s_ec_cache.emplace(std::move(key), sym);
   return sym;
 }
 

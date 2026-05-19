@@ -22,16 +22,20 @@ from typing import Any, List, Literal, Optional, Tuple, Union, overload
 import torch
 
 from .jit import (
+    gen_batch_decode_aiter_module,
     gen_batch_decode_module,
     gen_customize_batch_decode_module,
     gen_customize_batch_prefill_module,
     gen_single_decode_module,
+    get_batch_decode_aiter_uri,
     get_batch_decode_uri,
     get_single_decode_uri,
 )
 from .jit.core import logger
 from .page import get_seq_lens
 from .prefill_rocm import (
+    _aiter_bootstrap_lock,
+    _auto_select_prefill_backend,
     get_batch_prefill_jit_module,
     get_batch_prefill_module,
     get_single_prefill_module,
@@ -291,6 +295,157 @@ def get_batch_decode_module(*args):
         plan=plan_func,
         run=run_batch_decode,
     )
+
+
+@functools.cache
+def get_batch_decode_aiter_module(
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    head_dim_qk: int,
+    head_dim_vo: int,
+):
+    """Build & load the AITER PA v1 C++ harness extension for (dtype, head_dim).
+
+    The returned namespace has a single ``run`` callable mirroring the C++ entry's
+    signature. The per-variant AITER .so is loaded lazily inside C++ via dlopen
+    on the first run() call using (so_path, func_name) resolved at plan() time.
+    """
+    uri = get_batch_decode_aiter_uri(
+        dtype_q, dtype_kv, dtype_o, head_dim_qk, head_dim_vo
+    )
+    mod = gen_batch_decode_aiter_module(
+        dtype_q, dtype_kv, dtype_o, head_dim_qk, head_dim_vo
+    ).build_and_load()
+    run_func = mod.run.default
+
+    @register_custom_op(
+        f"flashinfer::{uri}_run",
+        mutates_args=("paged_k_cache", "paged_v_cache", "o"),
+    )
+    def run_batch_decode_aiter(
+        q: torch.Tensor,
+        paged_k_cache: torch.Tensor,
+        paged_v_cache: torch.Tensor,
+        paged_kv_indptr: torch.Tensor,
+        paged_kv_indices: torch.Tensor,
+        paged_kv_last_page_len: torch.Tensor,
+        o: torch.Tensor,
+        so_path: str,
+        func_name: str,
+        max_context_len: int,
+        partition_size: int,
+        sliding_window: int,
+        logits_soft_cap: float,
+        sm_scale: float,
+        max_blocks_per_seq: int,
+    ) -> None:
+        run_func(
+            q,
+            paged_k_cache,
+            paged_v_cache,
+            paged_kv_indptr,
+            paged_kv_indices,
+            paged_kv_last_page_len,
+            o,
+            so_path,
+            func_name,
+            max_context_len,
+            partition_size,
+            sliding_window,
+            logits_soft_cap,
+            sm_scale,
+            max_blocks_per_seq,
+        )
+
+    @register_fake_op(f"flashinfer::{uri}_run")
+    def _fake_run_batch_decode_aiter(
+        q: torch.Tensor,
+        paged_k_cache: torch.Tensor,
+        paged_v_cache: torch.Tensor,
+        paged_kv_indptr: torch.Tensor,
+        paged_kv_indices: torch.Tensor,
+        paged_kv_last_page_len: torch.Tensor,
+        o: torch.Tensor,
+        so_path: str,
+        func_name: str,
+        max_context_len: int,
+        partition_size: int,
+        sliding_window: int,
+        logits_soft_cap: float,
+        sm_scale: float,
+        max_blocks_per_seq: int,
+    ) -> None:
+        pass
+
+    return SimpleNamespace(run=run_batch_decode_aiter)
+
+
+# Mapping from torch dtype to AITER's pa_v1 C++ template `dtype` / `kv_dtype` strings.
+_AITER_DTYPE_STR = {
+    torch.float16: "_Float16",
+    torch.bfloat16: "__hip_bfloat16",
+}
+
+
+def _aiter_pa_v1_resolve(
+    *,
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    head_dim: int,
+    num_qo_heads: int,
+    num_kv_heads: int,
+    page_size: int,
+    max_context_len: int,
+    logits_soft_cap: float,
+    sliding_window: int,
+    partition_size: int = 256,
+    warp_size: int = 64,
+):
+    """Invoke aiter's pa_v1.compile() to produce the variant .so for this problem,
+    then return (so_path, func_name) extracted from the returned ctypes function.
+
+    Importing aiter.csrc.cpp_itfs.pa.pa_v1 is deferred so that flashinfer can be
+    imported on machines without AITER installed.
+    """
+    from csrc.cpp_itfs.pa.pa_v1 import compile as aiter_pa_v1_compile  # type: ignore
+    from csrc.cpp_itfs.utils import BUILD_DIR  # type: ignore
+
+    if dtype_q not in _AITER_DTYPE_STR:
+        raise ValueError(f"AITER PA v1 supports fp16/bf16 only; got dtype_q={dtype_q}")
+    if dtype_kv not in _AITER_DTYPE_STR:
+        raise ValueError(
+            f"AITER PA v1 supports fp16/bf16 only; got dtype_kv={dtype_kv}"
+        )
+
+    gqa_ratio = num_qo_heads // num_kv_heads
+    max_num_partitions = (max_context_len + partition_size - 1) // partition_size
+    npar_loops = (max_num_partitions + warp_size - 1) // warp_size
+
+    func = aiter_pa_v1_compile(
+        gqa_ratio=gqa_ratio,
+        head_size=head_dim,
+        npar_loops=npar_loops,
+        dtype=_AITER_DTYPE_STR[dtype_q],
+        kv_dtype=_AITER_DTYPE_STR[dtype_kv],
+        fp8_kv_dtype="auto",
+        out_dtype=_AITER_DTYPE_STR[dtype_o],
+        block_size=page_size,
+        alibi_enabled=False,
+        logits_soft_cap_enabled=(logits_soft_cap > 0),
+        partition_size=partition_size,
+        mtp=1,
+        sliding_window_enabled=(sliding_window > 0),
+    )
+    # func is a ctypes._FuncPtr with .__name__ = entry symbol.
+    # AITER stores the variant .so at BUILD_DIR/<folder>/lib.so where folder == func_name
+    # (compile_template_op default). This convention is the authoritative way to recover
+    # the .so path post-compile, since ctypes._FuncPtr doesn't expose the CDLL path
+    # consistently across CPython versions.
+    func_name = func.__name__
+    so_path = f"{BUILD_DIR}/{func_name}/lib.so"
+    return so_path, func_name
 
 
 def single_decode_with_kv_cache_with_jit_module(
@@ -672,9 +827,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
             Only needed when ``use_cuda_graph`` is ``True``.
 
         backend : str
-            The implementation backend, could be ``auto``/``fa2``. Defaults to ``auto``.
+            The implementation backend, could be ``auto``/``fa2``/``aiter``. Defaults to ``auto``.
             If set to ``auto``, the wrapper will automatically choose the backend based on the
-            device architecture and kernel availability.
+            device architecture and kernel availability. ``aiter`` selects AMD AITER's
+            paged_attention_v1 kernel and requires gfx942/gfx950 plus NHD layout, fp16/bf16,
+            no positional encoding, and ``use_tensor_cores=False``.
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
@@ -932,11 +1089,84 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._num_kv_heads = num_kv_heads
         self._block_tables: Optional[torch.Tensor] = block_tables
         self._max_kv_len: Optional[int] = None
+        self._page_size: int = page_size
 
         if seq_lens is None:
             kv_lens_arr_host = get_seq_lens(indptr_host, last_page_len_host, page_size)
         else:
             kv_lens_arr_host = seq_lens.cpu()
+
+        # Resolve auto → concrete backend. AITER decode requires use_tensor_cores=False
+        # (the AITER PA v1 kernel handles its own dispatch internally).
+        if self._backend == "auto":
+            if self.use_tensor_cores:
+                self._backend = "fa2"
+            else:
+                self._backend = _auto_select_prefill_backend(
+                    self.device,
+                    dtype_q=q_data_type,
+                    dtype_kv=kv_data_type,
+                    kv_layout=self._kv_layout,
+                    has_custom_mask=False,
+                    head_dim_qk=head_dim,
+                    head_dim_vo=head_dim,
+                    pos_encoding_mode=pos_encoding_mode,
+                )
+        if self._backend == "aiter":
+            if self.use_tensor_cores:
+                raise ValueError("AITER decode backend requires use_tensor_cores=False")
+            if self._kv_layout != "NHD":
+                raise ValueError(
+                    f"AITER decode backend requires NHD kv_layout, got {self._kv_layout!r}"
+                )
+            if pos_encoding_mode != "NONE":
+                raise ValueError(
+                    f"AITER decode backend requires pos_encoding_mode='NONE', "
+                    f"got {pos_encoding_mode!r}"
+                )
+            self._max_kv_len = int(max(kv_lens_arr_host).item())
+            # max blocks per seq across the batch — needed to size the dense block_tables.
+            npages_arr = indptr_host[1:].to(torch.int64) - indptr_host[:-1].to(
+                torch.int64
+            )
+            self._aiter_max_blocks_per_seq = (
+                int(npages_arr.max().item()) if batch_size > 0 else 0
+            )
+            self._aiter_partition_size = 256
+            self._aiter_sliding_window = 0 if window_left == -1 else window_left
+
+            self._cached_module = get_batch_decode_aiter_module(
+                q_data_type, kv_data_type, q_data_type, head_dim, head_dim
+            )
+            # Bootstrap & resolve (so_path, func_name) — this triggers AITER's own JIT
+            # build of the variant .so on first call for this template-param combination.
+            with _aiter_bootstrap_lock:
+                self._aiter_so_path, self._aiter_func_name = _aiter_pa_v1_resolve(
+                    dtype_q=q_data_type,
+                    dtype_kv=kv_data_type,
+                    dtype_o=q_data_type,
+                    head_dim=head_dim,
+                    num_qo_heads=num_qo_heads,
+                    num_kv_heads=num_kv_heads,
+                    page_size=page_size,
+                    max_context_len=self._max_kv_len,
+                    logits_soft_cap=logits_soft_cap,
+                    sliding_window=self._aiter_sliding_window,
+                    partition_size=self._aiter_partition_size,
+                )
+            # Skip FA2-style plan_info; AITER kernel doesn't use it.
+            self._plan_info = plan_info_vec_as_tensor(
+                [], device=self._float_workspace_buffer.device
+            )
+
+            self._pos_encoding_mode = pos_encoding_mode
+            self._window_left = window_left
+            self._logits_soft_cap = logits_soft_cap
+            self._sm_scale = sm_scale
+            self._rope_scale = rope_scale
+            self._rope_theta = rope_theta
+            return
+
         if self.use_tensor_cores:
             self._max_kv_len = max(kv_lens_arr_host).item()
             if self._jit_module is not None:
@@ -1198,8 +1428,39 @@ class BatchDecodeWithPagedKVCacheWrapper:
         else:
             check_shape_dtype_device(out, q.shape, q.dtype, q.device, "out")
 
+        if self._backend == "aiter":
+            if return_lse:
+                raise NotImplementedError(
+                    "AITER decode backend does not currently return LSE"
+                )
+            self._cached_module.run(
+                q,
+                k_cache,
+                v_cache,
+                self._paged_kv_indptr_buf,
+                self._paged_kv_indices_buf,
+                self._paged_kv_last_page_len_buf,
+                out,
+                self._aiter_so_path,
+                self._aiter_func_name,
+                int(self._max_kv_len or 0),
+                int(self._aiter_partition_size),
+                int(self._aiter_sliding_window),
+                float(logits_soft_cap),
+                float(sm_scale),
+                int(self._aiter_max_blocks_per_seq),
+            )
+            if v_scale is not None:
+                if is_float8(out):
+                    out = (out.to(torch.float32) * v_scale).to(out.dtype)
+                else:
+                    out *= v_scale
+            return (out, lse) if return_lse else out
+
         if self.use_tensor_cores:
-            assert self._plan_info is not None, "plan info is not initialized; call plan() first"
+            assert self._plan_info is not None, (
+                "plan info is not initialized; call plan() first"
+            )
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,

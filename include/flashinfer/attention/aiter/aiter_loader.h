@@ -41,7 +41,7 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key);
 
 // Batch-prefill variants share the same key fields as mha_fwd variants.
 // page_size is NOT in the key — the .so dispatches all native page sizes at runtime.
-using BatchPrefillVariantKey     = VariantKey;
+using BatchPrefillVariantKey = VariantKey;
 using BatchPrefillVariantKeyHash = VariantKeyHash;
 
 // Returns the raw dlsym function pointer for aiter::mha_batch_prefill(...).
@@ -50,5 +50,12 @@ using BatchPrefillVariantKeyHash = VariantKeyHash;
 // by calling aiter.ops.mha.mha_batch_prefill_func once before invoking this function.
 // Throws std::runtime_error if the variant .so is not found or the symbol is missing.
 void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key);
+
+// Generic helper for AITER's per-variant `extern "C"` JIT outputs (e.g. PA v1, MLA).
+// AITER's compile_template_op produces lib.so files keyed by an md5 hash of all
+// template params; the Python plan() side calls the AITER compile() helper and
+// passes the resolved (so_path, func_name) to the C++ run() entry, which dlopens
+// the .so once and caches the dlsym handle. Throws if dlopen or dlsym fails.
+void* get_aiter_extern_c_handle(const std::string& so_path, const std::string& func_name);
 
 }  // namespace flashinfer::aiter
