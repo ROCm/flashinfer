@@ -9,7 +9,6 @@ import math
 import pytest
 import torch
 
-import flashinfer
 import flashinfer.mla
 from flashinfer.jit import build_jit_specs, gen_batch_mla_module
 from flashinfer.utils import determine_mla_backend
@@ -38,7 +37,7 @@ def warmup_jit():
     yield
 
 
-def _make_wrapper(batch_size, dtype):
+def _make_wrapper():
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
     return flashinfer.mla.BatchMLAPagedAttentionWrapper(workspace, backend="auto")
 
@@ -124,7 +123,7 @@ def test_determine_mla_backend():
 def test_batch_mla_plan(batch_size, kv_len, page_size, causal, dtype):
     if causal and kv_len == 0:
         pytest.skip("causal with kv_len=0 unsupported")
-    wrapper = _make_wrapper(batch_size, dtype)
+    wrapper = _make_wrapper()
     _plan(wrapper, batch_size, kv_len, page_size, causal, dtype)
 
 
@@ -135,7 +134,7 @@ def test_batch_mla_plan(batch_size, kv_len, page_size, causal, dtype):
 @pytest.mark.parametrize("dtype", [torch.float16])
 def test_batch_mla_correctness(batch_size, kv_len, page_size, causal, dtype):
     torch.manual_seed(42)
-    wrapper = _make_wrapper(batch_size, dtype)
+    wrapper = _make_wrapper()
     sm_scale = 1.0 / ((HEAD_DIM_CKV + HEAD_DIM_KPE) ** 0.5)
     kv_lens, pages_per_req = _plan(
         wrapper, batch_size, kv_len, page_size, causal, dtype

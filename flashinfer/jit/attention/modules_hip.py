@@ -976,8 +976,8 @@ def gen_batch_mla_module(
     head_dim_kpe: int,
     use_profiler: bool,
 ) -> JitSpec:
-    if backend == "auto":
-        raise ValueError("backend should not be auto when jit_args is provided")
+    if backend != "hip":
+        raise ValueError(f"MLA only supports backend='hip', got {backend!r}")
     uri = get_batch_mla_uri(
         backend,
         dtype_q,
@@ -1018,8 +1018,5 @@ def gen_batch_mla_module(
     generated_config_path = gen_directory / "batch_mla_config.inc"
     write_if_different(generated_config_path, generated_inc_str)
 
-    extra_cuda_cflags = []
-    if use_profiler:
-        extra_cuda_cflags += ["-DFLASHINFER_ENABLE_PROFILER"]
-
+    extra_cuda_cflags = ["-DFLASHINFER_ENABLE_PROFILER"] if use_profiler else []
     return gen_jit_spec(uri, source_paths, extra_cuda_cflags=extra_cuda_cflags)

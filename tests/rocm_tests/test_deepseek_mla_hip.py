@@ -11,7 +11,6 @@ import math
 import pytest
 import torch
 
-import flashinfer
 import flashinfer.mla
 from flashinfer.jit import build_jit_specs, gen_batch_mla_module
 
@@ -220,8 +219,7 @@ def test_batch_mla_varlen_kv(batch_size, kv_lens_list, qo_len, causal):
     num_heads = 16
     page_size = 1
     dtype = torch.float16
-    # Repeat the kv_lens_list `batch_size` times along the request axis.
-    kv_lens_full = (kv_lens_list * batch_size)[: batch_size * len(kv_lens_list)]
+    kv_lens_full = kv_lens_list * batch_size
     n_req = len(kv_lens_full)
     pages = [math.ceil(kv / page_size) for kv in kv_lens_full]
     total_pages = sum(pages)

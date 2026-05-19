@@ -636,6 +636,13 @@ __global__ __launch_bounds__(MLA_HIP_NUM_THREADS) void BatchMLAPagedAttentionKer
       compute_pv_hip<HEAD_DIM_CKV, NUM_MMA_D_PER_WAVE, DTypeKV>(
           o_frag, s_frag, smem_storage.ckv_smem[cur_stage][0], wave_idx, lane_idx);
 
+      // All threads must finish PV reads from ckv_smem[cur_stage] before any thread
+      // starts the next iteration's load_kv_hip into next_stage. On CDNA3 the four
+      // wavefronts are not lockstep across MFMA; without this barrier, faster waves
+      // can overwrite the buffer (now the upcoming next_stage) while slower waves
+      // still read it — wrong attention whenever num_kv_tiles >= 3.
+      __syncthreads();
+
       cur_stage = next_stage;
     }
 

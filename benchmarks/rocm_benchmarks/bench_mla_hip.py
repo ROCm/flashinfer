@@ -82,7 +82,6 @@ def bench(batch_size: int, seq_len: int, num_heads: int, dtype: torch.dtype) -> 
         dtype,
     )
 
-    # Correctness smoke-check before timing.
     o = wrapper.run(q_nope, q_pe, ckv, kpe)
     assert o.shape == (batch_size, num_heads, HEAD_DIM_CKV)
 
