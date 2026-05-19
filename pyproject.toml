@@ -187,7 +187,6 @@ pythonpath = ["tests", "tests/test_helpers"]
 testpaths = [
     "tests/rocm_tests",
     "tests/attention/test_decode_prefill_lse.py",
-    "tests/rocm_tests/test_logits_cap_hip.py",
     "tests/attention/test_non_contiguous_decode.py",
     "tests/attention/test_non_contiguous_prefill.py",
     "tests/attention/test_page.py",
