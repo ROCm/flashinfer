@@ -978,6 +978,10 @@ def gen_batch_mla_module(
 ) -> JitSpec:
     if backend != "hip":
         raise ValueError(f"MLA only supports backend='hip', got {backend!r}")
+    if use_profiler:
+        raise ValueError(
+            "use_profiler is not supported on HIP/ROCm — profiler.cuh uses NVIDIA PTX asm"
+        )
     uri = get_batch_mla_uri(
         backend,
         dtype_q,
@@ -1018,5 +1022,5 @@ def gen_batch_mla_module(
     generated_config_path = gen_directory / "batch_mla_config.inc"
     write_if_different(generated_config_path, generated_inc_str)
 
-    extra_cuda_cflags = ["-DFLASHINFER_ENABLE_PROFILER"] if use_profiler else []
+    extra_cuda_cflags: list[str] = []
     return gen_jit_spec(uri, source_paths, extra_cuda_cflags=extra_cuda_cflags)
