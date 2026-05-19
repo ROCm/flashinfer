@@ -14,7 +14,6 @@ import math
 import numpy as np
 import torch
 
-import flashinfer
 import flashinfer.mla
 from flashinfer.jit import build_jit_specs, gen_batch_mla_module
 from flashinfer.testing.utils import bench_gpu_time

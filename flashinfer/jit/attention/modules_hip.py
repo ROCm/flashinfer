@@ -962,7 +962,7 @@ def get_batch_mla_uri(
         f"dtype_idx_{filename_safe_dtype_map[dtype_idx]}_"
         f"head_dim_ckv_{head_dim_ckv}_"
         f"head_dim_kpe_{head_dim_kpe}_"
-        f"profiler_{use_profiler}_hip"
+        f"profiler_{use_profiler}_{backend}"
     )
 
 
