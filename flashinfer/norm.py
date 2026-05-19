@@ -38,10 +38,9 @@ if IS_HIP:
         return _aiter
 
     def _auto_select_norm_backend(device: torch.device, dtype: torch.dtype) -> str:
-        # AITER rms_norm uses lower-precision reductions that exceed the
-        # flashinfer test tolerance (fp16 atol=1e-3, bf16 atol=1.6e-2) for
-        # hidden_size >= 1024. Keep auto on the native JIT kernel; users can
-        # explicitly pass backend="aiter" to opt in.
+        # AITER rms_norm uses lower-precision reductions that exceed the flashinfer
+        # test tolerance (fp16 atol=1e-3, bf16 atol=1.6e-2) at hidden_size >= 1024.
+        # Keep auto on the native JIT kernel; pass backend="aiter" to opt in explicitly.
         return "native"
 
 
@@ -77,10 +76,12 @@ def rmsnorm(
         Normalized tensor, 2D shape (batch_size, hidden_size) or 3D shape (batch_size, num_heads, hidden_size).
     """
     if IS_HIP:
-        selected = backend
-        if selected == "auto":
-            selected = _auto_select_norm_backend(input.device, input.dtype)
-        if selected == "aiter":
+        _backend = (
+            backend
+            if backend != "auto"
+            else _auto_select_norm_backend(input.device, input.dtype)
+        )
+        if _backend == "aiter":
             if input.ndim != 2:
                 raise ValueError(
                     f"AITER rmsnorm only supports 2D inputs; got {input.ndim}D. "
@@ -91,7 +92,7 @@ def rmsnorm(
                 out.copy_(result)
                 return out
             return result
-        if selected not in ("native", "auto"):
+        if _backend not in ("native",):
             raise ValueError(
                 f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
             )

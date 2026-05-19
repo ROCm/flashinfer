@@ -40,18 +40,20 @@ struct SeqstartKeyHash {
   }
 };
 std::mutex s_seqstart_mu;
-std::unordered_map<SeqstartKey, std::pair<at::Tensor, at::Tensor>, SeqstartKeyHash> s_seqstart_cache;
+std::unordered_map<SeqstartKey, std::pair<at::Tensor, at::Tensor>, SeqstartKeyHash>
+    s_seqstart_cache;
 
 // Return device pointers to [0, qo_len] and [0, kv_len] int32 tensors.
-// First call for a given (qo_len, kv_len, device) allocates; subsequent calls are mutex+lookup only.
+// First call for a given (qo_len, kv_len, device) allocates; subsequent calls are mutex+lookup
+// only.
 std::pair<const int32_t*, const int32_t*> get_seqstart_ptrs(uint32_t qo_len, uint32_t kv_len,
-                                                              at::Device device) {
+                                                            at::Device device) {
   SeqstartKey key{qo_len, kv_len, device.index()};
   std::lock_guard<std::mutex> lock(s_seqstart_mu);
   auto [it, inserted] = s_seqstart_cache.try_emplace(key);
   if (inserted) {
     auto opts = at::TensorOptions().dtype(at::kInt).device(device);
-    it->second.first  = at::tensor({0, static_cast<int32_t>(qo_len)}, opts);
+    it->second.first = at::tensor({0, static_cast<int32_t>(qo_len)}, opts);
     it->second.second = at::tensor({0, static_cast<int32_t>(kv_len)}, opts);
   }
   return {static_cast<const int32_t*>(it->second.first.data_ptr()),
@@ -77,7 +79,9 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
               "AITER backend supports fp16/bf16 only; got dtype=", q_dtype);
   TORCH_CHECK(k.scalar_type() == q_dtype && v.scalar_type() == q_dtype, "q, k, v must share dtype");
-  TORCH_CHECK(o.scalar_type() == q_dtype, "AITER backend requires output dtype to match input dtype; got o=", o.scalar_type(), " q=", q_dtype);
+  TORCH_CHECK(o.scalar_type() == q_dtype,
+              "AITER backend requires output dtype to match input dtype; got o=", o.scalar_type(),
+              " q=", q_dtype);
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
 
   const hipStream_t stream = c10::hip::getCurrentHIPStream();
@@ -93,7 +97,8 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   params.v = static_cast<DTypeKV*>(v.data_ptr());
   params.o = static_cast<DTypeO*>(o.data_ptr());
 
-  // AITER LSE layout: [num_qo_heads, qo_len] in nats; FlashInfer expects [qo_len, num_qo_heads] in log2.
+  // AITER LSE layout: [num_qo_heads, qo_len] in nats; FlashInfer expects [qo_len, num_qo_heads] in
+  // log2.
   at::Tensor aiter_lse_scratch;
   if (maybe_lse) {
     aiter_lse_scratch = at::empty({q.size(1), q.size(0)}, maybe_lse->options().dtype(at::kFloat));
@@ -120,8 +125,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
       get_seqstart_ptrs(params.qo_len, params.kv_len, device);
 
   hipError_t status = flashinfer::SinglePrefillWithKVCacheDispatched<HEAD_DIM_QK, HEAD_DIM_VO>(
-      params, causal, dtype_str, dtype_enum,
-      cu_seqlens_q_ptr, cu_seqlens_k_ptr,
+      params, causal, dtype_str, dtype_enum, cu_seqlens_q_ptr, cu_seqlens_k_ptr,
       static_cast<DTypeO*>(tmp.data_ptr()), stream);
   TORCH_CHECK(status == hipSuccess,
               "AITER SinglePrefill kernel launch failed: ", hipGetErrorString(status));

@@ -214,16 +214,22 @@ def test_single_prefill_threadblock_sync_mdo_states(
 def test_auto_backend_selects_aiter(head_dim, return_lse):
     """backend='auto' on gfx942/gfx950 with NHD fp16 should route to AITER and be bit-exact."""
     if not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable():
-        pytest.skip("AITER auto-selection only active on gfx942/gfx950 with aiter installed")
-
-    dtype = torch.float16
+        pytest.skip(
+            "AITER auto-selection only active on gfx942/gfx950 with aiter installed"
+        )
 
     qo_len, kv_len = 64, 128
     num_qo_heads, num_kv_heads = 8, 8
 
-    q = torch.randn(qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16)
-    k = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
-    v = torch.randn(kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16)
+    q = torch.randn(
+        qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
+    )
+    k = torch.randn(
+        kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16
+    )
+    v = torch.randn(
+        kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.float16
+    )
 
     if return_lse:
         o_auto, lse_auto = flashinfer.single_prefill_with_kv_cache_return_lse(

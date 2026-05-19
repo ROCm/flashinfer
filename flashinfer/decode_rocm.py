@@ -31,7 +31,6 @@ from .jit import (
     get_batch_decode_uri,
     get_single_decode_uri,
 )
-from .jit.core import logger
 from .page import get_seq_lens
 from .prefill_rocm import (
     _aiter_bootstrap_lock,
@@ -387,6 +386,9 @@ _AITER_DTYPE_STR = {
     torch.bfloat16: "__hip_bfloat16",
 }
 
+# PA v1 splits the KV sequence into partitions of this many tokens before reduction.
+_AITER_PA_V1_PARTITION_SIZE = 256
+
 
 def _aiter_pa_v1_resolve(
     *,
@@ -400,7 +402,7 @@ def _aiter_pa_v1_resolve(
     max_context_len: int,
     logits_soft_cap: float,
     sliding_window: int,
-    partition_size: int = 256,
+    partition_size: int = _AITER_PA_V1_PARTITION_SIZE,
     warp_size: int = 64,
 ):
     """Invoke aiter's pa_v1.compile() to produce the variant .so for this problem,
@@ -905,6 +907,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     device=float_workspace_buffer.device,
                 )
         self._backend = backend
+        # ROCm never supports PDL; cache once to avoid per-call device property lookup.
+        self._pdl_supported = device_support_pdl(float_workspace_buffer.device)
 
     @property
     def use_tensor_cores(self) -> bool:
@@ -1132,7 +1136,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._aiter_max_blocks_per_seq = (
                 int(npages_arr.max().item()) if batch_size > 0 else 0
             )
-            self._aiter_partition_size = 256
+            self._aiter_partition_size = _AITER_PA_V1_PARTITION_SIZE
             self._aiter_sliding_window = 0 if window_left == -1 else window_left
 
             self._cached_module = get_batch_decode_aiter_module(
@@ -1373,12 +1377,16 @@ class BatchDecodeWithPagedKVCacheWrapper:
             * logsumexp of attention scores, shape: ``[batch_size, num_qo_heads]``.
         """
         if enable_pdl is None:
-            enable_pdl = device_support_pdl(q.device)
+            enable_pdl = self._pdl_supported
         if enable_pdl:
-            logger.warning(
-                "enable_pdl is not supported in the HIP/ROCm backend and will be ignored. "
-                "This parameter is only effective on CUDA devices with sm_90+."
+            import warnings
+
+            warnings.warn(
+                "enable_pdl is not supported in the HIP/ROCm backend and will be ignored.",
+                UserWarning,
+                stacklevel=2,
             )
+            enable_pdl = False
         k_cache, v_cache = _unpack_paged_kv_cache(paged_kv_cache, self._kv_layout)
         if self._kv_layout == "NHD":
             page_size = k_cache.shape[1]
@@ -1443,12 +1451,12 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 out,
                 self._aiter_so_path,
                 self._aiter_func_name,
-                int(self._max_kv_len or 0),
-                int(self._aiter_partition_size),
-                int(self._aiter_sliding_window),
-                float(logits_soft_cap),
-                float(sm_scale),
-                int(self._aiter_max_blocks_per_seq),
+                self._max_kv_len or 0,
+                self._aiter_partition_size,
+                self._aiter_sliding_window,
+                logits_soft_cap,
+                sm_scale,
+                self._aiter_max_blocks_per_seq,
             )
             if v_scale is not None:
                 if is_float8(out):

@@ -171,7 +171,9 @@ def _make_configs() -> list[KernelConfig]:
             KernelConfig(
                 name=f"single_kv{kv_len}",
                 run_fn=torch.inference_mode()(
-                    lambda q=q, k=k, v=v: flashinfer.single_prefill_with_kv_cache_return_lse(
+                    lambda q=q,
+                    k=k,
+                    v=v: flashinfer.single_prefill_with_kv_cache_return_lse(
                         q, k, v, kv_layout="NHD", causal=_CAUSAL, backend="aiter"
                     )
                 ),

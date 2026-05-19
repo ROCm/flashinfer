@@ -468,12 +468,14 @@ def append_paged_kv_cache(
     _check_kv_layout(kv_layout)
     paged_k_cache, paged_v_cache = _unpack_paged_kv_cache(paged_kv_cache, kv_layout)
     if IS_HIP:
-        selected = backend
-        if selected == "auto":
-            selected = _auto_select_kv_append_backend(
+        _backend = (
+            _auto_select_kv_append_backend(
                 paged_k_cache.device, dtype=paged_k_cache.dtype, kv_layout=kv_layout
             )
-        if selected == "aiter":
+            if backend == "auto"
+            else backend
+        )
+        if _backend == "aiter":
             _aiter_append_paged_kv_cache(
                 append_key,
                 append_value,
@@ -485,7 +487,7 @@ def append_paged_kv_cache(
                 kv_indptr,
             )
             return
-        if selected not in ("native", "auto"):
+        if _backend not in ("native",):
             raise ValueError(
                 f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
             )

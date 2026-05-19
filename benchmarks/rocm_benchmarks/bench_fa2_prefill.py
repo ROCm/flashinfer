@@ -49,7 +49,9 @@ from rocm_profiler import KernelConfig, RocmProfiler
 # vLLM max_num_batched_tokens=2048 at seq_len≈512 → ~4 seqs; paged burst mid-range → 8.
 _DEFAULT_BATCH_RAGGED = 4
 _DEFAULT_BATCH_PAGED = 8
-_DEFAULT_BATCH_Q_LEN = 256  # matches AITER bench _Q_LEN; represents a chunked-prefill burst
+_DEFAULT_BATCH_Q_LEN = (
+    256  # matches AITER bench _Q_LEN; represents a chunked-prefill burst
+)
 
 # ---------------------------------------------------------------------------
 # Bench-script-level argument parsing (see design note above)
@@ -148,7 +150,9 @@ _q_len_asym: int = _bench_args.q_len
 _batch_size: int = _bench_args.batch
 _paged_size: int = _bench_args.paged
 _batch_q_len: int = _bench_args.batch_q_len
-_page_sizes: list[int] = [_bench_args.page_size] if _bench_args.page_size > 0 else [16, 64]
+_page_sizes: list[int] = (
+    [_bench_args.page_size] if _bench_args.page_size > 0 else [16, 64]
+)
 _label = (
     _bench_args.label
     if _bench_args.label is not None
@@ -189,7 +193,9 @@ _OUTPUT_DIR = str(Path(__file__).parent)
 # ---------------------------------------------------------------------------
 
 
-def _flops(q_len: int, kv_len: int, num_qo_heads: int, head_dim: int, causal: bool) -> int:
+def _flops(
+    q_len: int, kv_len: int, num_qo_heads: int, head_dim: int, causal: bool
+) -> int:
     # For causal with q_len < kv_len the mask removes only the last q*(q-1)/2
     # entries of the attended set, not half the matrix (which factor=2 assumes).
     attended = q_len * kv_len - q_len * (q_len - 1) // 2 if causal else q_len * kv_len
@@ -212,9 +218,15 @@ def _make_configs() -> list[KernelConfig]:
     configs = []
 
     for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
-        q = torch.randn(seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda")
-        k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
-        v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
+        q = torch.randn(
+            seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
+        )
+        k = torch.randn(
+            seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+        )
+        v = torch.randn(
+            seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+        )
 
         flops = _flops(seq_len, seq_len, num_qo_heads, head_dim, causal)
         theo_bytes = _bytes(seq_len, seq_len, num_qo_heads, num_kv_heads, head_dim)
@@ -244,11 +256,17 @@ def _make_configs() -> list[KernelConfig]:
             q = torch.randn(
                 _q_len_asym, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
             )
-            k = torch.randn(kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
-            v = torch.randn(kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda")
+            k = torch.randn(
+                kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+            )
+            v = torch.randn(
+                kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
+            )
 
             flops = _flops(_q_len_asym, kv_len, num_qo_heads, head_dim, causal=True)
-            theo_bytes = _bytes(_q_len_asym, kv_len, num_qo_heads, num_kv_heads, head_dim)
+            theo_bytes = _bytes(
+                _q_len_asym, kv_len, num_qo_heads, num_kv_heads, head_dim
+            )
             configs.append(
                 KernelConfig(
                     name=f"q{_q_len_asym}_kv{kv_len}_causal",
@@ -296,10 +314,14 @@ def _make_batch_configs(batch_size: int, q_len: int) -> list[KernelConfig]:
         wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
             workspace, "NHD", backend="fa2"
         )
-        wrapper.plan(qo_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim, causal=True)
+        wrapper.plan(
+            qo_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim, causal=True
+        )
 
         flops = batch_size * _flops(q_len, kv_len, num_qo_heads, head_dim, causal=True)
-        theo_bytes = batch_size * _bytes(q_len, kv_len, num_qo_heads, num_kv_heads, head_dim)
+        theo_bytes = batch_size * _bytes(
+            q_len, kv_len, num_qo_heads, num_kv_heads, head_dim
+        )
         configs.append(
             KernelConfig(
                 name=f"ragged_bs{batch_size}_q{q_len}_kv{kv_len}",
@@ -316,7 +338,9 @@ def _make_batch_configs(batch_size: int, q_len: int) -> list[KernelConfig]:
 
 
 @torch.inference_mode()
-def _make_paged_configs(batch_size: int, page_size: int, q_len: int) -> list[KernelConfig]:
+def _make_paged_configs(
+    batch_size: int, page_size: int, q_len: int
+) -> list[KernelConfig]:
     workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
     configs = []
     for seq_len, num_qo_heads, num_kv_heads, head_dim, causal in _CONFIGS:
@@ -332,16 +356,24 @@ def _make_paged_configs(batch_size: int, page_size: int, q_len: int) -> list[Ker
             batch_size * q_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
         )
         kv_cache = torch.randn(
-            total_pages, 2, page_size, num_kv_heads, head_dim,
-            dtype=torch.half, device="cuda",
+            total_pages,
+            2,
+            page_size,
+            num_kv_heads,
+            head_dim,
+            dtype=torch.half,
+            device="cuda",
         )
 
         qo_indptr = torch.arange(
             0, (batch_size + 1) * q_len, q_len, dtype=torch.int32, device="cuda"
         )
         paged_kv_indptr = torch.arange(
-            0, (batch_size + 1) * pages_per_seq, pages_per_seq,
-            dtype=torch.int32, device="cuda",
+            0,
+            (batch_size + 1) * pages_per_seq,
+            pages_per_seq,
+            dtype=torch.int32,
+            device="cuda",
         )
         _rng = torch.Generator(device="cuda").manual_seed(42)
         paged_kv_indices = torch.randperm(
@@ -367,7 +399,9 @@ def _make_paged_configs(batch_size: int, page_size: int, q_len: int) -> list[Ker
         )
 
         flops = batch_size * _flops(q_len, kv_len, num_qo_heads, head_dim, causal=True)
-        theo_bytes = batch_size * _bytes(q_len, kv_len, num_qo_heads, num_kv_heads, head_dim)
+        theo_bytes = batch_size * _bytes(
+            q_len, kv_len, num_qo_heads, num_kv_heads, head_dim
+        )
         configs.append(
             KernelConfig(
                 name=f"paged{page_size}_bs{batch_size}_q{q_len}_kv{kv_len}",

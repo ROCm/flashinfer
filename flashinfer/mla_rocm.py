@@ -74,7 +74,6 @@ class BatchMLAPagedAttentionWrapper:
         self.device = float_workspace_buffer.device
         _require_aiter_mla(self.device)
 
-        # Set by plan()
         self._qo_indptr: Optional[torch.Tensor] = None
         self._kv_indptr: Optional[torch.Tensor] = None
         self._kv_indices: Optional[torch.Tensor] = None
@@ -169,7 +168,6 @@ class BatchMLAPagedAttentionWrapper:
         ckv_cache: torch.Tensor,
         kpe_cache: torch.Tensor,
         out: Optional[torch.Tensor] = None,
-        lse: Optional[torch.Tensor] = None,
         return_lse: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Run MLA attention.
@@ -187,8 +185,6 @@ class BatchMLAPagedAttentionWrapper:
             Rope-key cache, shape ``[num_pages, page_size, head_dim_kpe]``.
         out : Optional[torch.Tensor]
             Pre-allocated output, shape ``[total_q, num_heads, head_dim_ckv]``.
-        lse : Optional[torch.Tensor]
-            Pre-allocated LSE buffer (ignored; AITER does not return LSE here).
         return_lse : bool
             Not supported; raises ``NotImplementedError`` if ``True``.
 
@@ -212,10 +208,9 @@ class BatchMLAPagedAttentionWrapper:
                 device=q_nope.device,
             )
 
-        # Concat q_nope + q_pe → q for AITER: [total_q, num_heads, ckv+kpe]
         q = torch.cat([q_nope, q_pe], dim=-1)
-
-        # Concat caches → kv_buffer for AITER: [num_pages, page_size, 1, ckv+kpe]
+        # kpe_cache is concatenated each call; pre-allocate a combined [pages, size, 1, ckv+kpe]
+        # buffer and pass sliced views to avoid this copy on hot paths.
         kv_buffer = torch.cat([ckv_cache.unsqueeze(2), kpe_cache.unsqueeze(2)], dim=-1)
 
         if self._max_seqlen_q == 1:

@@ -6,19 +6,20 @@
 
 #pragma once
 
-#include <hip/hip_runtime.h>
-#include <ck_tile/host/stream_config.hpp>
-
 #include <flashinfer/attention/aiter/aiter_loader.h>
 #include <flashinfer/attention/aiter/mha_fwd_args.h>
+#include <hip/hip_runtime.h>
+
+#include <ck_tile/host/stream_config.hpp>
 
 namespace flashinfer {
 
 // CK Tile mask_type codes (from CK example mask.hpp):
 //   no_mask=0, mask_top_left=1 (causal), mask_bottom_right=2, window_generic=3
 inline constexpr int32_t kAiterMaskNone = 0;
-inline constexpr int32_t kAiterMaskTopLeft = 1;     // standard causal (qo_len == kv_len)
-inline constexpr int32_t kAiterMaskBottomRight = 2; // prefill-with-history causal (kv_len > qo_len)
+inline constexpr int32_t kAiterMaskTopLeft = 1;  // standard causal (qo_len == kv_len)
+inline constexpr int32_t kAiterMaskBottomRight =
+    2;  // prefill-with-history causal (kv_len > qo_len)
 
 // params.lse: [num_qo_heads, qo_len] float32 scratch in natural-log scale; nullptr to skip.
 // tmp: unused; accepted for API parity with the FA2 template.
@@ -27,10 +28,9 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
                                               const char* dtype_str,
                                               flashinfer::aiter::VariantKey::Dtype dtype_enum,
                                               const int32_t* cu_seqlens_q,
-                                              const int32_t* cu_seqlens_k,
-                                              void* /* tmp */, hipStream_t stream) {
-  static_assert(HEAD_DIM_QK == HEAD_DIM_VO,
-                "AITER backend requires HEAD_DIM_QK == HEAD_DIM_VO");
+                                              const int32_t* cu_seqlens_k, void* /* tmp */,
+                                              hipStream_t stream) {
+  static_assert(HEAD_DIM_QK == HEAD_DIM_VO, "AITER backend requires HEAD_DIM_QK == HEAD_DIM_VO");
 
   const bool has_lse = (params.lse != nullptr);
   const bool has_logits_cap = (params.logits_soft_cap > 0.0);
@@ -55,7 +55,7 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   // AITER JIT variants only contain group-mode kernel specializations.
   // Use group mode with seqstart arrays [0, seqlen] to represent batch=1.
   args.is_group_mode = true;
-  args.bias_type = 0;          // no bias / no alibi
+  args.bias_type = 0;  // no bias / no alibi
   args.has_lse = has_lse;
   args.qscale_type = 0;
   args.has_sink = false;

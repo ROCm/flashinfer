@@ -37,7 +37,7 @@ void batch_ragged_prefill_with_kv_cache_aiter(at::Tensor q, at::Tensor k, at::Te
                                               int64_t mask_mode_code, int64_t layout,
                                               int64_t window_left, double logits_soft_cap,
                                               double sm_scale, int64_t max_q_len,
-                                              int64_t max_kv_len) {
+                                              [[maybe_unused]] int64_t max_kv_len) {
   const auto device = q.device();
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
 
@@ -85,10 +85,6 @@ void batch_ragged_prefill_with_kv_cache_aiter(at::Tensor q, at::Tensor k, at::Te
     aiter_lse_scratch = at::empty({num_qo_heads, total_qo}, maybe_lse->options().dtype(at::kFloat));
   }
   float* lse_ptr = maybe_lse ? static_cast<float*>(aiter_lse_scratch.data_ptr()) : nullptr;
-
-  // max_kv_len is accepted for symmetry with the paged path; mha_fwd group-mode
-  // takes only max_seqlen_q (kernel-grid sizing).  Suppress unused warnings.
-  (void)max_kv_len;
 
   hipError_t status = flashinfer::BatchPrefillFlatGatherDispatched<HEAD_DIM_QK, HEAD_DIM_VO, DTypeQ,
                                                                    DTypeKV, DTypeO>(
