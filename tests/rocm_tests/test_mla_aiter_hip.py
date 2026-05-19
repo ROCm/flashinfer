@@ -129,6 +129,7 @@ def test_mla_decode_vs_ref(
     ckv_cache, kpe_cache, kv_indptr, kv_indices, kv_last_page_len = _build_paged_kv(
         batch_size, kv_lens, page_size, head_dim_ckv, head_dim_kpe, dtype, device
     )
+    kv_len_tensor = torch.tensor(kv_lens, dtype=torch.int32, device=device)
 
     torch.manual_seed(42)
     q_nope = (
@@ -149,7 +150,7 @@ def test_mla_decode_vs_ref(
         qo_indptr=qo_indptr,
         kv_indptr=kv_indptr,
         kv_indices=kv_indices,
-        kv_len_arr=kv_last_page_len,
+        kv_len_arr=kv_len_tensor,
         num_heads=num_heads,
         head_dim_ckv=head_dim_ckv,
         head_dim_kpe=head_dim_kpe,
@@ -202,6 +203,7 @@ def test_mla_decode_out_tensor():
     ckv_cache, kpe_cache, kv_indptr, kv_indices, kv_last_page_len = _build_paged_kv(
         batch_size, kv_lens, page_size, head_dim_ckv, head_dim_kpe, dtype, device
     )
+    kv_len_tensor = torch.tensor(kv_lens, dtype=torch.int32, device=device)
     q_nope = (
         torch.randn(batch_size, num_heads, head_dim_ckv, dtype=dtype, device=device)
         * 0.1
@@ -218,7 +220,7 @@ def test_mla_decode_out_tensor():
         qo_indptr,
         kv_indptr,
         kv_indices,
-        kv_last_page_len,
+        kv_len_tensor,
         num_heads,
         head_dim_ckv,
         head_dim_kpe,
@@ -273,6 +275,36 @@ def test_mla_plan_validation():
     with pytest.raises(ValueError, match="q_data_type == kv_data_type"):
         wrapper.plan(
             **{**base, "q_data_type": torch.float16, "kv_data_type": torch.bfloat16}
+        )
+
+
+@pytest.mark.skipif(
+    not is_aiter_supported(torch.device("cuda:0")),
+    reason="AITER backend requires gfx942/gfx950",
+)
+def test_mla_plan_kv_len_inconsistent_with_paging():
+    """Passing last-page counts as kv_len_arr must fail (was accepted pre-conversion)."""
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = torch.device("cuda:0")
+    ws = torch.empty(1, dtype=torch.float32, device=device)
+    wrapper = BatchMLAPagedAttentionWrapper(ws)
+    # One full page (16) + one partial last page: true kv_len=24, last_page_len=8.
+    # Passing 8 as if it were total length is inconsistent with num_pages=2.
+    with pytest.raises(ValueError, match="inconsistent with paging"):
+        wrapper.plan(
+            qo_indptr=torch.tensor([0, 1], dtype=torch.int32, device=device),
+            kv_indptr=torch.tensor([0, 2], dtype=torch.int32, device=device),
+            kv_indices=torch.tensor([0, 1], dtype=torch.int32, device=device),
+            kv_len_arr=torch.tensor([8], dtype=torch.int32, device=device),
+            num_heads=16,
+            head_dim_ckv=512,
+            head_dim_kpe=64,
+            page_size=16,
+            causal=False,
+            sm_scale=0.1,
+            q_data_type=torch.float16,
+            kv_data_type=torch.float16,
         )
 
 

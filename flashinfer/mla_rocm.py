@@ -20,6 +20,46 @@ def _aiter_mla():
     return _m
 
 
+def _kv_lens_to_last_page_len_cpu(
+    kv_indptr_cpu: torch.Tensor, kv_lens_cpu: torch.Tensor, page_size: int
+) -> torch.Tensor:
+    """Convert FlashInfer MLA total KV lengths → AITER last-page fill counts (int32).
+
+    CUDA ``flashinfer.mla`` planners take per-batch **total** KV lengths
+    (:attr:`kv_len_arr`). AITER's ``mla_decode_fwd`` / ``mla_prefill_fwd`` expect per-batch
+    **filled token count on the final page**, in ``[1, page_size]`` (same notion as
+    :attr:`paged_kv_last_page_len` elsewhere in FlashInfer).
+    """
+
+    kv_indptr_cpu = kv_indptr_cpu.to(torch.device("cpu")).to(torch.int64)
+    kv_lens_cpu = kv_lens_cpu.to(torch.device("cpu")).to(torch.int64)
+
+    npages_batch = kv_indptr_cpu[1:] - kv_indptr_cpu[:-1]
+    # Reject ambiguous / degenerate bookkeeping (consistent with paging utilities).
+    if bool((npages_batch < 1).any().item()):
+        idx = torch.nonzero(npages_batch < 1, as_tuple=False)[0].item()
+        raise ValueError(
+            f"kv_indptr assigns no pages at batch idx {idx} "
+            f"(kv_indptr[{idx}:{idx + 2}] = "
+            f"{tuple(int(x) for x in kv_indptr_cpu[idx : idx + 2].tolist())})."
+        )
+
+    lp = kv_lens_cpu - (npages_batch - 1) * int(page_size)
+    invalid = (lp < 1) | (lp > int(page_size))
+    if bool(invalid.any().item()):
+        b = torch.nonzero(invalid, as_tuple=False)[0].item()
+        n = int(npages_batch[b].item())
+        L = int(kv_lens_cpu[b].item())
+        lpl = int(lp[b].item())
+        raise ValueError(
+            f"kv_len_arr[{b}]={L} is inconsistent with paging: num_pages={n}, "
+            f"page_size={page_size} ⇒ last-page length must be "
+            f"kv_len − (num_pages−1)·page_size ∈ [1, {page_size}], got {lpl}."
+        )
+
+    return lp.to(dtype=torch.int32)
+
+
 def _require_aiter_mla(device: torch.device) -> None:
     if not is_aiter_supported(device):
         try:
@@ -109,7 +149,15 @@ class BatchMLAPagedAttentionWrapper:
         kv_indices : torch.IntTensor
             Page indices, shape ``[kv_indptr[-1]]``.
         kv_len_arr : torch.IntTensor
-            Per-request KV sequence lengths, shape ``[batch_size]``.
+            Per-batch **total** KV sequence lengths (logical token count past ``kv_indptr``
+            pages), shape ``[batch_size]``. This matches CUDA
+            ``flashinfer.mla.BatchMLAPagedAttentionWrapper.plan`` (**not** ``1..page_size``
+            tail counts). Values must satisfy::
+
+                kv_len_arr[i]
+                    == (kv_indptr[i+1]-kv_indptr[i]-1) * page_size + kv_last_page_len[i]
+
+            with ``1 <= kv_last_page_len[i] <= page_size``. Converted internally for AITER.
         num_heads : int
             Number of query/output heads.
         head_dim_ckv : int
@@ -153,10 +201,18 @@ class BatchMLAPagedAttentionWrapper:
                     f"Expected {name}.dtype == torch.int32, got {t.dtype}."
                 )
 
+        batch = int(kv_indptr.numel()) - 1
+        if int(kv_len_arr.numel()) != batch:
+            raise ValueError(
+                f"Expected kv_len_arr.shape[0]==batch_size ({batch}); "
+                f"got {tuple(kv_len_arr.shape)} for kv_indptr with length {kv_indptr.numel()}."
+            )
+
         self._qo_indptr = qo_indptr.to(self.device, non_blocking=True)
         self._kv_indptr = kv_indptr.to(self.device, non_blocking=True)
         self._kv_indices = kv_indices.to(self.device, non_blocking=True)
-        self._kv_last_page_len = kv_len_arr.to(self.device, non_blocking=True)
+        last_cpu = _kv_lens_to_last_page_len_cpu(kv_indptr, kv_len_arr, page_size)
+        self._kv_last_page_len = last_cpu.to(self.device, non_blocking=True)
         self._sm_scale = sm_scale
         qo_lens = qo_indptr[1:] - qo_indptr[:-1]
         self._max_seqlen_q = int(qo_lens.max().item()) if len(qo_lens) > 0 else 1
