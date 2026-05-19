@@ -28,6 +28,7 @@ from torch.torch_version import TorchVersion
 from torch.torch_version import __version__ as torch_version
 import inspect
 
+from .device_utils import IS_HIP
 from .jit.spdlog import gen_spdlog_module
 
 
@@ -640,8 +641,6 @@ def is_sm121a_supported(device: torch.device) -> bool:
 
 
 def determine_mla_backend(device: torch.device) -> str:
-    from .device_utils import IS_HIP
-
     if IS_HIP:
         return "hip"
     return "fa3" if is_sm90a_supported(device) else "fa2"

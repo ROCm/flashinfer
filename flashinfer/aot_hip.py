@@ -95,6 +95,8 @@ def gen_attention(
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
 ) -> Iterator:
+    from .jit.attention import gen_batch_mla_module
+
     # FA2 MHA / MQA / GQA
     for (
         (head_dim_qk, head_dim_vo),
@@ -119,8 +121,6 @@ def gen_attention(
         )
 
     # MLA (DeepSeek shapes: head_dim_ckv=512, head_dim_kpe=64).
-    from .jit.attention import gen_batch_mla_module
-
     for dtype in f16_dtype_:
         yield gen_batch_mla_module(
             backend="hip",
