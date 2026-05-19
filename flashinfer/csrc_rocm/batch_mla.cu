@@ -58,17 +58,6 @@ void BatchMLAPagedAttentionRun(at::Tensor float_workspace_buffer, at::Tensor int
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q_nope.device());
   const hipStream_t stream = c10::hip::getCurrentHIPStream();
 
-  unsigned int q_nope_stride_n = q_nope.stride(0);
-  unsigned int q_nope_stride_h = q_nope.stride(1);
-  unsigned int q_pe_stride_n = q_pe.stride(0);
-  unsigned int q_pe_stride_h = q_pe.stride(1);
-  unsigned int ckv_stride_page = ckv_cache.stride(0);
-  unsigned int ckv_stride_n = ckv_cache.stride(1);
-  unsigned int kpe_stride_page = kpe_cache.stride(0);
-  unsigned int kpe_stride_n = kpe_cache.stride(1);
-  unsigned int o_stride_n = o.stride(0);
-  unsigned int o_stride_h = o.stride(1);
-
   DISPATCH_context(
       DTypeQ, DTypeKV, DTypeO, IdType, MASK_MODE, HEAD_DIM_CKV, HEAD_DIM_KPE, Params, [&] {
         Params params;
@@ -112,16 +101,16 @@ void BatchMLAPagedAttentionRun(at::Tensor float_workspace_buffer, at::Tensor int
         params.num_heads = uint_fastdiv(num_heads);
         params.block_size = uint_fastdiv(page_size);
 
-        params.q_nope_stride_n = q_nope_stride_n;
-        params.q_nope_stride_h = q_nope_stride_h;
-        params.q_pe_stride_n = q_pe_stride_n;
-        params.q_pe_stride_h = q_pe_stride_h;
-        params.ckv_stride_page = ckv_stride_page;
-        params.ckv_stride_n = ckv_stride_n;
-        params.kpe_stride_page = kpe_stride_page;
-        params.kpe_stride_n = kpe_stride_n;
-        params.o_stride_n = o_stride_n;
-        params.o_stride_h = o_stride_h;
+        params.q_nope_stride_n = q_nope.stride(0);
+        params.q_nope_stride_h = q_nope.stride(1);
+        params.q_pe_stride_n = q_pe.stride(0);
+        params.q_pe_stride_h = q_pe.stride(1);
+        params.ckv_stride_page = ckv_cache.stride(0);
+        params.ckv_stride_n = ckv_cache.stride(1);
+        params.kpe_stride_page = kpe_cache.stride(0);
+        params.kpe_stride_n = kpe_cache.stride(1);
+        params.o_stride_n = o.stride(0);
+        params.o_stride_h = o.stride(1);
 
         params.sm_scale = static_cast<float>(sm_scale);
         params.return_lse_base_on_e = return_lse_base_on_e;
