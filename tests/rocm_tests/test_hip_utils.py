@@ -21,6 +21,7 @@ from flashinfer.hip_utils import (
     get_available_gpu_count,
     get_rocm_home,
     get_supported_device_indices,
+    get_system_rocm_version_from_hipconfig,
     is_therock_build,
     validate_flashinfer_rocm_arch,
     validate_rocm_arch,
@@ -94,11 +95,46 @@ class TestIsTheRockBuild:
                 assert is_therock_build() is True
 
     def test_manifest_file_missing_and_no_rocm_sdk(self, tmp_path):
-        import sys
-
-        sys.modules.pop("rocm_sdk", None)
-        with patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)):
+        with (
+            patch.dict("sys.modules", {"rocm_sdk": None}),
+            patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)),
+        ):
             assert is_therock_build() is False
+
+
+# get_system_rocm_version_from_hipconfig
+class TestGetSystemRocmVersionFromHipconfig:
+    def _run_result(self, stdout, returncode=0):
+        result = MagicMock()
+        result.returncode = returncode
+        result.stdout = stdout
+        return result
+
+    @pytest.mark.parametrize(
+        "stdout,expected",
+        [
+            ("7.1.0\n", "7.1.0"),
+            ("7.13.26183-83e9908b71\n", "7.13.26183"),
+            ("7.13\n", "7.13"),
+        ],
+    )
+    def test_parses_version_string(self, stdout, expected):
+        with patch("subprocess.run", return_value=self._run_result(stdout)):
+            assert get_system_rocm_version_from_hipconfig() == expected
+
+    def test_returns_none_on_nonzero_returncode(self):
+        with patch("subprocess.run", return_value=self._run_result("", returncode=1)):
+            assert get_system_rocm_version_from_hipconfig() is None
+
+    def test_returns_none_when_hipconfig_not_found(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert get_system_rocm_version_from_hipconfig() is None
+
+    def test_returns_none_on_timeout(self):
+        with patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired("hipconfig", 5)
+        ):
+            assert get_system_rocm_version_from_hipconfig() is None
 
 
 # validate_rocm_arch
@@ -166,6 +202,11 @@ class TestValidateRocmArch:
 
     @pytest.mark.parametrize("version", ["7.3.0", "7.2.0", "7.1.0", "7.0.0"])
     def test_rocm_7x_supports_gfx950(self, version):
+        with self._patch_rocm_version(version):
+            assert validate_rocm_arch(arch_list="gfx950") == "gfx950"
+
+    @pytest.mark.parametrize("version", ["7.13.26183", "7.13.0", "7.12.0", "7.11.0"])
+    def test_therock_versions_support_gfx950(self, version):
         with self._patch_rocm_version(version):
             assert validate_rocm_arch(arch_list="gfx950") == "gfx950"
 
