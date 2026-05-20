@@ -1039,7 +1039,12 @@ __global__ void RopeQuantizeKernel(
 }
 
 /*!
- * \brief Fused RoPE + FP8 quantization + paged KV cache append kernel (GQA/MHA only).
+ * \brief Fused RoPE + FP8 quantization + paged KV cache append kernel.
+ *
+ * Dispatches between GQA/MHA and MLA layouts via the `CacheT` template parameter:
+ * `paged_kv_t<...>` selects the GQA/MHA path (k_cache, v_cache, with V append),
+ * `paged_kv_mla_t<...>` selects the MLA path (ckv_cache, kpe_cache, no V).
+ * The branch is resolved at compile time via the `IS_MLA` constexpr.
  */
 template <bool interleave, uint32_t vec_size, uint32_t bdx, typename DType, typename IdType,
           typename QuantType, typename CacheT = paged_kv_t<QuantType, IdType>>

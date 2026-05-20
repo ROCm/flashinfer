@@ -240,6 +240,11 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
   CHECK_DIM(3, q_rope_out);
   CHECK_DIM(3, q_nope_out);
 
+  uint32_t rope_dim = q_rope_in.size(-1);
+  uint32_t no_rope_dim = q_nope_in.size(-1);
+  uint32_t nnz = q_rope_in.size(0);
+  uint32_t num_qo_heads = q_rope_in.size(1);
+
   uint32_t num_kv_heads;
   uint32_t k_rope_in_stride, k_nope_in_stride, k_rope_out_stride, k_nope_out_stride;
   uint32_t k_rope_in_stride_h, k_nope_in_stride_h, k_rope_out_stride_h, k_nope_out_stride_h;
@@ -247,6 +252,13 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
   if (k_rope_in.dim() == 2) {
     TORCH_CHECK(k_nope_in.dim() == 2 && k_rope_out.dim() == 2 && k_nope_out.dim() == 2,
                 "MLA mode expects all K tensors to be 2D");
+    TORCH_CHECK(k_rope_in.size(0) == nnz && k_nope_in.size(0) == nnz && k_rope_out.size(0) == nnz &&
+                    k_nope_out.size(0) == nnz,
+                "K tensor token dim must match q_rope_in.size(0)=", nnz);
+    TORCH_CHECK(k_rope_in.size(1) == rope_dim && k_rope_out.size(1) == rope_dim,
+                "k_rope_in/out last dim must equal rope_dim=", rope_dim);
+    TORCH_CHECK(k_nope_in.size(1) == no_rope_dim && k_nope_out.size(1) == no_rope_dim,
+                "k_nope_in/out last dim must equal no_rope_dim=", no_rope_dim);
     num_kv_heads = 1;
     k_rope_in_stride = k_rope_in.stride(0);
     k_nope_in_stride = k_nope_in.stride(0);
@@ -264,6 +276,16 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
     CHECK_DIM(3, k_rope_out);
     CHECK_DIM(3, k_nope_out);
     num_kv_heads = k_rope_in.size(1);
+    TORCH_CHECK(k_rope_in.size(0) == nnz && k_nope_in.size(0) == nnz && k_rope_out.size(0) == nnz &&
+                    k_nope_out.size(0) == nnz,
+                "K tensor token dim must match q_rope_in.size(0)=", nnz);
+    TORCH_CHECK(k_nope_in.size(1) == num_kv_heads && k_rope_out.size(1) == num_kv_heads &&
+                    k_nope_out.size(1) == num_kv_heads,
+                "K tensor head dim must match k_rope_in.size(1)=", num_kv_heads);
+    TORCH_CHECK(k_rope_in.size(2) == rope_dim && k_rope_out.size(2) == rope_dim,
+                "k_rope_in/out last dim must equal rope_dim=", rope_dim);
+    TORCH_CHECK(k_nope_in.size(2) == no_rope_dim && k_nope_out.size(2) == no_rope_dim,
+                "k_nope_in/out last dim must equal no_rope_dim=", no_rope_dim);
     k_rope_in_stride = k_rope_in.stride(0);
     k_rope_in_stride_h = k_rope_in.stride(1);
     k_nope_in_stride = k_nope_in.stride(0);
@@ -273,11 +295,6 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
     k_nope_out_stride = k_nope_out.stride(0);
     k_nope_out_stride_h = k_nope_out.stride(1);
   }
-
-  uint32_t rope_dim = q_rope_in.size(-1);
-  uint32_t no_rope_dim = q_nope_in.size(-1);
-  uint32_t nnz = q_rope_in.size(0);
-  uint32_t num_qo_heads = q_rope_in.size(1);
 
   TORCH_CHECK(q_rope_in.scalar_type() == at::kHalf || q_rope_in.scalar_type() == at::kBFloat16,
               "Input dtype must be float16 or bfloat16");
@@ -293,7 +310,7 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
               "no_rope_dim must be 0 or a multiple of rope_dim (got no_rope_dim=", no_rope_dim,
               ", rope_dim=", rope_dim, ")");
   TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
-  // pos_ids is intentionally int32-only: paged-cache index arithmetic uses int32 throughout.
+  // pos_ids is int32-only: the RoPE quantize kernel template is instantiated with IdType=int32_t.
   TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
   TORCH_CHECK(is_float8_tensor(q_rope_out), "Output dtype must be float8");
 
@@ -417,6 +434,21 @@ void rope_quantize_append_paged_kv_cache(
                     "MLA expects k_rope_in to be 3D with num_kv_heads=1");
         TORCH_CHECK(k_nope_in.dim() == 3 && k_nope_in.size(1) == 1,
                     "MLA expects k_nope_in to be 3D with num_kv_heads=1");
+        TORCH_CHECK(k_rope_in.size(0) == nnz && k_nope_in.size(0) == nnz,
+                    "k_rope_in/k_nope_in token dim must match q_rope_in.size(0)=", nnz);
+        TORCH_CHECK(k_rope_in.size(2) == rope_dim,
+                    "k_rope_in last dim must equal rope_dim=", rope_dim);
+        TORCH_CHECK(k_nope_in.size(2) == no_rope_dim,
+                    "k_nope_in last dim must equal no_rope_dim=", no_rope_dim);
+        // MLA cache layout is [num_pages, page_size, dim].
+        TORCH_CHECK(ckv_cache.dim() == 3 && kpe_cache.dim() == 3,
+                    "ckv_cache and kpe_cache must be 3D [num_pages, page_size, dim]");
+        TORCH_CHECK(ckv_cache.size(1) == page_size && kpe_cache.size(1) == page_size,
+                    "ckv_cache/kpe_cache page_size dim must equal page_size=", page_size);
+        TORCH_CHECK(ckv_cache.size(2) == no_rope_dim,
+                    "ckv_cache last dim must equal no_rope_dim=", no_rope_dim);
+        TORCH_CHECK(kpe_cache.size(2) == rope_dim,
+                    "kpe_cache last dim must equal rope_dim=", rope_dim);
 
         auto ckv_strides = ckv_cache.strides();
         auto kpe_strides = kpe_cache.strides();
