@@ -15,7 +15,6 @@
 | Set target arch | `export FLASHINFER_ROCM_ARCH_LIST="gfx942,gfx950"` |
 | Limit parallel build | `export MAX_JOBS=4` |
 | Verbose JIT output | `export FLASHINFER_JIT_VERBOSE=1` |
-| Debug build (-O0) | `export FLASHINFER_JIT_DEBUG=1` |
 | Run linting | `pre-commit run -a` |
 
 ## Installing Torch
@@ -36,6 +35,14 @@ See the [GPU and ROCm Support](README.md#gpu-and-rocm-support) table in
 **JIT build.ninja caching**: `JitSpec.build()` only writes `build.ninja` when
 the file is missing. Changing env vars (`FLASHINFER_ROCM_ARCH_LIST`, extra
 cflags) is a **silent no-op** unless you call `spec.write_ninja()` first.
+
+**`FLASHINFER_JIT_DEBUG=1` is a no-op on ROCm/HIP**: the env var is read in
+[`flashinfer/jit/core.py`](flashinfer/jit/core.py) only on the `IS_CUDA` branch
+(where it adds `-O0 -g -G`). The `IS_HIP` branch ignores it entirely. To get a
+debug build on ROCm, append `"-O0", "-g"` via `extra_cuda_cflags` in the op's
+JIT generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so trailing
+`-O0` is what actually overrides it on the hipcc command line) and clear
+`~/.cache/flashinfer/`.
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);
@@ -83,12 +90,19 @@ gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
 ```
 
-## Plan Files
+## PR Description
 
-Save approved plans to the Claude Code project memory directory for this repo
-(visible via `/memory` in Claude Code).
+**Body** — include sections that apply, skip the rest:
 
-**Naming:** `plan_<short_descriptive_slug>.md`
+- `## Summary` — 1–3 sentences on what and why.
+- `### What changed` with `####` per component when the PR spans multiple
+  subsystems. Bullet by file: ``- **`path`** — one-line purpose``. Call out
+  non-obvious design choices.
+- `### Architecture / design notes` — only when there's a real choice to record.
+  Tables for routing/dispatch logic; explain *why*.
+- `## Benchmark results` — for perf-touching PRs. Shape line + table per entry
+  point + mean overhead/speedup row.
+- `## Test plan` — checklist of what was actually run (not aspirational), ending
+  with `pre-commit run -a`.
 
-**Index:** add a one-line entry to `MEMORY.md` in that same directory:
-`- [Plan: <title>](plan_<slug>.md) — <one-line summary>`
+Don't restate the diff and commits. Explain non-obvious decisions and surprising behaviors.
