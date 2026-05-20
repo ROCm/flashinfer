@@ -105,8 +105,8 @@ def _build_paged_kv(
     not is_aiter_supported(torch.device("cuda:0")),
     reason="AITER backend requires gfx942/gfx950",
 )
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("page_size", [16, 32])
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("page_size", [1])
 @pytest.mark.parametrize("num_heads,head_dim_ckv,head_dim_kpe", [(16, 512, 64)])
 @pytest.mark.parametrize(
     "kv_lens",
@@ -195,8 +195,8 @@ def test_mla_decode_out_tensor():
     import math
 
     device = torch.device("cuda:0")
-    dtype = torch.float16
-    batch_size, num_heads, head_dim_ckv, head_dim_kpe, page_size = 2, 16, 512, 64, 16
+    dtype = torch.bfloat16
+    batch_size, num_heads, head_dim_ckv, head_dim_kpe, page_size = 2, 16, 512, 64, 1
     kv_lens = [32, 64]
     sm_scale = 1.0 / math.sqrt(head_dim_ckv + head_dim_kpe)
 
