@@ -287,6 +287,11 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
               "q_nope_in dtype must match q_rope_in dtype");
   TORCH_CHECK(k_nope_in.scalar_type() == q_rope_in.scalar_type(),
               "k_nope_in dtype must match q_rope_in dtype");
+  // The kernel tiles no_rope_dim in rope_dim-sized chunks; a non-multiple tail
+  // would cause the last chunk to read/write past the end of the K-nope buffer.
+  TORCH_CHECK(no_rope_dim == 0 || no_rope_dim % rope_dim == 0,
+              "no_rope_dim must be 0 or a multiple of rope_dim (got no_rope_dim=", no_rope_dim,
+              ", rope_dim=", rope_dim, ")");
   TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
   // pos_ids is intentionally int32-only: paged-cache index arithmetic uses int32 throughout.
   TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
@@ -361,6 +366,11 @@ void rope_quantize_append_paged_kv_cache(
               "q_nope_in dtype must match q_rope_in dtype");
   TORCH_CHECK(k_nope_in.scalar_type() == q_rope_in.scalar_type(),
               "k_nope_in dtype must match q_rope_in dtype");
+  // The kernel tiles no_rope_dim in rope_dim-sized chunks; a non-multiple tail
+  // would cause the last chunk to read/write past the end of the K-nope buffer.
+  TORCH_CHECK(no_rope_dim == 0 || no_rope_dim % rope_dim == 0,
+              "no_rope_dim must be 0 or a multiple of rope_dim (got no_rope_dim=", no_rope_dim,
+              ", rope_dim=", rope_dim, ")");
   TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
   // pos_ids is intentionally int32-only: paged-cache index arithmetic uses int32 throughout.
   TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
