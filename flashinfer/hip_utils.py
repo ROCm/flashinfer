@@ -82,7 +82,7 @@ def get_system_rocm_version_from_hipconfig():
             check=False,
         )
         if result.returncode == 0:
-            match = re.search(r"(\d+\.\d+\.\d+)", result.stdout)
+            match = re.search(r"(\d+\.\d+(?:\.\d+)?)", result.stdout)
             if match:
                 return match.group(1)
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -147,13 +147,18 @@ def get_system_rocm_version():
     """
     Attempt to detect the system ROCm version.
 
-    For standard builds, tries methods in order of reliability.
-    For TheRock builds, prioritizes hipconfig as it's more reliable.
+    For standard ROCm installations, detection falls back through several
+    methods in order of reliability: ``ROCM_HOME/.info/version``, ``amd-smi``,
+    ``dpkg``, and finally ``hipconfig``.
+
+    For TheRock builds, ``hipconfig`` is used directly because it reports the
+    HIP runtime version (consistent with ``torch.version.hip``), unlike
+    ``.info/version`` which reports the TheRock SDK version (for example,
+    ``"7.12.0"`` when HIP is ``7.3``).
 
     Returns:
         str: ROCm version like "7.1.0" or None if not detectable
     """
-    # For TheRock builds, prioritize hipconfig
     if is_therock_build():
         return get_system_rocm_version_from_hipconfig()
 
@@ -198,7 +203,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     # Add new tuple for adding a new version group
     _ROCM_ARCH_GROUPS = [
         (
-            ["7.3", "7.2", "7.1", "7.0"],
+            ["7.13", "7.12", "7.11", "7.3", "7.2", "7.1", "7.0"],
             [
                 "gfx950",
                 "gfx1201",
