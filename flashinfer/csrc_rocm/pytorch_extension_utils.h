@@ -231,6 +231,25 @@ using dtype_fp8_e5m2 = nv_fp8_e5m2;
     return __VA_ARGS__();                                                       \
   }
 
+#define DISPATCH_PYTORCH_IDTYPE_TO_CTYPE(pytorch_dtype, c_type, ...)                   \
+  [&]() -> bool {                                                                      \
+    switch (pytorch_dtype) {                                                           \
+      case at::ScalarType::Int: {                                                      \
+        using c_type = int32_t;                                                        \
+        return __VA_ARGS__();                                                          \
+      }                                                                                \
+      case at::ScalarType::Long: {                                                     \
+        using c_type = int64_t;                                                        \
+        return __VA_ARGS__();                                                          \
+      }                                                                                \
+      default:                                                                         \
+        std::ostringstream oss;                                                        \
+        oss << __PRETTY_FUNCTION__ << " failed to dispatch id type " << pytorch_dtype; \
+        TORCH_CHECK(false, oss.str());                                                 \
+        return false;                                                                  \
+    }                                                                                  \
+  }()
+
 #define DISPATCH_BOOL(expr, const_expr, ...) \
   [&]() -> bool {                            \
     if (expr) {                              \

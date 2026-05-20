@@ -1614,6 +1614,10 @@ def rope_quantize_fp8_append_paged_kv_cache(
                 "GQA/MHA expects a V tensor, but got None. "
                 "Only MLA uses None for V (compressed KV representation)."
             )
+        if v.dtype != q_rope.dtype:
+            raise ValueError(
+                f"v dtype must match q_rope/k_rope ({q_rope.dtype}); got {v.dtype}"
+            )
         if k_cache.dtype != quantize_dtype or v_cache.dtype != quantize_dtype:
             raise ValueError(
                 f"GQA/MHA cache dtype mismatch: expected {quantize_dtype}, "

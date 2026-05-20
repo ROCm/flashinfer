@@ -79,9 +79,3 @@ def test_gelu_and_mul(num_tokens, d, dtype):
     out = flashinfer.activation.gelu_and_mul(x)
     rtol, atol = (2e-2, 2e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
     torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
-
-
-if __name__ == "__main__":
-    test_silu_and_mul(8, 5504, torch.float16)
-    test_gelu_tanh_and_mul(8, 7168, torch.float16)
-    test_gelu_and_mul(8, 7168, torch.bfloat16)
