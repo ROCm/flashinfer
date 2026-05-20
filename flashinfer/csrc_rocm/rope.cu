@@ -366,6 +366,11 @@ void rope_quantize_append_paged_kv_cache(
   TORCH_CHECK(has_gqa_caches || has_mla_caches,
               "rope_quantize_append_paged_kv_cache requires either GQA caches (k_cache, v_cache) "
               "or MLA caches (ckv_cache, kpe_cache)");
+  if (has_gqa_caches) {
+    CHECK_LAST_DIM_CONTIGUOUS(v_in);
+    TORCH_CHECK(v_in.scalar_type() == q_rope_in.scalar_type(),
+                "v_in dtype must match q_rope_in dtype (expected float16 or bfloat16)");
+  }
 
   const uint32_t q_rope_in_stride_n = q_rope_in.stride(0);
   const uint32_t q_rope_in_stride_h = q_rope_in.stride(1);
