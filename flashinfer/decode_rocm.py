@@ -1205,14 +1205,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 [], device=self._float_workspace_buffer.device
             )
 
-            # AITER PA v1 does not expose log-sum-exp. If the caller requests it at run()
-            # time we transparently dispatch through an FA2 decode shadow plan that mirrors
-            # this AITER plan's window_left / soft-cap configuration. The shadow module +
-            # plan are JIT-compiled lazily on the first return_lse=True call to avoid
-            # imposing that cost on AITER-only workloads.
+            # FA2 shadow plan for return_lse=True; built lazily (AITER PA v1 has no LSE).
             self._fa2_lse_module: Optional[Any] = None
             self._fa2_lse_plan_info: Optional[torch.Tensor] = None
-            self._fa2_lse_build_args: Optional[Tuple[Any, ...]] = (
+            self._fa2_lse_build_args = (
                 q_data_type,
                 kv_data_type,
                 indptr.dtype,
@@ -1321,11 +1317,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
     begin_forward = plan
 
     def _ensure_fa2_lse_plan(self) -> None:
-        """Lazily build the FA2 shadow module + plan used by AITER return_lse=True calls.
-
-        Deferred from plan() to first run(return_lse=True) so AITER-only workloads don't
-        pay the JIT-compile + plan() cost. Idempotent — subsequent calls are no-ops.
-        """
         if self._fa2_lse_plan_info is not None:
             return
         (
