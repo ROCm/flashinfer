@@ -226,6 +226,7 @@ include = [
     "flashinfer/jit/env.py",
     "flashinfer/jit/utils.py",
     "flashinfer/logits_processor/__init__.py",
+    "flashinfer/mla_rocm.py",
     "flashinfer/norm.py",
     "flashinfer/page.py",
     "flashinfer/prefill_rocm.py",
