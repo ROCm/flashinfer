@@ -19,6 +19,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from .device_utils import IS_HIP
 from .jit.page import gen_page_module
 from .utils import (
     TensorLayout,
@@ -27,6 +28,70 @@ from .utils import (
     register_custom_op,
     register_fake_op,
 )
+
+if IS_HIP:
+    from .aiter_utils import is_aiter_supported
+
+    @functools.cache
+    def _aiter_cache_module():
+        from aiter.ops import cache as aiter_cache
+
+        return aiter_cache
+
+    @functools.cache
+    def _aiter_unit_scale(device: torch.device) -> torch.Tensor:
+        return torch.ones(1, dtype=torch.float32, device=device)
+
+    def _auto_select_kv_append_backend(
+        device: torch.device,
+        *,
+        dtype: torch.dtype,
+        kv_layout: str,
+    ) -> str:
+        """Return 'aiter' when GPU + dtype + layout meet AITER's reshape_and_cache_flash constraints."""
+        if not is_aiter_supported(device):
+            return "native"
+        if kv_layout != "NHD":
+            return "native"
+        if dtype not in (torch.float16, torch.bfloat16):
+            return "native"
+        try:
+            _aiter_cache_module()
+        except Exception:
+            return "native"
+        return "aiter"
+
+    def _aiter_append_paged_kv_cache(
+        append_key: torch.Tensor,
+        append_value: torch.Tensor,
+        batch_indices: torch.Tensor,
+        positions: torch.Tensor,
+        paged_k_cache: torch.Tensor,
+        paged_v_cache: torch.Tensor,
+        kv_indices: torch.Tensor,
+        kv_indptr: torch.Tensor,
+    ) -> None:
+        """Route append to AITER reshape_and_cache_flash. Cache layout: [num_pages, page_size, num_kv_heads, head_dim] (NHD)."""
+        page_size = paged_k_cache.size(1)
+        batch_idx_l = batch_indices.long()
+        positions_l = positions.long()
+        page_within = positions_l // page_size
+        offset_in_page = positions_l - page_within * page_size
+        global_page = kv_indices.long().index_select(
+            0, kv_indptr.long()[batch_idx_l] + page_within
+        )
+        slot_mapping = global_page * page_size + offset_in_page
+        unit = _aiter_unit_scale(paged_k_cache.device)
+        _aiter_cache_module().reshape_and_cache_flash(
+            append_key,
+            append_value,
+            paged_k_cache,
+            paged_v_cache,
+            slot_mapping,
+            "auto",
+            unit,
+            unit,
+        )
 
 
 @functools.cache
@@ -294,6 +359,7 @@ def append_paged_kv_cache(
     kv_indptr: torch.Tensor,
     kv_last_page_len: torch.Tensor,
     kv_layout: str = "NHD",
+    backend: str = "auto",
 ) -> None:
     r"""Append a batch of key-value pairs to a paged key-value cache.
 
@@ -332,6 +398,11 @@ def append_paged_kv_cache(
         shape: ``[batch_size]``.
     kv_layout : str
         The layout of the paged kv-cache, either ``NHD`` or ``HND``.
+    backend : str
+        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's ``reshape_and_cache_flash`` — ROCm (gfx942/gfx950) only;
+        requires the ``aiter`` package, NHD layout, and fp16/bf16 dtype.
 
     Example
     -------
@@ -400,12 +471,38 @@ def append_paged_kv_cache(
     get_batch_indices_positions
     """
     _check_kv_layout(kv_layout)
+    paged_k_cache, paged_v_cache = _unpack_paged_kv_cache(paged_kv_cache, kv_layout)
+    if IS_HIP:
+        _backend = (
+            _auto_select_kv_append_backend(
+                paged_k_cache.device, dtype=paged_k_cache.dtype, kv_layout=kv_layout
+            )
+            if backend == "auto"
+            else backend
+        )
+        if _backend == "aiter":
+            _aiter_append_paged_kv_cache(
+                append_key,
+                append_value,
+                batch_indices,
+                positions,
+                paged_k_cache,
+                paged_v_cache,
+                kv_indices,
+                kv_indptr,
+            )
+            return
+        if _backend not in ("native",):
+            raise ValueError(
+                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+            )
     _append_paged_kv_cache_kernel(
         append_key,
         append_value,
         batch_indices,
         positions,
-        *_unpack_paged_kv_cache(paged_kv_cache, kv_layout),
+        paged_k_cache,
+        paged_v_cache,
         kv_indices,
         kv_indptr,
         kv_last_page_len,

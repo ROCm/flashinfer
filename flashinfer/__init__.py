@@ -198,6 +198,9 @@ elif IS_HIP:
     from .norm import gemma_rmsnorm as gemma_rmsnorm
     from .norm import layernorm as layernorm
     from .norm import rmsnorm as rmsnorm
+    from .mla_rocm import (  # type: ignore[assignment]
+        BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper,
+    )
     from .page import append_paged_kv_cache as append_paged_kv_cache
     from .page import get_batch_indices_positions as get_batch_indices_positions
     from .page import get_seq_lens as get_seq_lens

@@ -490,7 +490,9 @@ class RocmProfiler:
                 "tflops": f"{tflops:.3f}",
                 "ai_theory": f"{ai_theory:.2f}",
             }
-            row["tput_tok_per_s"] = f"{tput_tok_per_s:.0f}" if cfg.num_tokens > 0 else ""
+            row["tput_tok_per_s"] = (
+                f"{tput_tok_per_s:.0f}" if cfg.num_tokens > 0 else ""
+            )
             rows.append(row)
             tput_str = (
                 f"  {tput_tok_per_s / 1e3:7.1f} ktok/s" if cfg.num_tokens > 0 else ""
@@ -503,9 +505,18 @@ class RocmProfiler:
             sys.stdout.flush()
 
         _timing_fields = [
-            "name", "theoretical_flops", "theoretical_bytes",
-            "n_iters", "min_ms", "p5_ms", "median_ms", "p95_ms", "std_ms",
-            "tflops", "ai_theory", "tput_tok_per_s",
+            "name",
+            "theoretical_flops",
+            "theoretical_bytes",
+            "n_iters",
+            "min_ms",
+            "p5_ms",
+            "median_ms",
+            "p95_ms",
+            "std_ms",
+            "tflops",
+            "ai_theory",
+            "tput_tok_per_s",
         ]
         with open(out_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=_timing_fields)
@@ -820,7 +831,9 @@ class RocmProfiler:
 
                 # Warn if rocprofv3 produced rows but none matched the kernel regex.
                 if self.kernel_name_regex:
-                    _warn_if_regex_unmatched(csv_files, self.kernel_name_regex, cfg.name)
+                    _warn_if_regex_unmatched(
+                        csv_files, self.kernel_name_regex, cfg.name
+                    )
 
                 row = _merge_pass_csvs(csv_files)
                 if row is None:

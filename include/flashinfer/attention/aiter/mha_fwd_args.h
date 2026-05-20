@@ -28,11 +28,11 @@ struct mha_fwd_args {
   int how_v3_bf16_cvt = 0;
 
   // Traits baked into the JIT-compiled variant (must match the .so file loaded)
-  std::string data_type;    // "fp16" or "bf16"
-  bool is_group_mode;       // false = batch mode (seqstart/seqlen ptrs must be nullptr)
-  int bias_type = 0;        // 0=no_bias, 1=elementwise, 2=alibi
+  std::string data_type;  // "fp16" or "bf16"
+  bool is_group_mode;     // false = batch mode (seqstart/seqlen ptrs must be nullptr)
+  int bias_type = 0;      // 0=no_bias, 1=elementwise, 2=alibi
   bool has_lse;
-  int qscale_type = 0;      // 0=no_scale
+  int qscale_type = 0;  // 0=no_scale
   bool has_sink = false;
 
   // Data pointers
@@ -103,8 +103,7 @@ struct mha_fwd_args {
   bool s_randval = false;
 
   // Dropout seed/offset (first variant = {0,0} when dropout disabled)
-  std::variant<std::pair<uint64_t, uint64_t>, std::pair<const void*, const void*>>
-      drop_seed_offset;
+  std::variant<std::pair<uint64_t, uint64_t>, std::pair<const void*, const void*>> drop_seed_offset;
 };
 
 }  // namespace aiter

@@ -10,15 +10,14 @@
 #include <hip/hip_runtime.h>
 
 #include <cmath>
-#include <optional>
-#include <string>
-
 #include <flashinfer/attention/aiter/batch_prefill.cuh>
 #include <gpu_iface/enums.hpp>
 #include <gpu_iface/layout.cuh>
+#include <optional>
+#include <string>
 
+#include "batch_prefill_aiter_config.inc"
 #include "pytorch_extension_utils.h"
-#include "batch_prefill_paged_aiter_config.inc"
 
 using flashinfer::MaskMode;
 using flashinfer::QKVLayout;
@@ -43,13 +42,11 @@ using flashinfer::QKVLayout;
 //   aiter_flat_gather_idx  [total_kv_tokens] int64 (non-native page sizes only; nullopt otherwise)
 //   aiter_flat_kv_indptr   [batch+1] int32 (non-native page sizes; cumsum of gathered tokens)
 void batch_prefill_with_paged_kv_cache_aiter(
-    at::Tensor q, at::Tensor paged_k_cache, at::Tensor paged_v_cache,
-    at::Tensor qo_indptr, at::Tensor paged_kv_indptr, at::Tensor paged_kv_indices,
-    at::Tensor paged_kv_last_page_len, at::Tensor o, std::optional<at::Tensor> maybe_lse,
-    int64_t mask_mode_code, int64_t window_left,
-    double logits_soft_cap, double sm_scale,
-    int64_t page_size, int64_t max_q_len, int64_t max_kv_len,
-    std::optional<at::Tensor> aiter_flat_gather_idx,
+    at::Tensor q, at::Tensor paged_k_cache, at::Tensor paged_v_cache, at::Tensor qo_indptr,
+    at::Tensor paged_kv_indptr, at::Tensor paged_kv_indices, at::Tensor paged_kv_last_page_len,
+    at::Tensor o, std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code, int64_t window_left,
+    double logits_soft_cap, double sm_scale, int64_t page_size, int64_t max_q_len,
+    int64_t max_kv_len, std::optional<at::Tensor> aiter_flat_gather_idx,
     std::optional<at::Tensor> aiter_flat_kv_indptr) {
   const auto device = q.device();
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
@@ -64,8 +61,8 @@ void batch_prefill_with_paged_kv_cache_aiter(
               "q, k, v must share dtype");
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
   TORCH_CHECK(o.scalar_type() == q_dtype,
-              "AITER backend requires output dtype to match input dtype; got o=",
-              o.scalar_type(), " q=", q_dtype);
+              "AITER backend requires output dtype to match input dtype; got o=", o.scalar_type(),
+              " q=", q_dtype);
   TORCH_CHECK(static_cast<int>(HEAD_DIM_QK) == static_cast<int>(HEAD_DIM_VO),
               "AITER backend requires equal head dims; got HEAD_DIM_QK=", HEAD_DIM_QK,
               " HEAD_DIM_VO=", HEAD_DIM_VO);
@@ -80,10 +77,10 @@ void batch_prefill_with_paged_kv_cache_aiter(
 
   const char* dtype_str = (q_dtype == at::kHalf) ? "fp16" : "bf16";
   const auto dtype_enum = (q_dtype == at::kHalf) ? flashinfer::aiter::VariantKey::Dtype::kFp16
-                                                  : flashinfer::aiter::VariantKey::Dtype::kBf16;
+                                                 : flashinfer::aiter::VariantKey::Dtype::kBf16;
 
-  const int32_t batch       = static_cast<int32_t>(qo_indptr.size(0) - 1);
-  const int32_t total_qo    = static_cast<int32_t>(q.size(0));
+  const int32_t batch = static_cast<int32_t>(qo_indptr.size(0) - 1);
+  const int32_t total_qo = static_cast<int32_t>(q.size(0));
   const int32_t num_qo_heads = static_cast<int32_t>(q.size(1));
   const int32_t num_kv_heads = static_cast<int32_t>(paged_k_cache.size(2));
 
@@ -91,8 +88,7 @@ void batch_prefill_with_paged_kv_cache_aiter(
   // FlashInfer expects [total_qo_len, num_qo_heads] in log2 scale.
   at::Tensor aiter_lse_scratch;
   if (maybe_lse) {
-    aiter_lse_scratch =
-        at::empty({num_qo_heads, total_qo}, maybe_lse->options().dtype(at::kFloat));
+    aiter_lse_scratch = at::empty({num_qo_heads, total_qo}, maybe_lse->options().dtype(at::kFloat));
   }
   float* lse_ptr = maybe_lse ? static_cast<float*>(aiter_lse_scratch.data_ptr()) : nullptr;
 
@@ -114,62 +110,50 @@ void batch_prefill_with_paged_kv_cache_aiter(
     at::Tensor k_flat = k_2d.index_select(0, gather_idx).contiguous();
     at::Tensor v_flat = v_2d.index_select(0, gather_idx).contiguous();
 
-    status = flashinfer::BatchPrefillFlatGatherDispatched<HEAD_DIM_QK, HEAD_DIM_VO,
-                                                          DTypeQ, DTypeKV, DTypeO>(
-        static_cast<DTypeQ*>(q.data_ptr()),
-        static_cast<DTypeKV*>(k_flat.data_ptr()),
-        static_cast<DTypeKV*>(v_flat.data_ptr()),
-        static_cast<DTypeO*>(o.data_ptr()),
-        lse_ptr,
+    status = flashinfer::BatchPrefillFlatGatherDispatched<HEAD_DIM_QK, HEAD_DIM_VO, DTypeQ, DTypeKV,
+                                                          DTypeO>(
+        static_cast<DTypeQ*>(q.data_ptr()), static_cast<DTypeKV*>(k_flat.data_ptr()),
+        static_cast<DTypeKV*>(v_flat.data_ptr()), static_cast<DTypeO*>(o.data_ptr()), lse_ptr,
         static_cast<const int32_t*>(qo_indptr.data_ptr()),
-        static_cast<const int32_t*>(aiter_flat_kv_indptr->data_ptr()),
-        batch, total_qo, total_kv,
+        static_cast<const int32_t*>(aiter_flat_kv_indptr->data_ptr()), batch, total_qo, total_kv,
         static_cast<int32_t>(max_q_len), num_qo_heads, num_kv_heads,
-        static_cast<int32_t>(q.stride(0)),      // q_stride_n
-        static_cast<int32_t>(q.stride(1)),      // q_stride_h
-        static_cast<int32_t>(k_flat.stride(0)), // k_stride_n (contiguous after gather)
-        static_cast<int32_t>(k_flat.stride(1)), // k_stride_h
-        static_cast<int32_t>(v_flat.stride(0)), // v_stride_n
-        static_cast<int32_t>(v_flat.stride(1)), // v_stride_h
-        static_cast<float>(sm_scale),
-        static_cast<float>(logits_soft_cap),
-        static_cast<int32_t>(window_left),
-        causal, dtype_str, dtype_enum, stream);
+        static_cast<int32_t>(q.stride(0)),       // q_stride_n
+        static_cast<int32_t>(q.stride(1)),       // q_stride_h
+        static_cast<int32_t>(k_flat.stride(0)),  // k_stride_n (contiguous after gather)
+        static_cast<int32_t>(k_flat.stride(1)),  // k_stride_h
+        static_cast<int32_t>(v_flat.stride(0)),  // v_stride_n
+        static_cast<int32_t>(v_flat.stride(1)),  // v_stride_h
+        static_cast<float>(sm_scale), static_cast<float>(logits_soft_cap),
+        static_cast<int32_t>(window_left), causal, dtype_str, dtype_enum, stream);
   } else {
     // Native-paged path: paged KV cache with page_size in {128, 256, 1024}.
     // paged_k_cache layout: [max_pages, page_size, nhead_k, head_dim] (NHD linear).
     const int32_t num_total_pages = static_cast<int32_t>(paged_k_cache.size(0));
 
-    status = flashinfer::BatchPrefillNativePagedDispatched<HEAD_DIM_QK, HEAD_DIM_VO,
-                                                           DTypeQ, DTypeKV, DTypeO>(
-        static_cast<DTypeQ*>(q.data_ptr()),
-        static_cast<DTypeKV*>(paged_k_cache.data_ptr()),
-        static_cast<DTypeKV*>(paged_v_cache.data_ptr()),
-        static_cast<DTypeO*>(o.data_ptr()),
-        lse_ptr,
-        static_cast<const int32_t*>(qo_indptr.data_ptr()),
+    status = flashinfer::BatchPrefillNativePagedDispatched<HEAD_DIM_QK, HEAD_DIM_VO, DTypeQ,
+                                                           DTypeKV, DTypeO>(
+        static_cast<DTypeQ*>(q.data_ptr()), static_cast<DTypeKV*>(paged_k_cache.data_ptr()),
+        static_cast<DTypeKV*>(paged_v_cache.data_ptr()), static_cast<DTypeO*>(o.data_ptr()),
+        lse_ptr, static_cast<const int32_t*>(qo_indptr.data_ptr()),
         static_cast<const int32_t*>(paged_kv_indptr.data_ptr()),
         static_cast<const int32_t*>(paged_kv_indices.data_ptr()),
-        static_cast<const int32_t*>(paged_kv_last_page_len.data_ptr()),
-        batch, total_qo,
-        static_cast<int32_t>(max_q_len), num_qo_heads, num_kv_heads,
-        num_total_pages, static_cast<int32_t>(page_size),
-        static_cast<int32_t>(q.stride(0)),              // q_stride_n
-        static_cast<int32_t>(q.stride(1)),              // q_stride_h
+        static_cast<const int32_t*>(paged_kv_last_page_len.data_ptr()), batch, total_qo,
+        static_cast<int32_t>(max_q_len), num_qo_heads, num_kv_heads, num_total_pages,
+        static_cast<int32_t>(page_size),
+        static_cast<int32_t>(q.stride(0)),  // q_stride_n
+        static_cast<int32_t>(q.stride(1)),  // q_stride_h
         // For linear layout [NumBlocks, PageSize, NumHeads, HeadDim]:
         //   stride(1) = NumHeads * HeadDim (within-page token stride)
         //   stride(2) = HeadDim (head stride within a page)
         //   stride(0) = PageSize * NumHeads * HeadDim (cross-page stride)
-        static_cast<int32_t>(paged_k_cache.stride(1)), // k_stride_p (within-page token stride)
-        static_cast<int32_t>(paged_k_cache.stride(2)), // k_stride_h (head stride)
-        static_cast<int32_t>(paged_k_cache.stride(0)), // k_batch_stride (cross-page stride)
-        static_cast<int32_t>(paged_v_cache.stride(1)), // v_stride_p
-        static_cast<int32_t>(paged_v_cache.stride(2)), // v_stride_h
-        static_cast<int32_t>(paged_v_cache.stride(0)), // v_batch_stride
-        static_cast<float>(sm_scale),
-        static_cast<float>(logits_soft_cap),
-        static_cast<int32_t>(window_left),
-        causal, dtype_enum, stream);
+        static_cast<int32_t>(paged_k_cache.stride(1)),  // k_stride_p (within-page token stride)
+        static_cast<int32_t>(paged_k_cache.stride(2)),  // k_stride_h (head stride)
+        static_cast<int32_t>(paged_k_cache.stride(0)),  // k_batch_stride (cross-page stride)
+        static_cast<int32_t>(paged_v_cache.stride(1)),  // v_stride_p
+        static_cast<int32_t>(paged_v_cache.stride(2)),  // v_stride_h
+        static_cast<int32_t>(paged_v_cache.stride(0)),  // v_batch_stride
+        static_cast<float>(sm_scale), static_cast<float>(logits_soft_cap),
+        static_cast<int32_t>(window_left), causal, dtype_enum, stream);
   }
 
   TORCH_CHECK(status == hipSuccess,

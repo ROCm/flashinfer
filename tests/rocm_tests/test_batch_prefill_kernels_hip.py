@@ -547,6 +547,7 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
 @pytest.mark.parametrize("pos_encoding_mode", ["NONE"])
 @pytest.mark.parametrize("logits_soft_cap", [0.0])
 @pytest.mark.parametrize("return_lse", [True])
+@pytest.mark.parametrize("backend", ["fa2", "aiter"])
 def test_batch_prefill_with_ragged_kv_cache(
     batch_size,
     kv_len,
@@ -558,9 +559,14 @@ def test_batch_prefill_with_ragged_kv_cache(
     pos_encoding_mode,
     logits_soft_cap,
     return_lse,
+    backend,
 ):
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
+    if backend == "aiter" and (
+        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
+    ):
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     kv_layout = "NHD"
     q = torch.randn(
         batch_size * qo_len,
@@ -593,7 +599,7 @@ def test_batch_prefill_with_ragged_kv_cache(
 
     workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
     wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
-        workspace_buffer, kv_layout
+        workspace_buffer, kv_layout, backend=backend
     )
     wrapper.plan(
         q_indptr,
@@ -638,30 +644,68 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
     batch_size, qo_len, kv_len = 4, 16, 128
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
 
-    q = torch.randn(batch_size * qo_len, num_qo_heads, head_dim, device=device, dtype=torch.float16)
+    q = torch.randn(
+        batch_size * qo_len, num_qo_heads, head_dim, device=device, dtype=torch.float16
+    )
     num_pages = (kv_len + page_size - 1) // page_size
     total_pages = num_pages * batch_size
-    kv_data = torch.randn(total_pages, 2, page_size, num_kv_heads, head_dim, device=device, dtype=torch.float16)
+    kv_data = torch.randn(
+        total_pages,
+        2,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        device=device,
+        dtype=torch.float16,
+    )
 
-    qo_indptr = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
-    kv_indptr = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * num_pages
+    qo_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    )
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * num_pages
+    )
     kv_indices = torch.arange(0, total_pages, dtype=torch.int32, device=device)
-    kv_last_page_len = torch.full((batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.full(
+        (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device
+    )
 
     workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
 
-    wrapper_auto = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(workspace, "NHD", backend="auto")
-    wrapper_auto.plan(qo_indptr, kv_indptr, kv_indices, kv_last_page_len,
-                      num_qo_heads, num_kv_heads, head_dim, page_size, causal=causal)
+    wrapper_auto = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper_auto.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        causal=causal,
+    )
 
     # Verify auto resolved to aiter
     assert wrapper_auto._backend == "aiter", (
         f"Expected backend='aiter' on gfx942/gfx950, got '{wrapper_auto._backend}'"
     )
 
-    wrapper_ref = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(workspace, "NHD", backend="fa2")
-    wrapper_ref.plan(qo_indptr, kv_indptr, kv_indices, kv_last_page_len,
-                     num_qo_heads, num_kv_heads, head_dim, page_size, causal=causal)
+    wrapper_ref = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="fa2"
+    )
+    wrapper_ref.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        causal=causal,
+    )
 
     if return_lse:
         o_auto, lse_auto = wrapper_auto.run(q, kv_data, return_lse=True)

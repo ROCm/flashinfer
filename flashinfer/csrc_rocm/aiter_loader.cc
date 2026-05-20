@@ -3,11 +3,11 @@
 
 // No AITER or CK Tile headers needed here — we work with void* function pointers.
 
+#include <dlfcn.h>
 #include <flashinfer/attention/aiter/aiter_loader.h>
 
-#include <dlfcn.h>
-
 #include <cstdlib>
+#include <functional>
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
@@ -46,6 +46,44 @@ std::string build_so_name(VariantKey const& key, std::string_view prefix, std::s
   return name;
 }
 
+// Double-checked locking dlopen/dlsym with a shared cache.
+// Loads `so_path`, resolves `sym_name`, stores in `cache` under `key`.
+// `hint_fn` is called lazily to build the error hint on dlopen failure.
+template <typename Key, typename Hash>
+void* load_and_cache_sym(std::shared_mutex& mu, std::unordered_map<Key, void*, Hash>& cache,
+                         const Key& key, const std::string& so_path, const char* sym_name,
+                         std::function<std::string()> hint_fn) {
+  {
+    std::shared_lock rd(mu);
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+  }
+  std::unique_lock wr(mu);
+  auto it = cache.find(key);
+  if (it != cache.end()) return it->second;
+
+  void* handle = dlopen(so_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+  if (!handle) {
+    const char* err = dlerror();
+    throw std::runtime_error("AITER .so not found: " + so_path +
+                             "\n  dlerror: " + (err ? err : "unknown") + "\n" + hint_fn());
+  }
+
+  dlerror();  // clear any pre-existing error before dlsym
+  void* sym = dlsym(handle, sym_name);
+  if (!sym) {
+    const char* err = dlerror();
+    dlclose(handle);
+    throw std::runtime_error("dlsym(" + std::string(sym_name) + ") failed in " + so_path + ": " +
+                             (err ? err : "unknown"));
+  }
+
+  cache.emplace(key, sym);
+  return sym;
+}
+
+// ----- varlen MHA cache -----
+
 std::string variant_so_name(VariantKey const& key) {
   return build_so_name(key, "mha_varlen_fwd_", "_ndropout_nskip_nqscale.so");
 }
@@ -59,53 +97,7 @@ constexpr const char* kMhaFwdSymbol =
 std::shared_mutex s_mu;
 std::unordered_map<VariantKey, void*, VariantKeyHash> s_cache;
 
-}  // namespace
-
-void* get_aiter_mha_fwd_handle(VariantKey const& key) {
-  {
-    std::shared_lock rd(s_mu);
-    auto it = s_cache.find(key);
-    if (it != s_cache.end()) return it->second;
-  }
-
-  std::unique_lock wr(s_mu);
-  auto it = s_cache.find(key);
-  if (it != s_cache.end()) return it->second;
-
-  std::string jit_dir = get_jit_dir();
-  std::string so_path = jit_dir + "/" + variant_so_name(key);
-
-  // RTLD_LOCAL prevents symbol clashes: every variant .so defines the same
-  // mangled name aiter::mha_fwd — RTLD_GLOBAL would let later loads override it.
-  void* handle = dlopen(so_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
-  if (!handle) {
-    const char* err = dlerror();
-    throw std::runtime_error(
-        "AITER variant not found: " + so_path + "\n  dlerror: " +
-        (err ? err : "unknown") +
-        "\n  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
-        "calling mha_varlen_fwd with matching (dtype=" +
-        std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-        ", causal=" + (key.causal ? "true" : "false") +
-        ", has_lse=" + (key.has_lse ? "true" : "false") + ").");
-  }
-
-  dlerror();  // clear any pre-existing error before dlsym
-  void* sym = dlsym(handle, kMhaFwdSymbol);
-  if (!sym) {
-    const char* err = dlerror();
-    dlclose(handle);
-    throw std::runtime_error("dlsym(" + std::string(kMhaFwdSymbol) + ") failed in " + so_path +
-                             ": " + (err ? err : "unknown"));
-  }
-
-  s_cache.emplace(key, sym);
-  return sym;
-}
-
-// ----- batch-prefill variant loader -----
-
-namespace {
+// ----- batch-prefill cache -----
 
 std::string batch_prefill_variant_so_name(BatchPrefillVariantKey const& key) {
   return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale.so");
@@ -122,48 +114,61 @@ constexpr const char* kMhaBatchPrefillSymbol =
 std::shared_mutex s_bp_mu;
 std::unordered_map<BatchPrefillVariantKey, void*, BatchPrefillVariantKeyHash> s_bp_cache;
 
+// ----- generic extern "C" JIT cache -----
+
+struct ExternCKey {
+  std::string so_path;
+  std::string func_name;
+  bool operator==(ExternCKey const& o) const noexcept {
+    return so_path == o.so_path && func_name == o.func_name;
+  }
+};
+
+struct ExternCKeyHash {
+  std::size_t operator()(ExternCKey const& k) const noexcept {
+    std::size_t h1 = std::hash<std::string>{}(k.so_path);
+    std::size_t h2 = std::hash<std::string>{}(k.func_name);
+    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+  }
+};
+
+std::shared_mutex s_ec_mu;
+std::unordered_map<ExternCKey, void*, ExternCKeyHash> s_ec_cache;
+
 }  // namespace
 
+void* get_aiter_mha_fwd_handle(VariantKey const& key) {
+  std::string so_path = get_jit_dir() + "/" + variant_so_name(key);
+  return load_and_cache_sym(s_mu, s_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
+    return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
+           "calling mha_varlen_fwd with matching (dtype=" +
+           std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
+           ", causal=" + (key.causal ? "true" : "false") +
+           ", has_lse=" + (key.has_lse ? "true" : "false") + ").";
+  });
+}
+
 void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
-  {
-    std::shared_lock rd(s_bp_mu);
-    auto it = s_bp_cache.find(key);
-    if (it != s_bp_cache.end()) return it->second;
-  }
+  std::string so_path = get_jit_dir() + "/" + batch_prefill_variant_so_name(key);
+  return load_and_cache_sym(
+      s_bp_mu, s_bp_cache, key, so_path, kMhaBatchPrefillSymbol, [&key, &so_path]() {
+        return "  Hint: trigger AITER's lazy JIT build by calling "
+               "aiter.ops.mha.mha_batch_prefill_func() once with matching (dtype=" +
+               std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
+               ", causal=" + (key.causal ? "true" : "false") +
+               ", has_lse=" + (key.has_lse ? "true" : "false") +
+               ") before this C++ path.\n"
+               "  If the .so exists but dlsym fails, run: nm -D " +
+               so_path + " | grep mha_batch_prefill";
+      });
+}
 
-  std::unique_lock wr(s_bp_mu);
-  auto it = s_bp_cache.find(key);
-  if (it != s_bp_cache.end()) return it->second;
-
-  std::string jit_dir = get_jit_dir();
-  std::string so_path = jit_dir + "/" + batch_prefill_variant_so_name(key);
-
-  void* handle = dlopen(so_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
-  if (!handle) {
-    const char* err = dlerror();
-    throw std::runtime_error(
-        "AITER batch-prefill variant not found: " + so_path + "\n  dlerror: " +
-        (err ? err : "unknown") +
-        "\n  Hint: trigger AITER's lazy JIT build by calling "
-        "aiter.ops.mha.mha_batch_prefill_func() once with matching (dtype=" +
-        std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-        ", causal=" + (key.causal ? "true" : "false") +
-        ", has_lse=" + (key.has_lse ? "true" : "false") + ") before this C++ path.");
-  }
-
-  dlerror();  // clear any pre-existing error before dlsym
-  void* sym = dlsym(handle, kMhaBatchPrefillSymbol);
-  if (!sym) {
-    const char* err = dlerror();
-    dlclose(handle);
-    throw std::runtime_error("dlsym(" + std::string(kMhaBatchPrefillSymbol) + ") failed in " +
-                             so_path + ": " + (err ? err : "unknown") +
-                             "\n  This usually means the AITER ABI changed. "
-                             "Run: nm -D " + so_path + " | grep mha_batch_prefill");
-  }
-
-  s_bp_cache.emplace(key, sym);
-  return sym;
+void* get_aiter_extern_c_handle(const std::string& so_path, const std::string& func_name) {
+  ExternCKey key{so_path, func_name};
+  return load_and_cache_sym(s_ec_mu, s_ec_cache, key, so_path, func_name.c_str(), [&so_path]() {
+    return "  Hint: ensure the AITER compile() helper was invoked from the Python "
+           "plan() side to bootstrap this variant.";
+  });
 }
 
 }  // namespace flashinfer::aiter

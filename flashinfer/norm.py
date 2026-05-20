@@ -19,6 +19,7 @@ from typing import Optional
 
 import torch
 
+from .device_utils import IS_HIP
 from .jit.norm import gen_norm_module
 from .utils import device_support_pdl, register_custom_op, register_fake_op
 
@@ -28,12 +29,28 @@ def get_norm_module():
     return gen_norm_module().build_and_load()
 
 
+if IS_HIP:
+
+    @functools.cache
+    def _aiter_norm_ops():
+        import aiter as _aiter
+
+        return _aiter
+
+    def _auto_select_norm_backend(device: torch.device, dtype: torch.dtype) -> str:
+        # AITER rms_norm uses lower-precision reductions that exceed the flashinfer
+        # test tolerance (fp16 atol=1e-3, bf16 atol=1.6e-2) at hidden_size >= 1024.
+        # Keep auto on the native JIT kernel; pass backend="aiter" to opt in explicitly.
+        return "native"
+
+
 def rmsnorm(
     input: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
     out: Optional[torch.Tensor] = None,
     enable_pdl: Optional[bool] = None,
+    backend: str = "auto",
 ) -> torch.Tensor:
     r"""Root mean square normalization.
 
@@ -52,12 +69,39 @@ def rmsnorm(
     enable_pdl: bool
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
+    backend: str
+        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's rms_norm — ROCm (gfx942/gfx950) only; requires the
+        ``aiter`` package and only supports 2D inputs. Precision is slightly lower than
+        ``"native"`` at ``hidden_size >= 1024`` (fp16 atol ~4e-3, bf16 ~7e-2).
 
     Returns
     -------
     output: torch.Tensor
         Normalized tensor, 2D shape (batch_size, hidden_size) or 3D shape (batch_size, num_heads, hidden_size).
     """
+    if IS_HIP:
+        _backend = (
+            backend
+            if backend != "auto"
+            else _auto_select_norm_backend(input.device, input.dtype)
+        )
+        if _backend == "aiter":
+            if input.ndim != 2:
+                raise ValueError(
+                    f"AITER rmsnorm only supports 2D inputs; got {input.ndim}D. "
+                    "Use backend='native' for 3D inputs."
+                )
+            result = _aiter_norm_ops().rms_norm(input, weight, eps)
+            if out is not None:
+                out.copy_(result)
+                return out
+            return result
+        if _backend not in ("native",):
+            raise ValueError(
+                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+            )
     if enable_pdl is None:
         enable_pdl = device_support_pdl(input.device)
     if out is None:

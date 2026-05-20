@@ -54,6 +54,7 @@ from .utils import (
     register_fake_op,
 )
 
+
 @functools.cache
 def _aiter_native_page_sizes() -> frozenset:
     try:
@@ -155,15 +156,43 @@ def get_single_prefill_module(backend, *args):
         # AITER is inference-only on ROCm; torch.compile support not required.
         # AITER ignores custom_mask, alibi, rope, and FP8 scale params.
         def run_single_prefill(
-            q, k, v, tmp, o, maybe_lse, mask_mode, layout, window_left,
-            maybe_packed_custom_mask, maybe_alibi_slopes, logits_soft_cap,
-            sm_scale, scale_q, scale_k, scale_v, rope_scale, rope_theta,
+            q,
+            k,
+            v,
+            tmp,
+            o,
+            maybe_lse,
+            mask_mode,
+            layout,
+            window_left,
+            maybe_packed_custom_mask,
+            maybe_alibi_slopes,
+            logits_soft_cap,
+            sm_scale,
+            scale_q,
+            scale_k,
+            scale_v,
+            rope_scale,
+            rope_theta,
         ):
             run_func(
-                q, k, v, tmp, o, maybe_lse, mask_mode, layout, window_left,
-                None, None, logits_soft_cap, sm_scale,
-                1.0, 1.0,  # rope_rcp_scale / rope_rcp_theta ignored by AITER
+                q,
+                k,
+                v,
+                tmp,
+                o,
+                maybe_lse,
+                mask_mode,
+                layout,
+                window_left,
+                None,
+                None,
+                logits_soft_cap,
+                sm_scale,
+                1.0,
+                1.0,  # rope_rcp_scale / rope_rcp_theta ignored by AITER
             )
+
         return SimpleNamespace(run=run_single_prefill)
 
     @register_custom_op(
@@ -306,7 +335,9 @@ def _auto_select_prefill_backend(
     elif dtype_q not in (torch.float16, torch.bfloat16):
         reason = f"dtype={dtype_q} (AITER requires fp16/bf16)"
     elif dtype_q != dtype_kv:
-        reason = f"dtype_q={dtype_q} != dtype_kv={dtype_kv} (AITER requires equal dtypes)"
+        reason = (
+            f"dtype_q={dtype_q} != dtype_kv={dtype_kv} (AITER requires equal dtypes)"
+        )
     elif head_dim_qk != head_dim_vo:
         reason = f"head_dim_qk={head_dim_qk} != head_dim_vo={head_dim_vo} (AITER requires equal head dims)"
     elif pos_encoding_mode != "NONE":
@@ -355,10 +386,59 @@ def _aiter_bootstrap_single_prefill(
     cu_k = torch.tensor([0, 4], dtype=torch.int32, device=device)
     scale = head_dim**-0.5
     _common = dict(
-        max_seqlen_q=2, max_seqlen_k=4, min_seqlen_q=0,
-        dropout_p=0.0, softmax_scale=scale, logits_soft_cap=0.5,
-        zero_tensors=False, is_causal=True,
-        window_size_left=-1, window_size_right=-1, sink_size=0,
+        max_seqlen_q=2,
+        max_seqlen_k=4,
+        min_seqlen_q=0,
+        dropout_p=0.0,
+        softmax_scale=scale,
+        logits_soft_cap=0.5,
+        zero_tensors=False,
+        is_causal=True,
+        window_size_left=-1,
+        window_size_right=-1,
+        sink_size=0,
+        return_dropout_randval=False,
+    )
+    for return_lse in (True, False):
+        torch.ops.aiter.mha_varlen_fwd(
+            q, k, v, cu_q, cu_k, return_softmax_lse=return_lse, **_common
+        )
+
+
+@functools.lru_cache(maxsize=None)
+def _aiter_bootstrap_batch_ragged_prefill(
+    dtype: torch.dtype,
+    has_logits_cap: bool,
+    causal: bool,
+    head_dim: int,
+    device_idx: int,
+) -> None:
+    """Trigger AITER's lazy JIT for mha_varlen_fwd_*.so variants used by ragged prefill.
+
+    Same .so family as single-prefill (varlen group-mode), but we parameterize causal
+    and logits-cap so we can cover non-shipped combos for any (causal, logits) the
+    user requests. AITER ships non-causal and no-logits variants pre-built; logits+causal
+    is the combo that triggers a lazy build.
+    """
+    device = torch.device("cuda", device_idx)
+    q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
+    k = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
+    v = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
+    cu_q = torch.tensor([0, 2], dtype=torch.int32, device=device)
+    cu_k = torch.tensor([0, 4], dtype=torch.int32, device=device)
+    scale = head_dim**-0.5
+    _common = dict(
+        max_seqlen_q=2,
+        max_seqlen_k=4,
+        min_seqlen_q=0,
+        dropout_p=0.0,
+        softmax_scale=scale,
+        logits_soft_cap=0.5 if has_logits_cap else 0.0,
+        zero_tensors=False,
+        is_causal=causal,
+        window_size_left=-1,
+        window_size_right=-1,
+        sink_size=0,
         return_dropout_randval=False,
     )
     for return_lse in (True, False):
@@ -412,6 +492,7 @@ def get_batch_prefill_module(backend, *args):
     if backend == "aiter":
         module = gen_batch_prefill_module(backend, *args).build_and_load()
         _c_paged_run = module.paged_run.default
+        _c_ragged_run = module.ragged_run.default
 
         def aiter_paged_run(
             float_workspace_buffer: torch.Tensor,
@@ -480,10 +561,54 @@ def get_batch_prefill_module(backend, *args):
                 aiter_flat_kv_indptr,
             )
 
-        def aiter_ragged_run(*_args, **_kwargs) -> None:
-            raise NotImplementedError(
-                "AITER backend does not support ragged (non-paged) KV cache. "
-                "Use BatchPrefillWithPagedKVCacheWrapper instead."
+        def aiter_ragged_run(
+            float_workspace_buffer: torch.Tensor,
+            int_workspace_buffer: torch.Tensor,
+            plan_info_vec: List[int],
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            qo_indptr: torch.Tensor,
+            kv_indptr: torch.Tensor,
+            o: torch.Tensor,
+            maybe_lse: Optional[torch.Tensor],
+            mask_mode: int,
+            layout: int,
+            window_left: int,
+            enable_pdl: bool,
+            maybe_custom_mask: Optional[torch.Tensor],
+            maybe_mask_indptr: Optional[torch.Tensor],
+            maybe_alibi_slopes: Optional[torch.Tensor],
+            maybe_prefix_len_ptr: Optional[torch.Tensor],
+            maybe_token_pos_in_items_ptr: Optional[torch.Tensor],
+            maybe_max_item_len_ptr: Optional[torch.Tensor],
+            logits_soft_cap: float,
+            sm_scale: float,
+            rope_scale: float,
+            rope_theta: float,
+            token_pos_in_items_len: int,
+            max_q_len: Optional[int] = None,
+            max_kv_len: Optional[int] = None,
+        ) -> None:
+            if max_q_len is None or max_kv_len is None:
+                raise ValueError(
+                    "AITER ragged backend requires max_q_len/max_kv_len from plan()"
+                )
+            _c_ragged_run(
+                q,
+                k,
+                v,
+                qo_indptr,
+                kv_indptr,
+                o,
+                maybe_lse,
+                mask_mode,
+                layout,
+                window_left,
+                logits_soft_cap,
+                sm_scale,
+                max_q_len,
+                max_kv_len,
             )
 
         return SimpleNamespace(
@@ -1919,8 +2044,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 # both has_lse=True/False; but causal is fixed per plan() call.
                 for _lse_v in (True, False):
                     _aiter_bootstrap_batch_prefill(
-                        q_data_type, has_logits, causal, _lse_v,
-                        page_size, head_dim_qk, dev_idx,
+                        q_data_type,
+                        has_logits,
+                        causal,
+                        _lse_v,
+                        page_size,
+                        head_dim_qk,
+                        dev_idx,
                     )
 
         # Pre-compute flat-KV gather indices for the AITER backend when the
@@ -2466,9 +2596,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             will be used in attention computation.
 
         backend : str
-            The implementation backend, could be ``auto``/``fa2``. Defaults to ``auto``.
-            On ROCm, ragged KV-cache prefill always uses FA2 (AITER ragged is not yet
-            implemented).
+            The implementation backend, could be ``auto``/``fa2``/``aiter``.
+            Defaults to ``auto``. ``auto`` routes to AITER on gfx942/gfx950 when
+            constraints (NHD layout, fp16/bf16, no custom mask) are met, else FA2.
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
@@ -2487,12 +2617,12 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             )
         else:
             self._jit_module = None
-        if backend not in ("fa2", "auto"):
-            logger.warning(
-                f"{backend} backend is not supported for ragged KV-cache prefill on ROCm "
-                "(AITER ragged is not yet implemented). Selecting FA2."
+        if backend not in ("fa2", "aiter", "auto"):
+            raise ValueError(
+                f"backend must be one of 'fa2', 'aiter', 'auto'; got {backend!r}"
             )
-        backend = "fa2"
+        if backend == "aiter":
+            _require_aiter_runtime(float_workspace_buffer.device)
         self._kv_layout = kv_layout
         self._float_workspace_buffer = float_workspace_buffer
         self.device = float_workspace_buffer.device
@@ -2759,6 +2889,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._cached_q_data_type = q_data_type
         self._cached_kv_data_type = kv_data_type
         kv_len_arr = kv_indptr_host[1:] - kv_indptr_host[:-1]
+        qo_len_arr = qo_indptr_host[1:] - qo_indptr_host[:-1]
+        self._max_q_len = int(qo_len_arr.max().item()) if batch_size > 0 else 0
+        self._max_kv_len = int(kv_len_arr.max().item()) if batch_size > 0 else 0
 
         self._prefix_len_ptr = prefix_len_ptr
         self._token_pos_in_items_ptr = token_pos_in_items_ptr
@@ -2768,6 +2901,27 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
+            if self._backend == "auto":
+                self._backend = _auto_select_prefill_backend(
+                    self.device,
+                    dtype_q=q_data_type,
+                    dtype_kv=kv_data_type,
+                    kv_layout=self._kv_layout,
+                    has_custom_mask=packed_custom_mask is not None,
+                    head_dim_qk=head_dim_qk,
+                    head_dim_vo=head_dim_vo,
+                    pos_encoding_mode=pos_encoding_mode,
+                )
+            if self._backend == "aiter" and pos_encoding_mode != "NONE":
+                raise ValueError(
+                    f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
+                    "use backend='fa2' or backend='auto' instead."
+                )
+            if self._backend == "aiter" and self._kv_layout != "NHD":
+                raise ValueError(
+                    f"AITER backend only supports kv_layout='NHD'; got {self._kv_layout!r}. "
+                    "use backend='fa2' or backend='auto' instead."
+                )
             get_module_args = (
                 q_data_type,
                 kv_data_type,
@@ -2814,6 +2968,19 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._sm_scale: float = sm_scale
         self._rope_scale: float = rope_scale
         self._rope_theta: float = rope_theta
+
+        # Bootstrap AITER's lazy JIT so the C++ dlopen finds mha_varlen_fwd_*.so
+        # for the (dtype, causal, has_logits) combo this plan() call will use.
+        if self._backend == "aiter":
+            dev_idx = self.device.index if self.device.index is not None else 0
+            with _aiter_bootstrap_lock:
+                _aiter_bootstrap_batch_ragged_prefill(
+                    q_data_type,
+                    logits_soft_cap > 0,
+                    causal,
+                    head_dim_qk,
+                    dev_idx,
+                )
 
     begin_forward = plan
 
@@ -2970,6 +3137,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 rope_theta,
                 self._token_pos_in_items_len,
             ]
+            if self._backend == "aiter":
+                run_args += [self._max_q_len, self._max_kv_len]
 
         assert self._cached_module is not None, "cached module is not initialized"
         self._cached_module.ragged_run(*run_args)

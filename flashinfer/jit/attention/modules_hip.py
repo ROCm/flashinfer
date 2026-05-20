@@ -201,8 +201,9 @@ def get_batch_prefill_uri(
             "FA3 backend not supported on ROCm. The backend argument will be ignored."
         )
     if backend == "aiter":
+        # Single .so hosts both paged_run and ragged_run; URI is shared.
         return (
-            f"batch_prefill_with_paged_kv_cache_aiter_"
+            f"batch_prefill_with_kv_cache_aiter_"
             f"dtype_q_{filename_safe_dtype_map[dtype_q]}_"
             f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
             f"dtype_o_{filename_safe_dtype_map[dtype_o]}_"
@@ -331,6 +332,67 @@ def gen_single_prefill_module(
         use_sliding_window=use_sliding_window,
         use_logits_soft_cap=use_logits_soft_cap,
         use_fp16_qk_reduction=use_fp16_qk_reduction,
+    )
+
+
+def get_batch_decode_aiter_uri(
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    head_dim_qk: int,
+    head_dim_vo: int,
+) -> str:
+    # AITER PA v1 bakes (dtype, head_dim, gqa_ratio, block_size, partition_size,
+    # logits_cap_enabled, sliding_window_enabled, alibi_enabled, npar_loops, mtp)
+    # into its own .so via md5-hashed func_name at plan() time. Our wrapper .so
+    # is dtype-/head_dim-agnostic — one shared variant covers any combination.
+    # Including dtype/head_dim in the URI keeps it consistent with other URIs
+    # and harmless (still one .so per concrete combo, but build is cheap).
+    return (
+        f"batch_decode_with_paged_kv_cache_aiter_"
+        f"dtype_q_{filename_safe_dtype_map[dtype_q]}_"
+        f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
+        f"dtype_o_{filename_safe_dtype_map[dtype_o]}_"
+        f"head_dim_qk_{head_dim_qk}_"
+        f"head_dim_vo_{head_dim_vo}"
+    )
+
+
+def gen_batch_decode_aiter_module(
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    head_dim_qk: int,
+    head_dim_vo: int,
+) -> JitSpec:
+    import aiter as _aiter_mod
+
+    aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
+
+    uri = get_batch_decode_aiter_uri(
+        dtype_q, dtype_kv, dtype_o, head_dim_qk, head_dim_vo
+    )
+    gen_directory = FLASHINFER_GEN_SRC_DIR / uri
+    os.makedirs(gen_directory, exist_ok=True)
+
+    source_paths = []
+    for filename in [
+        "batch_decode_aiter.cu",
+        "batch_decode_aiter_jit_pybind.cu",
+        "aiter_loader.cc",
+    ]:
+        src_path = FLASHINFER_CSRC_DIR / filename
+        dest_path = gen_directory / filename
+        source_paths.append(dest_path)
+        with open(src_path, "r") as f:
+            source = f.read()
+        write_if_different(dest_path, source)
+
+    return gen_jit_spec(
+        uri,
+        source_paths,
+        extra_cflags=[f'-DFLASHINFER_AITER_JIT_DIR=\\"{aiter_jit_dir}\\"'],
+        extra_ldflags=["-ldl"],
     )
 
 
@@ -904,7 +966,7 @@ def gen_customize_batch_prefill_module(
         gen_directory = FLASHINFER_GEN_SRC_DIR / uri
 
         with open(
-            FLASHINFER_CSRC_DIR / "batch_prefill_paged_aiter_customize_config.jinja"
+            FLASHINFER_CSRC_DIR / "batch_prefill_aiter_customize_config.jinja"
         ) as f:
             config_templ = jinja2.Template(f.read())
 
@@ -918,9 +980,13 @@ def gen_customize_batch_prefill_module(
         os.makedirs(gen_directory, exist_ok=True)
 
         source_paths = []
+        # Both paged_run and ragged_run share the .so — single TORCH_LIBRARY
+        # extension, single aiter_loader.cc dlopen cache, one config .inc.
         for filename in [
             "batch_prefill_paged_aiter.cu",
             "batch_prefill_paged_aiter_jit_pybind.cu",
+            "batch_ragged_prefill_aiter.cu",
+            "batch_ragged_prefill_aiter_jit_pybind.cu",
             "aiter_loader.cc",
         ]:
             src_path = FLASHINFER_CSRC_DIR / filename
@@ -930,7 +996,7 @@ def gen_customize_batch_prefill_module(
                 source = f.read()
             write_if_different(dest_path, source)
 
-        generated_config_path = gen_directory / "batch_prefill_paged_aiter_config.inc"
+        generated_config_path = gen_directory / "batch_prefill_aiter_config.inc"
         write_if_different(generated_config_path, generated_inc_str)
 
         return gen_jit_spec(
