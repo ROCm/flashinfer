@@ -39,8 +39,10 @@ cflags) is a **silent no-op** unless you call `spec.write_ninja()` first.
 **`FLASHINFER_JIT_DEBUG=1` is a no-op on ROCm/HIP**: the env var is read in
 [`flashinfer/jit/core.py`](flashinfer/jit/core.py) only on the `IS_CUDA` branch
 (where it adds `-O0 -g -G`). The `IS_HIP` branch ignores it entirely. To get a
-debug build on ROCm, add `"-g"` (and remove `-O3`) via `extra_cuda_cflags` in
-the op's JIT generator and clear `~/.cache/flashinfer/`.
+debug build on ROCm, append `"-O0", "-g"` via `extra_cuda_cflags` in the op's
+JIT generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so trailing
+`-O0` is what actually overrides it on the hipcc command line) and clear
+`~/.cache/flashinfer/`.
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);

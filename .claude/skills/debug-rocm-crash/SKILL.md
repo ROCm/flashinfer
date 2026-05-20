@@ -7,7 +7,8 @@ description: Tutorial for debugging HIP kernel crashes in FlashInfer+ROCm using 
 
 > **Note:** earlier revisions of this skill (and CLAUDE.md) described a `@flashinfer_api`
 > decorator with `FLASHINFER_LOGLEVEL` / `FLASHINFER_LOGDEST` env vars. **That machinery does
-> not exist in this fork** (grep returns zero matches). Don't try to set those env vars —
+> not exist in this fork** — no matches in code (`git grep` under `flashinfer/` and `include/`
+> returns nothing; the only hits are this disclaimer). Don't try to set those env vars —
 > use the HIP/ROCm tooling below instead.
 
 ## The magic env-var combo

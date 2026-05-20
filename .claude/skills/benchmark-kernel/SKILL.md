@@ -20,7 +20,7 @@ For the in-repo profiler wrapper, see [`rocm_profiler/rocm_profiler.py`](../../.
 
 ## Non-obvious gotchas
 
-- **CUPTI is NVIDIA-only and `enable_cupti=True` WILL fail on ROCm.** [`flashinfer/testing/utils.py:1010`](../../../flashinfer/testing/utils.py) routes `enable_cupti=True` straight to `bench_gpu_time_with_cupti` with no HIP guard; `cupti-python` is not installable on ROCm. Leave `enable_cupti=False` (the default) — `bench_gpu_time` then uses `torch.cuda.Event` (HIP events under the hood).
+- **CUPTI is NVIDIA-only — `enable_cupti=True` on ROCm warns and falls back.** [`flashinfer/testing/utils.py:1010`](../../../flashinfer/testing/utils.py) routes through `bench_gpu_time_with_cupti`, which `try/except`s the `cupti` import, emits a `UserWarning`, and reverts to CUDA/HIP event timing. No functional benefit on ROCm; just leave `enable_cupti=False` (the default) so `bench_gpu_time` uses `torch.cuda.Event` (HIP events) directly without the warning.
 - **AITER backend constraints, accurately:**
   - Explicit `backend="aiter"` + `kv_layout != "NHD"` → `ValueError` at `plan()` time. Raised in the prefill wrapper, e.g. [`prefill_rocm.py:1978`](../../../flashinfer/prefill_rocm.py) (single/paged) and the batch-paged wrapper around line 2920. Not raised by auto-selection — that path silently falls back to `fa2`.
   - Explicit `backend="aiter"` on non-gfx942/gfx950 → `RuntimeError`.
