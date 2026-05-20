@@ -31,6 +31,7 @@ from .jit import (
     get_batch_decode_uri,
     get_single_decode_uri,
 )
+from .jit.core import logger
 from .page import get_seq_lens
 from .prefill_rocm import (
     _aiter_bootstrap_lock,
@@ -388,6 +389,10 @@ _AITER_DTYPE_STR = {
 
 # PA v1 splits the KV sequence into partitions of this many tokens before reduction.
 _AITER_PA_V1_PARTITION_SIZE = 256
+
+# One-time-per-device warning that any return_lse=True call against an AITER-planned
+# wrapper will be dispatched through the FA2 shadow plan (AITER PA v1 does not output LSE).
+_aiter_lse_fallback_warned: set[torch.device] = set()
 
 
 def _aiter_pa_v1_resolve(
@@ -839,6 +844,21 @@ class BatchDecodeWithPagedKVCacheWrapper:
             paged_attention_v1 kernel and requires gfx942/gfx950 plus NHD layout, fp16/bf16,
             no positional encoding, and ``use_tensor_cores=False``.
 
+            Notes on AITER-specific behavior:
+
+            * ``use_cuda_graph=True`` is not supported with ``backend="aiter"``: the AITER
+              kernel's launch grid is sized from per-plan scalars (``max_kv_len``,
+              ``max_blocks_per_seq``) that get baked into the captured graph and cannot
+              be widened on replay. ``backend="auto"`` automatically routes around this.
+            * Sliding-window attention (``window_left >= 0``) IS supported by AITER PA v1.
+              The wrapper handles the convention difference internally
+              (AITER ``sliding_window = window_left + 1``).
+            * ``run(..., return_lse=True)`` is supported: AITER PA v1 does not output
+              log-sum-exp, so the wrapper transparently dispatches the call through a
+              parallel FA2 decode plan that is built lazily on the first such call (so
+              AITER-only workloads pay no JIT/plan cost). A one-time-per-device warning
+              is emitted on that first call so the backend switch is not silent.
+
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
             otherwise, the wrapper will use default attention implementation.
@@ -1105,9 +1125,12 @@ class BatchDecodeWithPagedKVCacheWrapper:
             kv_lens_arr_host = seq_lens.cpu()
 
         # Resolve auto → concrete backend. AITER decode requires use_tensor_cores=False
-        # (the AITER PA v1 kernel handles its own dispatch internally).
+        # (the AITER PA v1 kernel handles its own dispatch internally). CUDA-graph
+        # capture is excluded: AITER's launch grid is sized from per-plan scalars
+        # (max_kv_len, max_blocks_per_seq) that get baked into the captured graph
+        # and cannot be widened on replay without re-capturing.
         if self._backend == "auto":
-            if self.use_tensor_cores:
+            if self.use_tensor_cores or self.is_cuda_graph_enabled:
                 self._backend = "fa2"
             else:
                 self._backend = _auto_select_prefill_backend(
@@ -1132,6 +1155,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     f"AITER decode backend requires pos_encoding_mode='NONE', "
                     f"got {pos_encoding_mode!r}"
                 )
+            if self.is_cuda_graph_enabled:
+                raise ValueError(
+                    "AITER decode backend is incompatible with CUDA-graph capture: "
+                    "the kernel's launch grid is sized from per-plan scalars "
+                    "(max_kv_len, max_blocks_per_seq) that are baked into the "
+                    "captured graph at capture time. Use backend='fa2' for "
+                    "CUDA-graph workflows, or backend='auto' which routes around "
+                    "this automatically."
+                )
             self._max_kv_len = int(max(kv_lens_arr_host).item())
             # max blocks per seq across the batch — needed to size the dense block_tables.
             npages_arr = indptr_host[1:].to(torch.int64) - indptr_host[:-1].to(
@@ -1141,7 +1173,13 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 int(npages_arr.max().item()) if batch_size > 0 else 0
             )
             self._aiter_partition_size = _AITER_PA_V1_PARTITION_SIZE
-            self._aiter_sliding_window = 0 if window_left == -1 else window_left
+            # Convention mapping: flashinfer's window_left = W means the query at
+            # position kv_len-1 sees kv positions [kv_len-1-W, kv_len-1] (W+1 tokens).
+            # AITER's sliding_window = S masks positions where local_token_idx + i <
+            # context_len - S, so it admits S tokens. Therefore S = W + 1. The sentinel
+            # window_left == -1 (disabled) maps to S = 0, which is also AITER's compile-
+            # time "disabled" flag (sliding_window_enabled = (S > 0)).
+            self._aiter_sliding_window = 0 if window_left == -1 else window_left + 1
 
             self._cached_module = get_batch_decode_aiter_module(
                 q_data_type, kv_data_type, q_data_type, head_dim, head_dim
@@ -1165,6 +1203,24 @@ class BatchDecodeWithPagedKVCacheWrapper:
             # Skip FA2-style plan_info; AITER kernel doesn't use it.
             self._plan_info = plan_info_vec_as_tensor(
                 [], device=self._float_workspace_buffer.device
+            )
+
+            # FA2 shadow plan for return_lse=True; built lazily (AITER PA v1 has no LSE).
+            self._fa2_lse_module: Optional[Any] = None
+            self._fa2_lse_plan_info: Optional[torch.Tensor] = None
+            self._fa2_lse_build_args = (
+                q_data_type,
+                kv_data_type,
+                indptr.dtype,
+                head_dim,
+                pos_encoding_mode,
+                window_left,
+                logits_soft_cap,
+                indptr_host,
+                batch_size,
+                num_qo_heads,
+                num_kv_heads,
+                page_size,
             )
 
             self._pos_encoding_mode = pos_encoding_mode
@@ -1259,6 +1315,66 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._rope_theta = rope_theta
 
     begin_forward = plan
+
+    def _ensure_fa2_lse_plan(self) -> None:
+        if self._fa2_lse_plan_info is not None:
+            return
+        (
+            q_data_type,
+            kv_data_type,
+            indptr_dtype,
+            head_dim,
+            pos_encoding_mode,
+            window_left,
+            logits_soft_cap,
+            indptr_host,
+            batch_size,
+            num_qo_heads,
+            num_kv_heads,
+            page_size,
+        ) = self._fa2_lse_build_args
+
+        if self.device not in _aiter_lse_fallback_warned:
+            _aiter_lse_fallback_warned.add(self.device)
+            logger.warning(
+                "AITER decode wrapper on device %s received a return_lse=True call; "
+                "dispatching through an FA2 decode shadow plan (AITER PA v1 does not "
+                "output log-sum-exp). Expect a per-call performance cliff vs. "
+                "return_lse=False on the same wrapper.",
+                self.device,
+            )
+
+        self._fa2_lse_module = get_batch_decode_module(
+            q_data_type,
+            kv_data_type,
+            q_data_type,
+            indptr_dtype,
+            head_dim,
+            head_dim,
+            PosEncodingMode[pos_encoding_mode].value,
+            window_left != -1,
+            logits_soft_cap > 0,
+        )
+        fa2_lse_plan = self._fa2_lse_module.plan(
+            self._float_workspace_buffer,
+            self._int_workspace_buffer,
+            self._pin_memory_int_workspace_buffer,
+            indptr_host,
+            batch_size,
+            num_qo_heads,
+            num_kv_heads,
+            page_size,
+            self.is_cuda_graph_enabled,
+            window_left,
+            logits_soft_cap,
+            head_dim,
+            head_dim,
+            torch.empty(0, dtype=q_data_type),
+            torch.empty(0, dtype=kv_data_type),
+        )
+        self._fa2_lse_plan_info = plan_info_vec_as_tensor(
+            fa2_lse_plan, device=self._float_workspace_buffer.device
+        )
 
     def forward(
         self,
@@ -1442,9 +1558,34 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         if self._backend == "aiter":
             if return_lse:
-                raise NotImplementedError(
-                    "AITER decode backend does not currently return LSE"
+                self._ensure_fa2_lse_plan()
+                self._fa2_lse_module.run(
+                    self._float_workspace_buffer,
+                    self._int_workspace_buffer,
+                    self._fa2_lse_plan_info,
+                    q,
+                    k_cache,
+                    v_cache,
+                    self._paged_kv_indptr_buf,
+                    self._paged_kv_indices_buf,
+                    self._paged_kv_last_page_len_buf,
+                    out,
+                    lse,
+                    TensorLayout[self._kv_layout].value,
+                    window_left,
+                    enable_pdl,
+                    _get_cache_alibi_slopes_buf(q.shape[1], q.device),
+                    logits_soft_cap,
+                    sm_scale,
+                    rope_scale,
+                    rope_theta,
                 )
+                if v_scale is not None:
+                    if is_float8(out):
+                        out = (out.to(torch.float32) * v_scale).to(out.dtype)
+                    else:
+                        out *= v_scale
+                return (out, lse)
             self._cached_module.run(
                 q,
                 k_cache,
