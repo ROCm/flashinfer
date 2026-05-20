@@ -50,6 +50,9 @@ void apply_rope(at::Tensor q, at::Tensor k, at::Tensor q_rope, at::Tensor k_rope
   size_t k_rope_stride_n = k_rope.stride(0);
   size_t k_rope_stride_h = k_rope.stride(1);
 
+  TORCH_CHECK(offsets.scalar_type() == indptr.scalar_type(),
+              "offsets and indptr must have the same dtype");
+
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q.device());
   auto stream = c10::hip::getCurrentHIPStream();
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(q.scalar_type(), c_type, [&] {
@@ -192,6 +195,9 @@ void apply_llama31_rope(at::Tensor q, at::Tensor k, at::Tensor q_rope, at::Tenso
   size_t q_rope_stride_h = q_rope.stride(1);
   size_t k_rope_stride_n = k_rope.stride(0);
   size_t k_rope_stride_h = k_rope.stride(1);
+
+  TORCH_CHECK(offsets.scalar_type() == indptr.scalar_type(),
+              "offsets and indptr must have the same dtype");
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(q.device());
   auto stream = c10::hip::getCurrentHIPStream();
@@ -364,10 +370,13 @@ void rope_quantize_append_paged_kv_cache(
       k_cache.defined() && k_cache.numel() > 0 && v_cache.defined() && v_cache.numel() > 0;
   bool has_mla_caches =
       ckv_cache.defined() && ckv_cache.numel() > 0 && kpe_cache.defined() && kpe_cache.numel() > 0;
-  bool is_mla = has_mla_caches && !has_gqa_caches;
   TORCH_CHECK(has_gqa_caches || has_mla_caches,
               "rope_quantize_append_paged_kv_cache requires either GQA caches (k_cache, v_cache) "
               "or MLA caches (ckv_cache, kpe_cache)");
+  TORCH_CHECK(!(has_gqa_caches && has_mla_caches),
+              "rope_quantize_append_paged_kv_cache: provide either GQA caches (k_cache, v_cache) "
+              "or MLA caches (ckv_cache, kpe_cache), not both");
+  bool is_mla = has_mla_caches;
   if (has_gqa_caches) {
     CHECK_LAST_DIM_CONTIGUOUS(v_in);
     TORCH_CHECK(v_in.scalar_type() == q_rope_in.scalar_type(),
