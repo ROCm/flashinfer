@@ -282,6 +282,7 @@ void rope_quantize(at::Tensor q_rope_in, at::Tensor k_rope_in, at::Tensor q_nope
   TORCH_CHECK(k_nope_in.scalar_type() == q_rope_in.scalar_type(),
               "k_nope_in dtype must match q_rope_in dtype");
   TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
+  // pos_ids is intentionally int32-only: paged-cache index arithmetic uses int32 throughout.
   TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
   TORCH_CHECK(is_float8_tensor(q_rope_out), "Output dtype must be float8");
 
@@ -355,6 +356,7 @@ void rope_quantize_append_paged_kv_cache(
   TORCH_CHECK(k_nope_in.scalar_type() == q_rope_in.scalar_type(),
               "k_nope_in dtype must match q_rope_in dtype");
   TORCH_CHECK(cos_sin_cache.scalar_type() == at::kFloat, "cos_sin_cache dtype must be float32");
+  // pos_ids is intentionally int32-only: paged-cache index arithmetic uses int32 throughout.
   TORCH_CHECK(pos_ids.scalar_type() == at::kInt, "pos_ids dtype must be int32");
   TORCH_CHECK(is_float8_tensor(q_rope_out), "Output dtype must be float8");
 
@@ -392,7 +394,6 @@ void rope_quantize_append_paged_kv_cache(
       hipError_t status;
 
       if (is_mla) {
-        // MLA path: ckv_cache + kpe_cache, no V section
         TORCH_CHECK(k_rope_in.dim() == 3 && k_rope_in.size(1) == 1,
                     "MLA expects k_rope_in to be 3D with num_kv_heads=1");
         TORCH_CHECK(k_nope_in.dim() == 3 && k_nope_in.size(1) == 1,
@@ -426,7 +427,6 @@ void rope_quantize_append_paged_kv_cache(
                         std::string(hipGetErrorString(status)));
 
       } else {
-        // GQA/MHA path: k_cache + v_cache
         uint32_t num_kv_heads = k_rope_in.size(1);
         uint32_t head_dim = rope_dim + no_rope_dim;
         const uint32_t v_in_stride = v_in.stride(0);

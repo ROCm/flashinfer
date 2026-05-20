@@ -1410,7 +1410,6 @@ gpuError_t RopeQuantizeAppendPagedMLACache(
       uint32_t rope_chunks = 1;
       uint32_t no_rope_chunks = (no_rope_dim + rope_dim - 1) / rope_dim;
 
-      // MLA: Q rope + K rope (num_kv_heads=1) + K nope + Q nope (no V section)
       constexpr uint32_t num_kv_heads = 1;
       uint32_t total_blocks_y = num_qo_heads * rope_chunks + num_kv_heads * rope_chunks +
                                 num_kv_heads * no_rope_chunks + num_qo_heads * no_rope_chunks;

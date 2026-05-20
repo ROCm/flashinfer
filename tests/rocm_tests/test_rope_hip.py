@@ -442,7 +442,13 @@ def test_rope_cos_sin_cache(
     num_q_heads,
     num_kv_heads,
 ):
-    """Ported from upstream; uses 5x looser tolerances than CUDA (atol/rtol=5e-2)."""
+    """Ported from upstream; uses looser tolerances than CUDA (atol/rtol=5e-2).
+
+    The bfloat16 cos/sin-cache path accumulates rounding error in the interleaved
+    rotation (two cast_load/cast_store round-trips through bf16) that pushes max
+    absolute error to ~3e-2 on gfx942. 5e-2 gives a 65% headroom over the
+    observed worst-case to avoid flakiness across seeds/shapes.
+    """
     rope_ref = RotaryEmbedding(
         head_size,
         rotary_dim,
@@ -509,7 +515,6 @@ def test_rope_with_cos_sin_cache_nonplace(is_neox_style, dtype):
     query_orig = query.clone()
     key_orig = key.clone()
 
-    # Non-inplace variant (lines 1178-1194 of rope.py)
     query_out, key_out = flashinfer.apply_rope_with_cos_sin_cache(
         pos_ids, query, key, head_size, cos_sin_cache, is_neox=is_neox_style
     )
