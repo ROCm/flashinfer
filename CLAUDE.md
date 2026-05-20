@@ -15,7 +15,6 @@
 | Set target arch | `export FLASHINFER_ROCM_ARCH_LIST="gfx942,gfx950"` |
 | Limit parallel build | `export MAX_JOBS=4` |
 | Verbose JIT output | `export FLASHINFER_JIT_VERBOSE=1` |
-| Debug build (-O0) | `export FLASHINFER_JIT_DEBUG=1` |
 | Run linting | `pre-commit run -a` |
 
 ## Installing Torch
@@ -36,6 +35,12 @@ See the [GPU and ROCm Support](README.md#gpu-and-rocm-support) table in
 **JIT build.ninja caching**: `JitSpec.build()` only writes `build.ninja` when
 the file is missing. Changing env vars (`FLASHINFER_ROCM_ARCH_LIST`, extra
 cflags) is a **silent no-op** unless you call `spec.write_ninja()` first.
+
+**`FLASHINFER_JIT_DEBUG=1` is a CUDA-only no-op**: the env var is read in
+[`flashinfer/jit/core.py`](flashinfer/jit/core.py) only on the `IS_CUDA` branch
+(adds `-O0 -g -G`). The `IS_HIP` branch ignores it. To get a debug build on
+ROCm, add `"-g"` (and remove `-O3`) via `extra_cuda_cflags` in the op's JIT
+generator and clear `~/.cache/flashinfer/`.
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);
@@ -82,13 +87,3 @@ gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 # Or from a file
 gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
 ```
-
-## Plan Files
-
-Save approved plans to the Claude Code project memory directory for this repo
-(visible via `/memory` in Claude Code).
-
-**Naming:** `plan_<short_descriptive_slug>.md`
-
-**Index:** add a one-line entry to `MEMORY.md` in that same directory:
-`- [Plan: <title>](plan_<slug>.md) — <one-line summary>`
