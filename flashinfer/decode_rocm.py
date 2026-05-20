@@ -855,9 +855,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
               (AITER ``sliding_window = window_left + 1``).
             * ``run(..., return_lse=True)`` is supported: AITER PA v1 does not output
               log-sum-exp, so the wrapper transparently dispatches the call through a
-              parallel FA2 decode plan that was pre-built at ``plan()`` time. A one-time
-              warning is emitted when an AITER plan is created so the per-call backend
-              switch is not silent.
+              parallel FA2 decode plan that is built lazily on the first such call (so
+              AITER-only workloads pay no JIT/plan cost). A one-time-per-device warning
+              is emitted on that first call so the backend switch is not silent.
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
@@ -1205,52 +1205,27 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 [], device=self._float_workspace_buffer.device
             )
 
-            # Shadow FA2 decode plan for return_lse=True calls. AITER PA v1 does not
-            # expose log-sum-exp; if the user requests it at run() time we transparently
-            # dispatch the same problem through the FA2 decode kernel. The shadow plan
-            # mirrors the AITER plan's window_left / soft-cap configuration so the FA2
-            # output matches the AITER output bit-for-bit (modulo kernel numerics).
-            self._fa2_lse_module = get_batch_decode_module(
+            # AITER PA v1 does not expose log-sum-exp. If the caller requests it at run()
+            # time we transparently dispatch through an FA2 decode shadow plan that mirrors
+            # this AITER plan's window_left / soft-cap configuration. The shadow module +
+            # plan are JIT-compiled lazily on the first return_lse=True call to avoid
+            # imposing that cost on AITER-only workloads.
+            self._fa2_lse_module: Optional[Any] = None
+            self._fa2_lse_plan_info: Optional[torch.Tensor] = None
+            self._fa2_lse_build_args: Optional[Tuple[Any, ...]] = (
                 q_data_type,
                 kv_data_type,
-                q_data_type,
                 indptr.dtype,
                 head_dim,
-                head_dim,
-                PosEncodingMode[pos_encoding_mode].value,
-                window_left != -1,
-                logits_soft_cap > 0,
-            )
-            fa2_lse_plan = self._fa2_lse_module.plan(
-                self._float_workspace_buffer,
-                self._int_workspace_buffer,
-                self._pin_memory_int_workspace_buffer,
+                pos_encoding_mode,
+                window_left,
+                logits_soft_cap,
                 indptr_host,
                 batch_size,
                 num_qo_heads,
                 num_kv_heads,
                 page_size,
-                self.is_cuda_graph_enabled,
-                window_left,
-                logits_soft_cap,
-                head_dim,
-                head_dim,
-                torch.empty(0, dtype=q_data_type),
-                torch.empty(0, dtype=kv_data_type),
             )
-            self._fa2_lse_plan_info = plan_info_vec_as_tensor(
-                fa2_lse_plan, device=self._float_workspace_buffer.device
-            )
-
-            if self.device not in _aiter_lse_fallback_warned:
-                _aiter_lse_fallback_warned.add(self.device)
-                logger.warning(
-                    "AITER decode backend planned for device %s: any run() call with "
-                    "return_lse=True will transparently dispatch through the FA2 decode "
-                    "kernel (AITER PA v1 does not output log-sum-exp). This may cause "
-                    "a per-call performance cliff vs. return_lse=False on the same wrapper.",
-                    self.device,
-                )
 
             self._pos_encoding_mode = pos_encoding_mode
             self._window_left = window_left
@@ -1344,6 +1319,71 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._rope_theta = rope_theta
 
     begin_forward = plan
+
+    def _ensure_fa2_lse_plan(self) -> None:
+        """Lazily build the FA2 shadow module + plan used by AITER return_lse=True calls.
+
+        Deferred from plan() to first run(return_lse=True) so AITER-only workloads don't
+        pay the JIT-compile + plan() cost. Idempotent — subsequent calls are no-ops.
+        """
+        if self._fa2_lse_plan_info is not None:
+            return
+        (
+            q_data_type,
+            kv_data_type,
+            indptr_dtype,
+            head_dim,
+            pos_encoding_mode,
+            window_left,
+            logits_soft_cap,
+            indptr_host,
+            batch_size,
+            num_qo_heads,
+            num_kv_heads,
+            page_size,
+        ) = self._fa2_lse_build_args
+
+        if self.device not in _aiter_lse_fallback_warned:
+            _aiter_lse_fallback_warned.add(self.device)
+            logger.warning(
+                "AITER decode wrapper on device %s received a return_lse=True call; "
+                "dispatching through an FA2 decode shadow plan (AITER PA v1 does not "
+                "output log-sum-exp). Expect a per-call performance cliff vs. "
+                "return_lse=False on the same wrapper.",
+                self.device,
+            )
+
+        self._fa2_lse_module = get_batch_decode_module(
+            q_data_type,
+            kv_data_type,
+            q_data_type,
+            indptr_dtype,
+            head_dim,
+            head_dim,
+            PosEncodingMode[pos_encoding_mode].value,
+            window_left != -1,
+            logits_soft_cap > 0,
+        )
+        fa2_lse_plan = self._fa2_lse_module.plan(
+            self._float_workspace_buffer,
+            self._int_workspace_buffer,
+            self._pin_memory_int_workspace_buffer,
+            indptr_host,
+            batch_size,
+            num_qo_heads,
+            num_kv_heads,
+            page_size,
+            self.is_cuda_graph_enabled,
+            window_left,
+            logits_soft_cap,
+            head_dim,
+            head_dim,
+            torch.empty(0, dtype=q_data_type),
+            torch.empty(0, dtype=kv_data_type),
+        )
+        self._fa2_lse_plan_info = plan_info_vec_as_tensor(
+            fa2_lse_plan, device=self._float_workspace_buffer.device
+        )
 
     def forward(
         self,
@@ -1527,7 +1567,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         if self._backend == "aiter":
             if return_lse:
-                # AITER does not output LSE; use the pre-computed FA2 plan instead.
+                self._ensure_fa2_lse_plan()
                 self._fa2_lse_module.run(
                     self._float_workspace_buffer,
                     self._int_workspace_buffer,
