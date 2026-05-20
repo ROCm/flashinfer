@@ -36,11 +36,11 @@ See the [GPU and ROCm Support](README.md#gpu-and-rocm-support) table in
 the file is missing. Changing env vars (`FLASHINFER_ROCM_ARCH_LIST`, extra
 cflags) is a **silent no-op** unless you call `spec.write_ninja()` first.
 
-**`FLASHINFER_JIT_DEBUG=1` is a CUDA-only no-op**: the env var is read in
+**`FLASHINFER_JIT_DEBUG=1` is a no-op on ROCm/HIP**: the env var is read in
 [`flashinfer/jit/core.py`](flashinfer/jit/core.py) only on the `IS_CUDA` branch
-(adds `-O0 -g -G`). The `IS_HIP` branch ignores it. To get a debug build on
-ROCm, add `"-g"` (and remove `-O3`) via `extra_cuda_cflags` in the op's JIT
-generator and clear `~/.cache/flashinfer/`.
+(where it adds `-O0 -g -G`). The `IS_HIP` branch ignores it entirely. To get a
+debug build on ROCm, add `"-g"` (and remove `-O3`) via `extra_cuda_cflags` in
+the op's JIT generator and clear `~/.cache/flashinfer/`.
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);

@@ -22,7 +22,7 @@ For a complete worked example to copy, read these together:
 | 3 | `flashinfer/csrc_rocm/flashinfer_<op>_binding.cu` | `TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) { m.def("<op>", <op>); }`. |
 | 4 (opt) | `flashinfer/csrc_rocm/<op>_customize_config.jinja` | Compile-time type specialization. Skip if runtime dispatch is enough. |
 | 5 | `flashinfer/jit/<op>.py` | `gen_<op>_module() -> JitSpec` via `gen_jit_spec(...)`. |
-| 6 | `flashinfer/<op>.py` | Python API: `@functools.cache` module loader, optional `@flashinfer_api`, destination-passing (`out=`). |
+| 6 | `flashinfer/<op>.py` | Python API: `@functools.cache` module loader, destination-passing (`out=`). |
 | 7 | `tests/rocm_tests/test_<op>_hip.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
 | 8 | `flashinfer/jit/__init__.py` (`IS_HIP` branch) | `from .<op> import gen_<op>_module as gen_<op>_module`. |
 | 9 | `flashinfer/__init__.py` (`IS_HIP` branch) | `from .<op> import <op> as <op>`. |

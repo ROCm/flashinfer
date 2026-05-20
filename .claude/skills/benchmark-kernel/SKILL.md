@@ -22,11 +22,11 @@ For the in-repo profiler wrapper, see [`rocm_profiler/rocm_profiler.py`](../../.
 
 - **CUPTI is NVIDIA-only and `enable_cupti=True` WILL fail on ROCm.** [`flashinfer/testing/utils.py:1010`](../../../flashinfer/testing/utils.py) routes `enable_cupti=True` straight to `bench_gpu_time_with_cupti` with no HIP guard; `cupti-python` is not installable on ROCm. Leave `enable_cupti=False` (the default) — `bench_gpu_time` then uses `torch.cuda.Event` (HIP events under the hood).
 - **AITER backend constraints, accurately:**
-  - `kv_layout != "NHD"` → hard raise (`_check_kv_layout` / [`prefill_rocm.py:331`](../../../flashinfer/prefill_rocm.py)).
+  - Explicit `backend="aiter"` + `kv_layout != "NHD"` → `ValueError` at `plan()` time. Raised in the prefill wrapper, e.g. [`prefill_rocm.py:1978`](../../../flashinfer/prefill_rocm.py) (single/paged) and the batch-paged wrapper around line 2920. Not raised by auto-selection — that path silently falls back to `fa2`.
   - Explicit `backend="aiter"` on non-gfx942/gfx950 → `RuntimeError`.
   - `amd-aiter` not importable → `ImportError`.
   - **"Native" page sizes** (no flat-gather): `{128, 256, 1024}` for `amd-aiter >= 0.1.10`, else `{16, 1024}` — see `_aiter_native_page_sizes()` in [`prefill_rocm.py:59`](../../../flashinfer/prefill_rocm.py). **Non-native page sizes are NOT rejected** — they go through a flat-gather code path. So the "{1, 16, 1024}" guidance from older docs is wrong.
-  - Auto-selection (no explicit `backend=`) silently falls back to `fa2` for: custom mask, dtype mismatch, head_dim mismatch, `pos_encoding_mode != "NONE"`.
+  - Auto-selection (no explicit `backend=`) silently falls back to `fa2` for any of: `kv_layout != "NHD"`, custom mask, dtype not in `{fp16, bf16}`, `dtype_q != dtype_kv`, `head_dim_qk != head_dim_vo`, `pos_encoding_mode != "NONE"`, or `amd-aiter` not importable. See `_auto_select_prefill_backend()` in [`prefill_rocm.py:311`](../../../flashinfer/prefill_rocm.py) for the authoritative list.
 - **Always verify numerical parity before trusting perf numbers.** Compare default-HIP vs AITER outputs with `torch.testing.assert_close(rtol=1e-2, atol=1e-2)` for BF16/FP16 first.
 - **`gcnArchName` is the unambiguous arch marker.** Device strings show `cuda:0` on AMD too. Record `torch.cuda.get_device_properties(0).gcnArchName` and `torch.version.hip` alongside every number — a `gfx942` / ROCm 7.2 result is not comparable to a `gfx950` / ROCm 7.0.2 result.
 

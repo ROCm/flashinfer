@@ -28,7 +28,7 @@ For an in-script view of what's being passed, wrap the suspect call with `print(
 | Symptom | First check |
 | --- | --- |
 | `Memory access fault by GPU node-N` / `hipErrorIllegalAddress` / "CUDA error: illegal memory access" (PyTorch's ROCm reports HIP errors as "CUDA" errors) | Run with the env combo above. Print tensor shapes/dtypes/strides just before the call. Verify: `is_contiguous()` where required, all tensors on the same `cuda:N`, `kv_indices` within `[0, num_pages)`, `head_dim_qk` matches between Q and KV. |
-| `backend="aiter"` `ValueError` before launch | `kv_layout != "NHD"` (only NHD is allowed — see [`prefill_rocm.py:331`](../../../flashinfer/prefill_rocm.py)). |
+| `backend="aiter"` `ValueError` before launch | `kv_layout != "NHD"` (only NHD is allowed — raised in the prefill wrapper's `plan()`, e.g. [`prefill_rocm.py:1978`](../../../flashinfer/prefill_rocm.py)). |
 | `backend="aiter"` `RuntimeError` | Non-gfx942/gfx950 GPU. |
 | `backend="aiter"` `ImportError` | `amd-aiter` not installed (`pip install amd-aiter --index-url https://pypi.amd.com/simple/`). |
 | `backend="aiter"` hard GPU fault mid-kernel | `amd-aiter` version mismatch vs. ROCm. Reinstall matching your ROCm version. Try the default HIP backend to confirm the bug is in AITER, not our side. |
