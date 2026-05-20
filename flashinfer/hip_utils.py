@@ -147,9 +147,14 @@ def get_system_rocm_version():
     """
     Attempt to detect the system ROCm version.
 
-    For TheRock builds, hipconfig is used directly: it reports the HIP runtime
-    version (consistent with torch.version.hip), unlike .info/version which
-    reports the TheRock SDK version (e.g. "7.12.0" when HIP is 7.3).
+    For standard ROCm installations, detection falls back through several
+    methods in order of reliability: ``ROCM_HOME/.info/version``, ``amd-smi``,
+    ``dpkg``, and finally ``hipconfig``.
+
+    For TheRock builds, ``hipconfig`` is used directly because it reports the
+    HIP runtime version (consistent with ``torch.version.hip``), unlike
+    ``.info/version`` which reports the TheRock SDK version (for example,
+    ``"7.12.0"`` when HIP is ``7.3``).
 
     Returns:
         str: ROCm version like "7.1.0" or None if not detectable
