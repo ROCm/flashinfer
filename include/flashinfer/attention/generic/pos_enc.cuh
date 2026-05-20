@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <type_traits>
 
 #include "gpu_iface/dispatch.cuh"
 #include "gpu_iface/enums.hpp"
@@ -16,6 +17,7 @@
 #include "gpu_iface/layout.cuh"
 #include "gpu_iface/macros.hpp"
 #include "gpu_iface/math_ops.hpp"
+#include "gpu_iface/platform.hpp"
 #include "gpu_iface/utils.cuh"
 #include "gpu_iface/vec_dtypes.hpp"
 #include "page.cuh"
@@ -576,15 +578,12 @@ gpuError_t BatchQKApplyRotaryPosIdsCosSinCache(
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      // operate on 16 Bytes at a time
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
-      // how many threads needed per head_dim
+      // 16-byte vectorised loads; at least one element per thread per wavefront lane
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      // how many threads needed per block
-      uint32_t num_threads = std::max(128U, bdx);
-      // how many tokens can we process in a block
+      // at least 2 wavefronts per block for occupancy on CDNA3 / 2 warps on CUDA
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
-      // how many blocks needed to process all tokens
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
       void* args[] = {(void*)&q,
                       (void*)&k,
@@ -648,9 +647,9 @@ gpuError_t BatchQKApplyRotaryPosIds(
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(128U, bdx);
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
 
@@ -717,9 +716,9 @@ gpuError_t BatchQKApplyRotary(DType* q, DType* k, DType* q_rope, DType* k_rope,
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(128U, bdx);
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       dim3 nblks(batch_size * (num_qo_heads + num_kv_heads));
       dim3 nthrs(bdx, bdy);
@@ -783,9 +782,9 @@ gpuError_t BatchQKApplyLlama31Rotary(
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(128U, bdx);
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       dim3 nblks(batch_size * (num_qo_heads + num_kv_heads));
       dim3 nthrs(bdx, bdy);
@@ -834,9 +833,9 @@ gpuError_t BatchQKApplyLlama31RotaryPosIds(
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(128U, bdx);
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       dim3 nblks((nnz + bdy - 1) / bdy);
       dim3 nthrs(bdx, bdy);
@@ -1040,16 +1039,22 @@ __global__ void RopeQuantizeKernel(
 }
 
 /*!
- * \brief Fused RoPE + FP8 quantization + paged KV cache append kernel (GQA/MHA only).
+ * \brief Fused RoPE + FP8 quantization + paged KV cache append kernel.
+ *
+ * Dispatches between GQA/MHA and MLA layouts via the `CacheT` template parameter:
+ * `paged_kv_t<...>` selects the GQA/MHA path (k_cache, v_cache, with V append),
+ * `paged_kv_mla_t<...>` selects the MLA path (ckv_cache, kpe_cache, no V).
+ * The branch is resolved at compile time via the `IS_MLA` constexpr.
  */
 template <bool interleave, uint32_t vec_size, uint32_t bdx, typename DType, typename IdType,
-          typename QuantType>
+          typename QuantType, typename CacheT = paged_kv_t<QuantType, IdType>>
 __global__ void RopeQuantizeAppendPagedKVCacheKernel(
     DType* q_rope_in, DType* k_rope_in, DType* q_nope_in, DType* k_nope_in, DType* v_in,
-    QuantType* q_rope_out, QuantType* q_nope_out, paged_kv_t<QuantType, IdType> paged_kv,
+    QuantType* q_rope_out, QuantType* q_nope_out, CacheT paged_kv_like,
     IdType* __restrict__ batch_indices, IdType* __restrict__ positions,
     float* __restrict__ cos_sin_cache, IdType* __restrict__ pos_ids,
     const RopeQuantizeAppendPagedKVCacheParams params) {
+  constexpr bool IS_MLA = std::is_same<CacheT, paged_kv_mla_t<QuantType, IdType>>::value;
   uint32_t bx = blockIdx.x, tx = threadIdx.x, ty = threadIdx.y;
   uint32_t by = blockIdx.y;
   uint32_t bdy = blockDim.y;
@@ -1091,9 +1096,9 @@ __global__ void RopeQuantizeAppendPagedKVCacheKernel(
     const IdType pos = pos_ids[idx];
 
     uint32_t page_iter, entry_idx;
-    paged_kv.page_size.divmod(
-        paged_kv.indptr[batch_indices[idx]] * paged_kv.page_size + positions[idx], page_iter,
-        entry_idx);
+    paged_kv_like.page_size.divmod(
+        paged_kv_like.indptr[batch_indices[idx]] * paged_kv_like.page_size + positions[idx],
+        page_iter, entry_idx);
 
     const int half_rope_dim = rope_dim / 2;
     if ((tx * vec_size < rope_dim) && (by < k_rope_end)) {
@@ -1138,8 +1143,13 @@ __global__ void RopeQuantizeAppendPagedKVCacheKernel(
       uint32_t rope_chunk_idx = (by - q_rope_end) % rope_chunks;
       uint32_t elem_offset = rope_chunk_idx * rope_chunk_size;
 
-      DType* k_rope_in_ptr = k_rope_in + get_elem_offset_impl(idx, k_head_idx, elem_offset,
-                                                              k_rope_in_stride, k_rope_in_stride_h);
+      DType* k_rope_in_ptr;
+      if constexpr (IS_MLA) {
+        k_rope_in_ptr = k_rope_in + idx * k_rope_in_stride + elem_offset;
+      } else {
+        k_rope_in_ptr = k_rope_in + get_elem_offset_impl(idx, k_head_idx, elem_offset,
+                                                         k_rope_in_stride, k_rope_in_stride_h);
+      }
       vec_t k_rope_vec;
       if constexpr (interleave) {
         k_rope_vec = vec_apply_llama_rope_cos_sin_interleave_reuse_half<vec_size, bdx>(
@@ -1151,50 +1161,70 @@ __global__ void RopeQuantizeAppendPagedKVCacheKernel(
       for (uint32_t i = 0; i < vec_size; ++i) {
         k_rope_vec[i] = k_rope_vec[i] * quant_scale_kv;
       }
-      QuantType* k_ptr = paged_kv.get_k_ptr(page_iter, k_head_idx, entry_idx, tx * vec_size);
-      k_rope_vec.cast_store(k_ptr);
+      if constexpr (IS_MLA) {
+        QuantType* kpe_ptr =
+            paged_kv_like.get_kpe_ptr(page_iter, entry_idx, elem_offset + tx * vec_size);
+        k_rope_vec.cast_store(kpe_ptr);
+      } else {
+        QuantType* k_ptr = paged_kv_like.get_k_ptr(page_iter, k_head_idx, entry_idx, tx * vec_size);
+        k_rope_vec.cast_store(k_ptr);
+      }
 
     } else if (by < k_nope_end) {
       uint32_t k_head_idx = (by - k_rope_end) / no_rope_chunks;
       uint32_t nope_chunk_idx = (by - k_rope_end) % no_rope_chunks;
       uint32_t elem_offset = nope_chunk_idx * rope_chunk_size;
 
-      DType* k_nope_in_ptr = k_nope_in + get_elem_offset_impl(idx, k_head_idx, elem_offset,
-                                                              k_nope_in_stride, k_nope_in_stride_h);
+      DType* k_nope_in_ptr;
+      if constexpr (IS_MLA) {
+        k_nope_in_ptr = k_nope_in + idx * k_nope_in_stride + elem_offset;
+      } else {
+        k_nope_in_ptr = k_nope_in + get_elem_offset_impl(idx, k_head_idx, elem_offset,
+                                                         k_nope_in_stride, k_nope_in_stride_h);
+      }
       vec_t k_nope_vec;
       k_nope_vec.cast_load(k_nope_in_ptr + tx * vec_size);
 #pragma unroll
       for (uint32_t i = 0; i < vec_size; ++i) {
         k_nope_vec[i] = k_nope_vec[i] * quant_scale_kv;
       }
-      QuantType* k_ptr = paged_kv.get_k_ptr(page_iter, k_head_idx, entry_idx,
-                                            rope_dim + elem_offset + tx * vec_size);
-      k_nope_vec.cast_store(k_ptr);
+      if constexpr (IS_MLA) {
+        QuantType* ckv_ptr =
+            paged_kv_like.get_ckv_ptr(page_iter, entry_idx, elem_offset + tx * vec_size);
+        k_nope_vec.cast_store(ckv_ptr);
+      } else {
+        QuantType* k_ptr = paged_kv_like.get_k_ptr(page_iter, k_head_idx, entry_idx,
+                                                   rope_dim + elem_offset + tx * vec_size);
+        k_nope_vec.cast_store(k_ptr);
+      }
 
-    } else if (by < k_nope_end + num_kv_heads) {
-      uint32_t kv_head_idx = by - k_nope_end;
-      DType* v_in_ptr =
-          v_in + get_elem_offset_impl(idx, kv_head_idx, 0, v_in_stride, v_in_stride_h);
-      uint32_t head_dim_total = rope_dim + no_rope_dim;
-      uint32_t v_chunks = (head_dim_total + rope_chunk_size - 1) / rope_chunk_size;
+    } else if (by < k_nope_end + (IS_MLA ? 0u : num_kv_heads)) {
+      // V processing (GQA/MHA only — IS_MLA skips this section entirely)
+      if constexpr (!IS_MLA) {
+        uint32_t kv_head_idx = by - k_nope_end;
+        DType* v_in_ptr =
+            v_in + get_elem_offset_impl(idx, kv_head_idx, 0, v_in_stride, v_in_stride_h);
+        uint32_t head_dim_total = rope_dim + no_rope_dim;
+        uint32_t v_chunks = (head_dim_total + rope_chunk_size - 1) / rope_chunk_size;
 #pragma unroll 1
-      for (uint32_t j = 0; j < v_chunks; ++j) {
-        uint32_t v_elem_offset = j * rope_chunk_size;
-        if (v_elem_offset + tx * vec_size < head_dim_total) {
-          vec_t v_vec;
-          v_vec.cast_load(v_in_ptr + v_elem_offset + tx * vec_size);
+        for (uint32_t j = 0; j < v_chunks; ++j) {
+          uint32_t v_elem_offset = j * rope_chunk_size;
+          if (v_elem_offset + tx * vec_size < head_dim_total) {
+            vec_t v_vec;
+            v_vec.cast_load(v_in_ptr + v_elem_offset + tx * vec_size);
 #pragma unroll
-          for (uint32_t i = 0; i < vec_size; ++i) {
-            v_vec[i] = v_vec[i] * quant_scale_kv;
+            for (uint32_t i = 0; i < vec_size; ++i) {
+              v_vec[i] = v_vec[i] * quant_scale_kv;
+            }
+            QuantType* v_ptr = paged_kv_like.get_v_ptr(page_iter, kv_head_idx, entry_idx,
+                                                       v_elem_offset + tx * vec_size);
+            v_vec.cast_store(v_ptr);
           }
-          QuantType* v_ptr =
-              paged_kv.get_v_ptr(page_iter, kv_head_idx, entry_idx, v_elem_offset + tx * vec_size);
-          v_vec.cast_store(v_ptr);
         }
       }
 
     } else {
-      uint32_t q_nope_start = k_nope_end + num_kv_heads;
+      uint32_t q_nope_start = k_nope_end + (IS_MLA ? 0u : num_kv_heads);
       uint32_t q_head_idx = (by - q_nope_start) / no_rope_chunks;
       uint32_t nope_chunk_idx = (by - q_nope_start) % no_rope_chunks;
       uint32_t elem_offset = nope_chunk_idx * rope_chunk_size;
@@ -1234,9 +1264,10 @@ gpuError_t RopeQuantize(
     bool interleave, bool /*enable_pdl*/ = false, gpuStream_t stream = nullptr) {
   DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, {
     DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
-      constexpr uint32_t vec_size = 32 / sizeof(DType);
+      // 16-byte vector loads — single global_load_dwordx4 on CDNA3
+      constexpr uint32_t vec_size = 16 / sizeof(DType);
       constexpr uint32_t bdx = ROPE_DIM / vec_size;
-      uint32_t num_threads = 128U;
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
       uint32_t rope_chunk_size = rope_dim;
@@ -1303,9 +1334,10 @@ gpuError_t RopeQuantizeAppendPagedKVCache(
     bool interleave, bool /*enable_pdl*/ = false, gpuStream_t stream = nullptr) {
   DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, {
     DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
-      constexpr uint32_t vec_size = 32 / sizeof(DType);
+      // 16-byte vector loads — single global_load_dwordx4 on CDNA3
+      constexpr uint32_t vec_size = 16 / sizeof(DType);
       constexpr uint32_t bdx = ROPE_DIM / vec_size;
-      uint32_t num_threads = 128U;
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
       uint32_t rope_chunks = 1;
@@ -1347,6 +1379,81 @@ gpuError_t RopeQuantizeAppendPagedKVCache(
                       (void*)&q_nope_out, (void*)&paged_kv,      (void*)&batch_indices,
                       (void*)&positions,  (void*)&cos_sin_cache, (void*)&pos_ids,
                       (void*)&params};
+      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    });
+  });
+  return gpuSuccess;
+}
+
+/*!
+ * \brief Host launcher: fused RoPE + FP8 quantization + MLA paged cache append.
+ *
+ * MLA differs from GQA/MHA in three ways:
+ *   1. K is 2-D (no head dim): strides are (batch_stride, batch_stride).
+ *   2. Cache uses paged_kv_mla_t (ckv_cache + kpe_cache) instead of paged_kv_t.
+ *   3. There is no V section.
+ * The kernel (RopeQuantizeAppendPagedKVCacheKernel with CacheT=paged_kv_mla_t)
+ * already handles all three via the IS_MLA constexpr path.
+ */
+template <typename DType, typename IdType, typename QuantType>
+gpuError_t RopeQuantizeAppendPagedMLACache(
+    DType* q_rope_in, DType* k_rope_in, DType* q_nope_in, DType* k_nope_in, QuantType* q_rope_out,
+    QuantType* q_nope_out, paged_kv_mla_t<QuantType, IdType> paged_kv_mla, IdType* batch_indices,
+    IdType* positions, float* cos_sin_cache, IdType* pos_ids, uint32_t nnz, uint32_t num_qo_heads,
+    uint32_t rope_dim, uint32_t no_rope_dim, size_t q_rope_in_stride_n, size_t q_rope_in_stride_h,
+    size_t q_nope_in_stride_n, size_t q_nope_in_stride_h, size_t q_rope_out_stride_n,
+    size_t q_rope_out_stride_h, size_t q_nope_out_stride_n, size_t q_nope_out_stride_h,
+    size_t k_rope_in_stride, size_t k_nope_in_stride, float quant_scale_q, float quant_scale_kv,
+    bool interleave, bool /*enable_pdl*/ = false, gpuStream_t stream = nullptr) {
+  DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, {
+    DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
+      constexpr uint32_t vec_size = 16 / sizeof(DType);
+      constexpr uint32_t bdx = ROPE_DIM / vec_size;
+      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t bdy = num_threads / bdx;
+      uint32_t nblks_x = (nnz + bdy - 1) / bdy;
+      uint32_t rope_chunks = 1;
+      uint32_t no_rope_chunks = (no_rope_dim + rope_dim - 1) / rope_dim;
+
+      constexpr uint32_t num_kv_heads = 1;
+      uint32_t total_blocks_y = num_qo_heads * rope_chunks + num_kv_heads * rope_chunks +
+                                num_kv_heads * no_rope_chunks + num_qo_heads * no_rope_chunks;
+
+      RopeQuantizeAppendPagedKVCacheParams params;
+      params.nnz = nnz;
+      params.num_qo_heads = num_qo_heads;
+      params.num_kv_heads = 1u;
+      params.rope_dim = rope_dim;
+      params.no_rope_dim = no_rope_dim;
+      params.q_rope_in_stride_n = q_rope_in_stride_n;
+      params.q_rope_in_stride_h = q_rope_in_stride_h;
+      params.q_nope_in_stride_n = q_nope_in_stride_n;
+      params.q_nope_in_stride_h = q_nope_in_stride_h;
+      params.q_rope_out_stride_n = q_rope_out_stride_n;
+      params.q_rope_out_stride_h = q_rope_out_stride_h;
+      params.q_nope_out_stride_n = q_nope_out_stride_n;
+      params.q_nope_out_stride_h = q_nope_out_stride_h;
+      // 2D K: head stride = batch stride (shared K/V head)
+      params.k_rope_in_stride = k_rope_in_stride;
+      params.k_rope_in_stride_h = k_rope_in_stride;
+      params.k_nope_in_stride = k_nope_in_stride;
+      params.k_nope_in_stride_h = k_nope_in_stride;
+      params.v_in_stride = 0;
+      params.v_in_stride_h = 0;
+      params.quant_scale_q = quant_scale_q;
+      params.quant_scale_kv = quant_scale_kv;
+
+      DType* v_in_nullptr = nullptr;
+      dim3 nblks(nblks_x, total_blocks_y);
+      dim3 nthrs(bdx, bdy);
+      void* args[] = {(void*)&q_rope_in,  (void*)&k_rope_in,     (void*)&q_nope_in,
+                      (void*)&k_nope_in,  (void*)&v_in_nullptr,  (void*)&q_rope_out,
+                      (void*)&q_nope_out, (void*)&paged_kv_mla,  (void*)&batch_indices,
+                      (void*)&positions,  (void*)&cos_sin_cache, (void*)&pos_ids,
+                      (void*)&params};
+      auto kernel =
+          RopeQuantizeAppendPagedKVCacheKernel<INTERLEAVE, vec_size, bdx, DType, IdType, QuantType,
+                                               paged_kv_mla_t<QuantType, IdType>>;
       FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     });
   });
