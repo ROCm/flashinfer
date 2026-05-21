@@ -1,18 +1,20 @@
 # FlashInfer+ROCm: An AMD ROCm port of FlashInfer
 
-FlashInfer+ROCm is an AMD ROCm port of the
-[FlashInfer](https://github.com/flashinfer-ai/flashinfer) library for LLM
-inference on AMD Instinct GPUs. The port targets
+FlashInfer+ROCm brings the
+[FlashInfer](https://github.com/flashinfer-ai/flashinfer) inference
+kernel library to AMD Instinct GPUs — currently
 [CDNA3](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-3-white-paper.pdf)
 (gfx942 — MI300X / MI325X) and
 [CDNA4](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-4-architecture-whitepaper.pdf)
-(gfx950 — MI355X), and is aimed at developers embedding FlashInfer
-kernels into their own training or serving stack.
+(gfx950 — MI355X). It ships in-tree HIP ports of the attention,
+KV-cache, RoPE, normalization, sampling, and logits-processor kernels,
+and transparently dispatches a subset of attention paths to AMD's
+[AITER](https://github.com/ROCm/aiter) backend when its compatibility
+conditions hold (see [Feature Support Matrix](#feature-support-matrix)).
 
-The project is in active development with the primary focus on attention
-(single and batch prefill / decode) and the surrounding KV-cache, RoPE,
-and normalization kernels. See [CHANGELOG.md](CHANGELOG.md) for the
-full release history.
+The port is in active development and is aimed at developers embedding
+FlashInfer kernels into their own training or serving stack. See
+[CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 **Versioning:** The release tag format `<upstream_version>+amd.<n>` ties
 each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
