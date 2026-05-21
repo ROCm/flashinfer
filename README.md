@@ -116,15 +116,16 @@ available wheels.
 
 ### Option 1: Get a Pre-built Docker Image
 
-AMD validates and publishes [FlashInfer images](https://hub.docker.com/r/rocm/flashinfer/tags)
-with ROCm backends on Docker Hub. The following Docker image tags
-represent the latest available FlashInfer+ROCm releases:
+AMD validates and publishes FlashInfer images with ROCm backends on
+Docker Hub. The latest validated tag is:
 
 | Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
 | ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
 | `rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1` | 7.2.0 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355X, MI325X, MI300X |
-| `rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1` | 7.0.2 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355X, MI325X, MI300X |
-| `rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8` | 7.1.1 | v0.2.5 | 2.8.0 | 24.04 | 3.12 | MI325X, MI300X |
+
+For older releases (earlier ROCm / PyTorch / FlashInfer combinations),
+see the full tag list at
+<https://hub.docker.com/r/rocm/flashinfer/tags>.
 
 **Start a container:**
 
