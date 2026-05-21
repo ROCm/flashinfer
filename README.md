@@ -132,7 +132,8 @@ see the full tag list at
 ```bash
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --ipc=host --shm-size 128G --name=<container-name> <docker-image-tag>
+  --ipc=host --shm-size 128G --name=flashinfer-rocm \
+  rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
 ```
 
 **Verify the installation:**
