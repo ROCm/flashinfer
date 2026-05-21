@@ -99,18 +99,21 @@ class BatchMLAPagedAttentionWrapper:
     float_workspace_buffer : torch.Tensor
         Reserved workspace.  Size is ignored; only the device is used.
     backend : str
-        Must be ``"aiter"`` (only supported backend on ROCm).
+        Either ``"auto"`` (the default, resolves to ``"aiter"`` on ROCm)
+        or ``"aiter"``. Any other value raises ``ValueError``.
     """
 
     def __init__(
         self,
         float_workspace_buffer: torch.Tensor,
-        backend: str = "aiter",
+        backend: str = "auto",
     ) -> None:
-        if backend != "aiter":
+        if backend not in ("auto", "aiter"):
             raise ValueError(
-                f"Only backend='aiter' is supported on ROCm; got {backend!r}."
+                f"Only backend='aiter' (or 'auto', which resolves to "
+                f"'aiter') is supported on ROCm; got {backend!r}."
             )
+        backend = "aiter"
         self.device = float_workspace_buffer.device
         _require_aiter_mla(self.device)
 

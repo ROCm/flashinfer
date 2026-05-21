@@ -46,7 +46,8 @@ each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
 Most kernels ship with an in-tree HIP implementation. A subset also has
 an AITER backend; for those, `backend="auto"` picks AITER when its
 compatibility conditions hold and falls back to HIP otherwise. The one
-AITER-only kernel today (MLA) requires an explicit `backend="aiter"`.
+AITER-only kernel today (MLA) has no HIP path — `backend="auto"`
+resolves directly to `"aiter"`.
 
 Legend: **HIP** = in-tree kernel (`fa2` for attention, `native` JIT
 kernel for non-attention ops). **AITER** = ROCm AITER backend.
@@ -58,7 +59,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **Single prefill attention** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no custom mask + equal Q/KV dtypes & head dims + `pos_encoding_mode="NONE"`; else **HIP** | MHA / GQA / MQA; fp8 WIP |
 | **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | MHA / GQA / MQA; fp8 WIP. AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter==0.1.10`); other sizes go through a gather on the AITER path |
 | **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
-| **MLA (Multi-Latent Attention)** | — | ✅ | **AITER only** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; must pass `backend="aiter"` explicitly |
+| **MLA (Multi-Latent Attention)** | — | ✅ | **AITER** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; `backend="auto"` (default) resolves to `"aiter"` |
 | **POD attention** | TBD | — | n/a | Code present; **not yet validated on ROCm** |
 | **RoPE (positional encoding)** | ✅ | — | HIP | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ) |
 | **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + AITER importable; else **HIP `native`** | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path |
@@ -311,7 +312,9 @@ pytest -n auto --reruns 2 -m "slow"
 FlashInfer+ROCm can dispatch the `single_prefill`, `batch_prefill`
 (paged and ragged), `batch_decode`, `append_paged_kv_cache`, `rmsnorm`,
 and `MLA` paths to [AITER](https://github.com/ROCm/aiter). MLA on ROCm
-is **AITER-only** — there is no in-tree HIP MLA kernel yet.
+is **AITER-only** — there is no in-tree HIP MLA kernel yet, so
+`backend="auto"` (the default for the MLA wrapper) resolves directly
+to `"aiter"`.
 
 On gfx942/gfx950, `backend="auto"` (the default) selects AITER when the
 call is compatible (see [Known Limitations](#known-limitations) for the
