@@ -3,9 +3,9 @@
 FlashInfer+ROCm is an AMD ROCm port of the
 [FlashInfer](https://github.com/flashinfer-ai/flashinfer) library for LLM
 inference on AMD Instinct GPUs. The port targets
-[CDNA3](https://rocm.docs.amd.com/en/latest/conceptual/gpu-arch/mi300.html)
+[CDNA3](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-3-white-paper.pdf)
 (gfx942 — MI300X / MI325X) and
-[CDNA4](https://www.amd.com/en/products/accelerators/instinct/mi350.html)
+[CDNA4](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-4-architecture-whitepaper.pdf)
 (gfx950 — MI355X), and is aimed at developers embedding FlashInfer
 kernels into their own training or serving stack.
 
