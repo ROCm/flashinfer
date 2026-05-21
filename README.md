@@ -57,23 +57,38 @@ Jupyter tutorial that walks through the full public API on ROCm.
 
 ## Feature Support Matrix
 
-| Kernel Type | FP16 / BF16 | FP8 (E4M3, E5M2) | Has AITER backend | Notes |
-| :--- | :---: | :---: | :---: | :--- |
-| **Single / Batch Decode Attention** | ✅ | ✅ (E4M3FNUZ KV-cache) | ✅ (batch paged, fp16/bf16) | MHA, GQA, MQA; sliding-window on the AITER path; CUDA-graph support |
-| **Single / Batch Prefill Attention** | ✅ | WIP | ✅ (single, batch-paged, batch-ragged) | MHA, GQA, MQA |
-| **Cascade Attention** | ✅ | — | No | Two-level shared-prefix attention |
-| **MLA (Multi-Latent Attention)** | ✅ (bf16, `page_size=1`) | — | ✅ (AITER-only path) | DeepSeek-style 192/128 head-dim split; **requires AITER** on ROCm |
-| **POD Attention** | TBD | TBD | No | Code present; **not yet validated on ROCm** |
-| **RoPE (Positional Encoding)** | ✅ | — | No | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + paged-KV append |
-| **Paged KV-Cache Append** | ✅ | ✅ | ✅ (opt-in) | `append_paged_kv_cache` |
-| **Sampling** | ✅ | — | No | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
-| **Logits Processor** | ✅ | — | No | Composable processor pipeline (cap, mask, temperature, …) |
-| **Normalization** | ✅ | — | ✅ (RMSNorm only) | RMSNorm, LayerNorm, Gemma RMSNorm |
-| **Activation** | ✅ | — | No | SiLU / GELU with fused gating |
-| **Quantization** | ✅ | — | No | `packbits`, `segment_packbits` |
-| **`torch.compile`** | ✅ (opt-in) | — | n/a | Enabled via the `FLASHINFER_ENABLE_TORCH_COMPILE` env flag |
+Most kernels ship with an in-tree HIP implementation. A subset also has
+an [AITER](https://github.com/ROCm/aiter) backend; for those, the
+`backend="auto"` default picks AITER when its compatibility conditions
+hold and transparently falls back to HIP otherwise. AITER-only kernels
+(currently MLA) require an explicit `backend="aiter"`.
+
+Legend: **HIP** = in-tree FlashInfer+ROCm kernel (the historical `fa2`
+HIP port, or the `native` JIT kernel for non-attention ops). **AITER** =
+ROCm AITER backend.
+
+| Kernel | HIP | AITER | `backend="auto"` resolves to | Notes |
+| :--- | :---: | :---: | :--- | :--- |
+| **Single decode attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA; fp16, bf16, fp8 (E4M3FNUZ KV-cache) |
+| **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | Sliding-window supported on the AITER path; CUDA-graph auto-routes back to HIP |
+| **Single prefill attention** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no custom mask + equal Q/KV dtypes & head dims + `pos_encoding_mode="NONE"`; else **HIP** | MHA / GQA / MQA; fp8 prefill WIP |
+| **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter==0.1.10`); other sizes go through a gather on the AITER path |
+| **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention |
+| **MLA (Multi-Latent Attention)** | — | ✅ | **AITER only** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; must pass `backend="aiter"` explicitly |
+| **POD attention** | TBD | — | n/a | Code present; **not yet validated on ROCm** |
+| **RoPE (positional encoding)** | ✅ | — | HIP | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + paged-KV append |
+| **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + AITER importable; else **HIP `native`** | `append_paged_kv_cache` |
+| **RMSNorm** | ✅ `native` | ✅ | **HIP `native`** (auto stays on HIP — AITER is opt-in via `backend="aiter"`) | AITER path is fp16/bf16, 2-D only; slightly lower precision at `hidden_size >= 1024` |
+| **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
+| **Sampling** | ✅ | — | HIP | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
+| **Logits processor** | ✅ | — | HIP | Composable processor pipeline (cap, mask, temperature, …) |
+| **Activation** | ✅ | — | HIP | SiLU / GELU with fused gating |
+| **Quantization** | ✅ | — | HIP | `packbits`, `segment_packbits` |
+| **`torch.compile`** | ✅ (opt-in flag) | n/a | n/a | Enabled via the `FLASHINFER_ENABLE_TORCH_COMPILE` env flag |
 
 Every ✅ row above is exercised by a matching `tests/rocm_tests/test_*_hip.py`.
+The full set of conditions that cause AITER auto-routing to fall back to
+HIP is documented in [Known Limitations](#known-limitations) below.
 
 ## GPU, ROCm, and PyTorch Support
 
