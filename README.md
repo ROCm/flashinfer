@@ -55,14 +55,14 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | Kernel | HIP | AITER | `backend="auto"` resolves to | Notes |
 | :--- | :---: | :---: | :--- | :--- |
 | **Single decode attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA |
-| **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | MHA / GQA / MQA; **fp8 KV-cache (E4M3FNUZ)** on the HIP path; sliding-window on the AITER path; CUDA-graph auto-routes back to HIP |
+| **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + `pos_encoding_mode="NONE"` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | MHA / GQA / MQA; **fp8 KV-cache (E4M3FNUZ)** on the HIP path; sliding-window on the AITER path; CUDA-graph auto-routes back to HIP |
 | **Single prefill attention** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no custom mask + equal Q/KV dtypes & head dims + `pos_encoding_mode="NONE"`; else **HIP** | MHA / GQA / MQA; fp8 WIP |
 | **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | MHA / GQA / MQA; fp8 WIP. AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter==0.1.10`); other sizes go through a gather on the AITER path |
 | **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
 | **MLA (Multi-Latent Attention)** | — | ✅ | **AITER** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; `backend="auto"` (default) resolves to `"aiter"` |
 | **POD attention** | TBD | — | n/a | Code present; **not yet validated on ROCm** |
 | **RoPE (positional encoding)** | ✅ | — | HIP | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ) |
-| **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + AITER importable; else **HIP `native`** | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path |
+| **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + gfx942/gfx950 + AITER importable; else **HIP `native`** | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path |
 | **RMSNorm** | ✅ `native` | ✅ | **HIP `native`** (auto stays on HIP — AITER is opt-in via `backend="aiter"`) | AITER path is fp16/bf16, 2-D only; slightly lower precision at `hidden_size >= 1024` |
 | **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
 | **Sampling** | ✅ | — | HIP | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
@@ -315,9 +315,19 @@ to `"aiter"`.
 
 On gfx942/gfx950, `backend="auto"` (the default) selects AITER when the
 call is compatible (see [Known Limitations](#known-limitations) for the
-full list) and otherwise falls back to the in-tree `fa2` HIP kernel,
-emitting a one-time `logger.warning`. Pass `backend="aiter"` to require
-AITER explicitly, or `backend="fa2"` to skip it.
+full list) and otherwise falls back to the in-tree HIP kernel, emitting
+a one-time `logger.warning`. Pass `backend="aiter"` to require AITER
+explicitly, or pass the in-tree backend string to skip it:
+`backend="fa2"` for the attention wrappers (single/batch
+prefill/decode), `backend="native"` for non-attention ops
+(`append_paged_kv_cache`, `rmsnorm`). Two backend-specific exceptions
+to "auto picks AITER when supported":
+
+* `rmsnorm`: `backend="auto"` stays on the HIP `native` kernel; the
+  AITER path is opt-in via `backend="aiter"`.
+* `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True`
+  force `auto` back to `fa2` (AITER decode does not support either),
+  and `pos_encoding_mode != "NONE"` raises under `backend="aiter"`.
 
 Unless you are using the prebuilt Docker image, install AITER separately
 via one of the options below.
@@ -343,10 +353,12 @@ pip install amd-aiter --index-url https://pypi.amd.com/simple/
 AITER constraints fall into two groups: hard incompatibilities (the call
 errors with `backend="aiter"` and triggers fallback under
 `backend="auto"`), and silently-ignored kwargs (the call runs but the
-flag has no effect on AITER — pass `backend="fa2"` explicitly if you
-need any of them).
+flag has no effect on AITER — pass the in-tree backend explicitly if
+you need any of them: `backend="fa2"` for attention wrappers, or
+`backend="native"` for `append_paged_kv_cache` / `rmsnorm`).
 
-**Conditions that fall back to `fa2` under `backend="auto"`:**
+**Conditions that fall back to the in-tree HIP kernel under
+`backend="auto"`** (and raise under `backend="aiter"`):
 
 * GPU is not gfx942 or gfx950
 * `kv_layout` is not `NHD`
@@ -354,6 +366,8 @@ need any of them).
 * `q_dtype` is not `float16` / `bfloat16` (no fp32, fp8, or int8)
 * `q_dtype != kv_dtype` (mixed-precision Q/KV is unsupported)
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128 head dims)
+* `pos_encoding_mode != "NONE"` (AITER attention paths only support `"NONE"`)
+* batch decode: `use_cuda_graph=True` or `use_tensor_cores=True`
 * the `aiter` Python package is not importable
 
 **Features silently ignored on the AITER path** (kwargs are accepted by
@@ -361,8 +375,10 @@ the FlashInfer wrapper but not forwarded to AITER, which can produce
 wrong results):
 
 * ALiBi slopes (`maybe_alibi_slopes`)
-* in-kernel positional encoding modes (`pos_encoding_mode`, `rope_scale`,
-  `rope_theta`)
+* RoPE scaling kwargs (`rope_scale`, `rope_theta`) — these are only
+  consumed alongside `pos_encoding_mode != "NONE"`, which AITER
+  attention rejects outright; the kwargs themselves pass through
+  silently when the mode is `"NONE"`
 * attention sinks (`sinks`)
 * multi-modal / prefix-cache helpers (`maybe_prefix_len_ptr`,
   `maybe_token_pos_in_items_ptr`, `maybe_max_item_len_ptr`)
@@ -403,10 +419,14 @@ documented in [CLAUDE.md](CLAUDE.md).
 guarding code paths or diagnosing setup issues:
 
 ```python
+import torch
+
 from flashinfer.aiter_utils import is_aiter_supported
 from flashinfer.hip_utils import check_torch_rocm_compatibility
 
-# True only on gfx942/gfx950 with the aiter package importable.
+# True on gfx942/gfx950 (a ROCm build + supported GPU arch). Does *not*
+# verify the `aiter` Python package is importable — wrap the actual
+# AITER call in a try/except ImportError if you need that guarantee.
 if is_aiter_supported(torch.device("cuda")):
     ...
 

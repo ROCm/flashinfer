@@ -27,8 +27,9 @@ pip install torch==<torch-version> \
   --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-<rocm-version>/
 ```
 
-See the [GPU and ROCm Support](README.md#gpu-and-rocm-support) table in
-`README.md` for current `<torch-version>` and `<rocm-version>` values.
+See the [GPU, ROCm, and PyTorch Support](README.md#gpu-rocm-and-pytorch-support)
+table in `README.md` for current `<torch-version>` and `<rocm-version>`
+values.
 
 ## Non-Obvious Gotchas
 
@@ -89,6 +90,8 @@ gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 # Or from a file
 gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
 ```
+
+Ask to push to remote.
 
 ## PR Description
 
