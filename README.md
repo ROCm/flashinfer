@@ -34,6 +34,8 @@ each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
   * [Install AITER wheel package](#install-aiter-wheel-package)
   * [Known Limitations](#known-limitations)
   * [Single Prefill Example](#single-prefill-example)
+* [Environment Variables](#environment-variables)
+* [Runtime Helpers](#runtime-helpers)
 * [License and Acknowledgements](#license-and-acknowledgements)
 
 ## Basic Usage
@@ -73,7 +75,7 @@ ROCm AITER backend.
 | **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | MHA / GQA / MQA; **fp8 KV-cache (E4M3FNUZ)** on the HIP path; sliding-window on the AITER path; CUDA-graph auto-routes back to HIP |
 | **Single prefill attention** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no custom mask + equal Q/KV dtypes & head dims + `pos_encoding_mode="NONE"`; else **HIP** | MHA / GQA / MQA; fp8 WIP |
 | **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | MHA / GQA / MQA; fp8 WIP. AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter==0.1.10`); other sizes go through a gather on the AITER path |
-| **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention |
+| **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
 | **MLA (Multi-Latent Attention)** | — | ✅ | **AITER only** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; must pass `backend="aiter"` explicitly |
 | **POD attention** | TBD | — | n/a | Code present; **not yet validated on ROCm** |
 | **RoPE (positional encoding)** | ✅ | — | HIP | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ) |
@@ -84,7 +86,7 @@ ROCm AITER backend.
 | **Logits processor** | ✅ | — | HIP | Composable processor pipeline (cap, mask, temperature, …) |
 | **Activation** | ✅ | — | HIP | SiLU / GELU with fused gating |
 | **Quantization** | ✅ | — | HIP | `packbits`, `segment_packbits` |
-| **`torch.compile`** | ✅ (opt-in flag) | n/a | n/a | Enabled via the `FLASHINFER_ENABLE_TORCH_COMPILE` env flag |
+| **`torch.compile`** | ✅ (opt-in) | n/a | n/a | Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer`; requires PyTorch ≥ 2.4. Without it, `torch.compile` raises a clear error if it traces into a flashinfer op |
 
 Every ✅ row above is exercised by a matching `tests/rocm_tests/test_*_hip.py`.
 The full set of conditions that cause AITER auto-routing to fall back to
@@ -416,6 +418,42 @@ v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cu
 # On gfx942/gfx950, backend="auto" (default) routes to AITER automatically.
 # Pass backend="aiter" to require AITER explicitly, or backend="fa2" to skip it.
 output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="auto")
+```
+
+## Environment Variables
+
+FlashInfer+ROCm reads the following environment variables at runtime
+or import time. Build-time variables (`FLASHINFER_ROCM_ARCH_LIST`,
+`FLASHINFER_JIT_VERBOSE`, `FLASHINFER_JIT_DEBUG`, `MAX_JOBS`, …) are
+documented in [CLAUDE.md](CLAUDE.md).
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Set to `1` **before** importing `flashinfer` to wrap kernels in `torch.library.custom_op` so `torch.compile` / Dynamo can trace them. Requires PyTorch ≥ 2.4. Adds a small per-call dispatch overhead. |
+| `FLASHINFER_HIP_FUSED_CASCADE` | `0` | Set to `1` to use a fused single-kernel HIP cascade attention path instead of the default two-level merge-based path. Experimental on ROCm. |
+| `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (e.g. `DEBUG`, `INFO`, `WARNING`). Affects AITER auto-fallback warnings and JIT build messages. |
+| `FLASHINFER_DISABLE_JIT` | unset | Set to any non-empty value to skip JIT compilation. Useful when running an AOT-built wheel and you want to fail loudly on missing kernels rather than trigger a build. |
+| `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Used by `flashinfer.hip_utils` to locate the ROCm install. Override only for non-standard ROCm layouts. |
+
+## Runtime Helpers
+
+`flashinfer` ships a few ROCm-specific helpers that are useful when
+guarding code paths or diagnosing setup issues:
+
+```python
+from flashinfer.aiter_utils import is_aiter_supported
+from flashinfer.hip_utils import (
+    check_torch_rocm_compatibility,
+    validate_flashinfer_rocm_arch,
+)
+
+# Returns True only on gfx942/gfx950 with the aiter package importable.
+if is_aiter_supported(torch.device("cuda")):
+    ...
+
+# Raises a clear error if PyTorch + ROCm versions are incompatible
+# (e.g. a CPU-only torch wheel was picked up from PyPI).
+check_torch_rocm_compatibility()
 ```
 
 ## License and Acknowledgements
