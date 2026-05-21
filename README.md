@@ -219,11 +219,6 @@ docker run -it \
 </details>
 <!-- markdownlint-enable MD033 -->
 
-**Note:** The Docker image tag encodes the ROCm, Python, and PyTorch
-versions (e.g. `flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1`).
-If you change any of the `--build-arg` values in `docker build`, update
-the `-t` tag accordingly and pass the matching tag to `docker run`.
-
 ### Building and Installing a Wheel Package
 
 **Build with JIT (Just-in-Time) compilation only:**
