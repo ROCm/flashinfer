@@ -165,29 +165,14 @@ to a CPU-only PyPI wheel.
 
 ### Trying the Examples
 
-Download and run example scripts from the repository:
+Runnable scripts live in the [`examples/`](examples/) directory of this
+repository (single/batch prefill, batch decode, plus an
+`amd_flashinfer_rocm_tutorial.ipynb` Jupyter notebook). After cloning,
+run any of them directly, for example:
 
 ```bash
-# Download a single example
-wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/single_prefill_example.py
-python single_prefill_example.py
-
-# Download all examples
-for example in single_prefill_example.py batch_prefill_example.py batch_decode_example.py; do
-  wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/$example
-done
+python examples/single_prefill_example.py
 ```
-
-**Available examples:**
-
-* `single_prefill_example.py` — single-sequence prefill attention
-* `batch_prefill_example.py` — batched prefill attention
-* `batch_decode_example.py` — batched decode attention
-* `examples/amd_flashinfer_rocm_tutorial.ipynb` — Jupyter tutorial:
-  environment verification (`hip_utils`), AITER-backed prefill examples,
-  and `logits_processor` on ROCm
-* `examples/run_jupyter_server.sh` — start JupyterLab from the repo root
-  (run inside your ROCm/FlashInfer environment or Docker container)
 
 ## Build from Source
 
