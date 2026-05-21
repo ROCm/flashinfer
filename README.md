@@ -44,14 +44,12 @@ each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
 ## Feature Support Matrix
 
 Most kernels ship with an in-tree HIP implementation. A subset also has
-an [AITER](https://github.com/ROCm/aiter) backend; for those, the
-`backend="auto"` default picks AITER when its compatibility conditions
-hold and transparently falls back to HIP otherwise. AITER-only kernels
-(currently MLA) require an explicit `backend="aiter"`.
+an AITER backend; for those, `backend="auto"` picks AITER when its
+compatibility conditions hold and falls back to HIP otherwise. The one
+AITER-only kernel today (MLA) requires an explicit `backend="aiter"`.
 
-Legend: **HIP** = in-tree FlashInfer+ROCm kernel (the historical `fa2`
-HIP port, or the `native` JIT kernel for non-attention ops). **AITER** =
-ROCm AITER backend.
+Legend: **HIP** = in-tree kernel (`fa2` for attention, `native` JIT
+kernel for non-attention ops). **AITER** = ROCm AITER backend.
 
 | Kernel | HIP | AITER | `backend="auto"` resolves to | Notes |
 | :--- | :---: | :---: | :--- | :--- |
@@ -244,7 +242,7 @@ and use more disk space but avoid JIT compilation at runtime.
 
 ### Running Tests
 
-The Python tests suite can be run with pytest:
+Run the Python test suite with pytest:
 
 ```bash
 # Run default tests (configured in pyproject.toml)
@@ -286,25 +284,43 @@ pytest -n auto --reruns 2 -m "slow"
 
 **Notes**
 
-* `pytest -n auto` for the `tests/rocm_tests/` suite spawns **half as many xdist workers as physical AMD cards** (e.g. 4 workers on a CPX-mode 8-card MI308X / MI325X host). One worker per physical card was tried first but produced sporadic failures across rope, single_prefill, and logits_cap under residual concurrent load; halving the count produces reliable green runs. Each worker is pinned to its card via `HIP_VISIBLE_DEVICES`. On non-CPX systems the helper applies the same halving; users who want every device used can pass an explicit `-n N`.
-* `--reruns 2` (from `pytest-rerunfailures`) absorbs the residual ~0.01 % of transient HIP runtime crashes (HSA exceptions, HIPBLAS handle-pool exhaustion, intermittent generator non-determinism) that worker pinning cannot fully eliminate. Successful tests are not duplicated; only failed tests are retried.
-* The `slow` marker is registered in [pyproject.toml](pyproject.toml). It tags the 1M-trial sampling-frequency tests, the 4 GB-tensor speculative-sampling cases, and the entire `TestLogitsPipeCompilationHIP` class (every test there runs the sampling kernel twice per case for compile=True/False).
-* The reference attention helper in `tests/attention_reference.py` wraps `torch.matmul` in a `_hipblas_safe_matmul` retry helper that catches `HIPBLAS_STATUS_ALLOC_FAILED` and retries with a short back-off — needed under heavy concurrent xdist load.
+* **Worker count.** `pytest -n auto` for the `tests/rocm_tests/` suite
+  spawns **half as many xdist workers as physical AMD cards** (e.g. 4
+  workers on a CPX-mode 8-card MI308X / MI325X host) and pins each
+  worker to its card via `HIP_VISIBLE_DEVICES`. One worker per physical
+  card was tried first but produced sporadic failures across rope,
+  single_prefill, and logits_cap under residual concurrent load.
+  Pass an explicit `-n N` to override the halving.
+* **Reruns.** `--reruns 2` (from `pytest-rerunfailures`) absorbs the
+  residual ~0.01 % of transient HIP runtime crashes (HSA exceptions,
+  HIPBLAS handle-pool exhaustion, intermittent generator
+  non-determinism) that worker pinning cannot fully eliminate. Only
+  failed tests are retried.
+* **`slow` marker.** Registered in [pyproject.toml](pyproject.toml). It
+  tags the 1M-trial sampling-frequency tests, the 4 GB-tensor
+  speculative-sampling cases, and the entire `TestLogitsPipeCompilationHIP`
+  class (each test runs the sampling kernel twice for compile=True/False).
+* **HIPBLAS retry.** The reference attention helper in
+  `tests/attention_reference.py` wraps `torch.matmul` in a
+  `_hipblas_safe_matmul` retry that catches `HIPBLAS_STATUS_ALLOC_FAILED`
+  and retries with a short back-off — needed under heavy concurrent
+  xdist load.
 
 ## AITER Support
 
-FlashInfer+ROCm supports the use of [AITER](https://github.com/ROCm/aiter) as a
-backend. The `aiter` backend is enabled for the `single_prefill`,
-`batch_prefill` (paged and ragged), `batch_decode`, `append_paged_kv_cache`,
-`rmsnorm`, and `MLA` paths. MLA on ROCm is **only** available via AITER —
-there is no in-tree HIP MLA kernel yet.
+FlashInfer+ROCm can dispatch the `single_prefill`, `batch_prefill`
+(paged and ragged), `batch_decode`, `append_paged_kv_cache`, `rmsnorm`,
+and `MLA` paths to [AITER](https://github.com/ROCm/aiter). MLA on ROCm
+is **AITER-only** — there is no in-tree HIP MLA kernel yet.
 
-**On gfx942/gfx950 GPUs, `backend="auto"` (the default) automatically selects the AITER backend**
-when the call parameters are compatible (fp16/bf16, NHD layout, no custom mask, equal Q/K/V
-dtypes and head dims, `pos_encoding_mode="NONE"`). It falls back to `fa2` with a one-time
-`logger.warning` when any condition is not met. You can also pass `backend="aiter"` explicitly.
+On gfx942/gfx950, `backend="auto"` (the default) selects AITER when the
+call is compatible (see [Known Limitations](#known-limitations) for the
+full list) and otherwise falls back to the in-tree `fa2` HIP kernel,
+emitting a one-time `logger.warning`. Pass `backend="aiter"` to require
+AITER explicitly, or `backend="fa2"` to skip it.
 
-Unless you are using the prebuilt docker image, AITER must also be installed on your system. You may follow one of the following ways to do so.
+Unless you are using the prebuilt Docker image, install AITER separately
+via one of the options below.
 
 ### Install AITER from source
 
@@ -324,9 +340,11 @@ pip install amd-aiter --index-url https://pypi.amd.com/simple/
 
 ### Known Limitations
 
-The AITER backend has the following constraints. With `backend="aiter"` the
-call will error on the first group of conditions, or for the second group,
-run but silently ignore the unsupported argument.
+AITER constraints fall into two groups: hard incompatibilities (the call
+errors with `backend="aiter"` and triggers fallback under
+`backend="auto"`), and silently-ignored kwargs (the call runs but the
+flag has no effect on AITER — pass `backend="fa2"` explicitly if you
+need any of them).
 
 **Conditions that fall back to `fa2` under `backend="auto"`:**
 
@@ -338,9 +356,9 @@ run but silently ignore the unsupported argument.
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128 head dims)
 * the `aiter` Python package is not importable
 
-**Features silently ignored on the AITER path** (the kwargs are accepted by
-the FlashInfer wrapper but not forwarded to AITER, which can produce wrong
-results — pass `backend="fa2"` explicitly if you need any of these):
+**Features silently ignored on the AITER path** (kwargs are accepted by
+the FlashInfer wrapper but not forwarded to AITER, which can produce
+wrong results):
 
 * ALiBi slopes (`maybe_alibi_slopes`)
 * in-kernel positional encoding modes (`pos_encoding_mode`, `rope_scale`,
@@ -386,12 +404,9 @@ guarding code paths or diagnosing setup issues:
 
 ```python
 from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.hip_utils import (
-    check_torch_rocm_compatibility,
-    validate_flashinfer_rocm_arch,
-)
+from flashinfer.hip_utils import check_torch_rocm_compatibility
 
-# Returns True only on gfx942/gfx950 with the aiter package importable.
+# True only on gfx942/gfx950 with the aiter package importable.
 if is_aiter_supported(torch.device("cuda")):
     ...
 
@@ -399,6 +414,11 @@ if is_aiter_supported(torch.device("cuda")):
 # (e.g. a CPU-only torch wheel was picked up from PyPI).
 check_torch_rocm_compatibility()
 ```
+
+`flashinfer.hip_utils.validate_flashinfer_rocm_arch` is a related
+build-time validator used by `setup.py` to cross-check
+`FLASHINFER_ROCM_ARCH_LIST` against ROCm and PyTorch — not typically
+called from application code.
 
 ## Basic Usage
 
@@ -424,4 +444,6 @@ Jupyter tutorial that walks through the full public API on ROCm.
 FlashInfer+ROCm is released under the Apache-2.0 License — see
 [LICENSE](LICENSE) and [NOTICE](NOTICE). Upstream project:
 [flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer).
-Run `pre-commit run -a` and `pytest` before opening a PR.
+
+Contributions are welcome. Please run `pre-commit run -a` and the
+relevant `pytest` selection before opening a PR.
