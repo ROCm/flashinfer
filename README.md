@@ -135,17 +135,15 @@ docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   --ipc=host --shm-size 128G --name=<container-name> <docker-image-tag>
 ```
 
-**Activate the environment and verify:**
+**Verify the installation:**
 
 ```bash
-# Activate the micromamba environment (env name may vary based on the image)
-micromamba activate base
-
-# Verify installation
 python -c "import flashinfer; print(flashinfer.__version__)"
 ```
 
 Expected output: `0.5.3+amd.1` (with a possible JIT backend message).
+The container's micromamba environment is activated automatically on
+shell start — no manual `micromamba activate` is required.
 
 ### Option 2: Install from a Wheel Package
 
