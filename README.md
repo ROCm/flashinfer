@@ -33,7 +33,6 @@ each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
   * [Install AITER from source](#install-aiter-from-source)
   * [Install AITER wheel package](#install-aiter-wheel-package)
   * [Known Limitations](#known-limitations)
-  * [Single Prefill Example](#single-prefill-example)
 * [Environment Variables](#environment-variables)
 * [Runtime Helpers](#runtime-helpers)
 * [License and Acknowledgements](#license-and-acknowledgements)
@@ -379,31 +378,6 @@ results — pass `backend="fa2"` explicitly if you need any of these):
   conditions are met and falls back to `fa2` otherwise.
 * MLA on ROCm currently supports only `bfloat16` and `page_size=1`
   through the AITER backend.
-
-### Single Prefill Example
-
-This section provides an example on how to use Single Prefill with AITER.
-
-```python
-import torch
-import flashinfer
-
-# Configuration
-seq_len = 1024        # Prompt length
-num_qo_heads = 32     # Number of query/output heads
-num_kv_heads = 8      # Number of KV heads (GQA with 4:1 ratio)
-head_dim = 128
-
-# Create Q, K, V tensors (NHD layout: sequence, heads, dimension)
-q = torch.randn(seq_len, num_qo_heads, head_dim, dtype=torch.float16, device="cuda")
-k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
-v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
-
-# Run single prefill attention with causal masking.
-# On gfx942/gfx950, backend="auto" (default) routes to AITER automatically.
-# Pass backend="aiter" to require AITER explicitly, or backend="fa2" to skip it.
-output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="auto")
-```
 
 ## Environment Variables
 
