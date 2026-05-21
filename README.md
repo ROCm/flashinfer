@@ -1,81 +1,115 @@
 # FlashInfer+ROCm: An AMD ROCm port of FlashInfer
 
-FlashInfer+ROCm is an AMD ROCm port of the [FlashInfer](https://github.com/flashinfer-ai/flashinfer) library of fast attention, RoPE, RMSNorm, sampling, and logits-processor kernels for LLM inference on AMD Instinct GPUs. This README is aimed at library consumers: developers embedding FlashInfer kernels into their own training or serving stack.
+FlashInfer+ROCm is an AMD ROCm port of the
+[FlashInfer](https://github.com/flashinfer-ai/flashinfer) attention,
+RoPE, normalization, sampling, and logits-processor kernels for LLM
+inference on AMD Instinct GPUs. The port targets CDNA3 (gfx942 —
+MI300X / MI325X) and CDNA4 (gfx950 — MI355X), and is aimed at developers
+embedding FlashInfer kernels into their own training or serving stack.
 
-**Status:** Active development, attention (single/batch prefill and decode) is the primary focus. See [CHANGELOG.md](CHANGELOG.md) for the full history.
+The project is in active development with the primary focus on attention
+(single and batch prefill / decode) and the surrounding KV-cache, RoPE,
+and normalization kernels. See [CHANGELOG.md](CHANGELOG.md) for the
+full release history.
 
-**Versioning:** Release tags use the form `<upstream_version>+amd.<n>` (for example, `0.5.3+amd.1` is the first AMD release based on upstream `v0.5.3`).
+**Versioning:** The release tag format `<upstream_version>+amd.<n>` ties
+each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
+`0.5.3+amd.1` is the first AMD release based on upstream `v0.5.3`).
 
-## Minimal usage
+## Table of Contents
+
+* [Basic Usage](#basic-usage)
+* [Feature Support Matrix](#feature-support-matrix)
+* [GPU, ROCm, and PyTorch Support](#gpu-rocm-and-pytorch-support)
+* [Getting Started](#getting-started)
+  * [Option 1: Get a Pre-built Docker Image](#option-1-get-a-pre-built-docker-image)
+  * [Option 2: Install from a Wheel Package](#option-2-install-from-a-wheel-package)
+  * [Trying the Examples](#trying-the-examples)
+* [Build from Source](#build-from-source)
+  * [Setting up a Development Environment](#setting-up-a-development-environment)
+  * [Building and Installing a Wheel Package](#building-and-installing-a-wheel-package)
+  * [Running Tests](#running-tests)
+* [AITER Support](#aiter-support)
+  * [Install AITER from source](#install-aiter-from-source)
+  * [Install AITER wheel package](#install-aiter-wheel-package)
+  * [Known Limitations](#known-limitations)
+  * [Single Prefill Example](#single-prefill-example)
+* [License and Acknowledgements](#license-and-acknowledgements)
+
+## Basic Usage
 
 ```python
 import torch
 import flashinfer
 
-# Device is still "cuda" on PyTorch+ROCm.
+# PyTorch+ROCm still uses device="cuda" for AMD GPUs.
 q = torch.randn(1024, 32, 128, dtype=torch.float16, device="cuda")
 k = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")  # GQA 4:1
 v = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")
 
-# Default backend = "fa2". Use backend="aiter" or "fa3_cdna3" to switch.
-o = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
+# backend="auto" (default) routes to AITER when supported on gfx942/gfx950
+# and falls back to the in-tree fa2 HIP kernel otherwise.
+output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
 ```
 
-## Table of Contents
-
-* [Feature Support Matrix](#feature-support-matrix)
-* [GPU, ROCm, and PyTorch Support](#gpu-rocm-and-pytorch-support)
-* [Getting Started](#getting-started)
-  * [Option 1: Pre-built Docker Image](#option-1-pre-built-docker-image)
-  * [Option 2: Install from a Wheel Package](#option-2-install-from-a-wheel-package)
-  * [Running the Examples](#running-the-examples)
-* [Build from Source](#build-from-source)
-  * [Development Environment](#development-environment)
-  * [Building and Installing a Wheel](#building-and-installing-a-wheel)
-  * [Running Tests](#running-tests)
-* [Prefill Backends](#prefill-backends)
-* [Contributing and License](#contributing-and-license)
+See [`examples/`](examples/) for batch prefill, batch decode, and a
+Jupyter tutorial that walks through the full public API on ROCm.
 
 ## Feature Support Matrix
 
-| Kernel | FP16 / BF16 | FP8 (E4M3, E5M2) | Backends | Notes |
-| :--- | :---: | :---: | :--- | :--- |
-| **Decode attention** | Yes | Yes | `fa2` | MHA, GQA, MQA |
-| **Prefill attention** | Yes | WIP | `fa2`, `aiter`, `fa3_cdna3` | MHA, GQA, MQA |
-| **RoPE** (incl. Llama 3.1, fused RoPE+FP8+paged-KV append) | Yes | - | `fa2` | |
-| **RMSNorm / LayerNorm / Gemma variants** | Yes | - | `fa2` | |
-| **Sampling** | Yes | - | `fa2` | Top-K, Top-P, OnlineSoftmax, SamplingFromLogits |
-| **Logits processor** | Yes | - | `fa2` | |
-| **Quantization** (`packbits`, `segment_packbits`) | Yes | - | `fa2` | |
-| Cascade, MLA, POD, PosEncoding-mode variants | - | - | - | Not yet ported |
+| Kernel Type | FP16 / BF16 | FP8 (E4M3, E5M2) | Has AITER backend | Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| **Single / Batch Decode Attention** | ✅ | ✅ (E4M3FNUZ KV-cache) | ✅ (batch paged, fp16/bf16) | MHA, GQA, MQA; sliding-window on the AITER path; CUDA-graph support |
+| **Single / Batch Prefill Attention** | ✅ | WIP | ✅ (single, batch-paged, batch-ragged) | MHA, GQA, MQA |
+| **Cascade Attention** | ✅ | — | No | Two-level shared-prefix attention |
+| **MLA (Multi-Latent Attention)** | ✅ (bf16, `page_size=1`) | — | ✅ (AITER-only path) | DeepSeek-style 192/128 head-dim split; **requires AITER** on ROCm |
+| **POD Attention** | TBD | TBD | No | Code present; **not yet validated on ROCm** |
+| **RoPE (Positional Encoding)** | ✅ | — | No | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + paged-KV append |
+| **Paged KV-Cache Append** | ✅ | ✅ | ✅ (opt-in) | `append_paged_kv_cache` |
+| **Sampling** | ✅ | — | No | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
+| **Logits Processor** | ✅ | — | No | Composable processor pipeline (cap, mask, temperature, …) |
+| **Normalization** | ✅ | — | ✅ (RMSNorm only) | RMSNorm, LayerNorm, Gemma RMSNorm |
+| **Activation** | ✅ | — | No | SiLU / GELU with fused gating |
+| **Quantization** | ✅ | — | No | `packbits`, `segment_packbits` |
+| **`torch.compile`** | ✅ (opt-in) | — | n/a | Enabled via the `FLASHINFER_ENABLE_TORCH_COMPILE` env flag |
+
+Every ✅ row above is exercised by a matching `tests/rocm_tests/test_*_hip.py`.
 
 ## GPU, ROCm, and PyTorch Support
 
-**GPU architectures:** gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI355X).
+**Supported GPUs:** gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI355X).
 
-**ROCm:** 7.0.2, 7.1.1, 7.2.
+**Supported ROCm versions:** 7.0.2, 7.1.1, 7.2.
 
-**PyTorch+ROCm:** 2.8.0, 2.9.1. Install the matching wheel from `repo.radeon.com`:
+**Supported PyTorch+ROCm versions:** 2.8.0, 2.9.1.
+
+Install the matching ROCm-enabled PyTorch wheel from
+<https://repo.radeon.com>:
 
 ```bash
-pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2
+pip install torch==2.9.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 ```
 
-Other versions may work but are not tested. Replace `7.2` with the ROCm version you need; see <https://repo.radeon.com/rocm/manylinux/> for the full list.
+Other versions may work but have not been tested. Replace `7.2` with the
+ROCm version you need; refer to
+<https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm-version}/> for
+available wheels.
 
 ## Getting Started
 
-### Option 1: Pre-built Docker Image
+### Option 1: Get a Pre-built Docker Image
 
-AMD validates and publishes [FlashInfer images](https://hub.docker.com/r/rocm/flashinfer/tags) on Docker Hub:
+AMD validates and publishes [FlashInfer images](https://hub.docker.com/r/rocm/flashinfer/tags)
+with ROCm backends on Docker Hub. The following Docker image tags
+represent the latest available FlashInfer+ROCm releases:
 
 | Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
-| --- | --- | --- | --- | --- | --- | --- |
+| ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
 | `rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1` | 7.2.0 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355X, MI325X, MI300X |
 | `rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.0.2_ubuntu24.04_py3.12_pytorch2.9.1` | 7.0.2 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355X, MI325X, MI300X |
 | `rocm/flashinfer:flashinfer-0.2.5.amd2_rocm7.1.1_ubuntu24.04_py3.12_pytorch2.8` | 7.1.1 | v0.2.5 | 2.8.0 | 24.04 | 3.12 | MI325X, MI300X |
 
-Start a container:
+**Start a container:**
 
 ```bash
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
@@ -83,37 +117,66 @@ docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   --ipc=host --shm-size 128G --name=<container-name> <docker-image-tag>
 ```
 
-Verify:
+**Activate the environment and verify:**
 
 ```bash
-micromamba activate base  # env name may vary per image
+# Activate the micromamba environment (env name may vary based on the image)
+micromamba activate base
+
+# Verify installation
 python -c "import flashinfer; print(flashinfer.__version__)"
-# expected: 0.5.3+amd.1
 ```
+
+Expected output: `0.5.3+amd.1` (with a possible JIT backend message).
 
 ### Option 2: Install from a Wheel Package
 
+Install from AMD's package repository:
+
 ```bash
 pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
-pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2
 ```
 
-> `torch` is deliberately not a declared dependency because the ROCm wheel must come from `repo.radeon.com`, not PyPI. Installing without `-f` will pull a non-ROCm build.
-
-### Running the Examples
+Install the matching ROCm-enabled torch package from <https://repo.radeon.com>:
 
 ```bash
-wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/single_prefill_example.py
-wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/batch_prefill_example.py
-wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/batch_decode_example.py
-python single_prefill_example.py
+pip install torch==2.9.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 ```
 
-An end-to-end recommendation-system notebook that exercises the full public API is also available at [`examples/recommendation_system_flashinfer_rocm.ipynb`](examples/recommendation_system_flashinfer_rocm.ipynb).
+**NOTE:** Use `--index-url` (not `-f`) so pip cannot silently fall back
+to a CPU-only PyPI wheel.
+
+### Trying the Examples
+
+Download and run example scripts from the repository:
+
+```bash
+# Download a single example
+wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/single_prefill_example.py
+python single_prefill_example.py
+
+# Download all examples
+for example in single_prefill_example.py batch_prefill_example.py batch_decode_example.py; do
+  wget https://raw.githubusercontent.com/ROCm/flashinfer/amd-integration/examples/$example
+done
+```
+
+**Available examples:**
+
+* `single_prefill_example.py` — single-sequence prefill attention
+* `batch_prefill_example.py` — batched prefill attention
+* `batch_decode_example.py` — batched decode attention
+* `examples/amd_flashinfer_rocm_tutorial.ipynb` — Jupyter tutorial:
+  environment verification (`hip_utils`), AITER-backed prefill examples,
+  and `logits_processor` on ROCm
+* `examples/run_jupyter_server.sh` — start JupyterLab from the repo root
+  (run inside your ROCm/FlashInfer environment or Docker container)
 
 ## Build from Source
 
-### Development Environment
+### Setting up a Development Environment
+
+Build the development Docker image with the repository's Dockerfile:
 
 ```bash
 docker build \
@@ -125,60 +188,224 @@ docker build \
   --build-arg USER_GID=$(id -g) \
   -t flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 \
   -f .devcontainer/rocm/Dockerfile .
+```
 
+<!-- markdownlint-disable MD033 -->
+<details>
+<summary>Build argument descriptions</summary>
+
+* `ROCM_VERSION`: ROCm version (default: 7.2)
+* `PY_VERSION`: Python version (default: 3.12)
+* `TORCH_VERSION`: PyTorch version (default: 2.9.1)
+* `USERNAME`: Username inside container (default: devuser)
+* `USER_UID`: User ID for matching host permissions
+* `USER_GID`: Group ID for matching host permissions
+
+</details>
+<!-- markdownlint-enable MD033 -->
+
+**Run the development container:**
+
+```bash
 docker run -it \
   --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
   --ipc=host --privileged --shm-size=128G --network=host \
-  --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
-  -v $PWD:/workspace --name flashinfer-dev-container \
+  --device=/dev/kfd --device=/dev/dri \
+  --group-add video --group-add render \
+  -v $PWD:/workspace \
+  --name flashinfer-dev-container \
   flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
 ```
 
-### Building and Installing a Wheel
+<!-- markdownlint-disable MD033 -->
+<details>
+<summary>Docker run argument descriptions</summary>
+
+* `--cap-add=SYS_PTRACE`: Enables debugging
+* `--security-opt seccomp=unconfined`: Relaxes security for development
+* `--ipc=host`: Shares host IPC for better performance
+* `--privileged`: Required for GPU access
+* `--shm-size=128G`: Shared memory size (adjust as needed)
+* `--network=host`: Uses host networking
+* `--device=/dev/kfd --device=/dev/dri`: Exposes AMD GPU devices
+* `--group-add video --group-add render`: GPU access groups
+* `-v <host-path>:<container-path>`: Mounts source code
+
+</details>
+<!-- markdownlint-enable MD033 -->
+
+**Note:** Environment name varies based on Python, PyTorch, and ROCm
+versions.
+
+### Building and Installing a Wheel Package
+
+**Build with JIT (Just-in-Time) compilation only:**
 
 ```bash
-# Editable install (JIT kernels compile on first use)
-python -m pip install --no-build-isolation -ve .
-
-# Wheel build
 python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-pip install dist/amd_flashinfer-*.whl
+cd dist && pip install amd_flashinfer-*.whl
 ```
+
+**Editable install for development:**
+
+```bash
+python -m pip install --no-build-isolation -ve .
+```
+
+**Note:** The `--no-deps` flag assumes dependencies are pre-installed.
+Omit it to download dependencies during build. AOT builds take longer
+and use more disk space but avoid JIT compilation at runtime.
 
 ### Running Tests
 
+The Python tests suite can be run with pytest:
+
 ```bash
-pytest                               # curated set from pyproject.toml
-pytest tests/rocm_tests              # AMD-authored HIP tests
-pytest -n auto                       # across all visible GPUs
+# Run default tests (configured in pyproject.toml)
+pytest
+
+# Run specific test file
+pytest tests/rocm_tests/test_batch_decode_kernels_hip.py
+
+# Run with pattern matching
 pytest -k "test_batch_decode_kernels_hip"
+
+# Verbose output
+pytest -v
+
+# Run tests in parallel across multiple GPUs
+pytest -n auto  # Uses all available GPUs
+pytest -n 2     # Use only two GPUs
 ```
 
-The default test set is pinned in `[tool.pytest.ini_options]` in [pyproject.toml](pyproject.toml).
+The default test configuration is specified in [pyproject.toml](pyproject.toml)
+under the `testpaths` setting.
 
-## Prefill Backends
+#### Recommended invocation on AMD CPX systems
 
-All prefill entry points accept a `backend=` keyword (default `"auto"`, which resolves to `"fa2"`).
+`pytest-rerunfailures` (declared in the `dev` extra — `pip install -e ".[dev]"`)
+absorbs the residual transient HIP runtime crashes. Then for the full suite:
 
-- **`fa2` (default)** — In-tree HIP port of FlashAttention-2. Broadest coverage: paged + ragged, single + batch, fp16/bf16.
-- **`aiter`** — Wraps [AITER](https://github.com/ROCm/aiter) CK FMHA (`flash_attn_varlen_func`, `mha_batch_prefill_func`). NHD layout only; paged batch-prefill `page_size ∈ {16, 1024}` (or `{128, 256, 1024}` on `amd-aiter==0.1.10`).
-- **`fa3_cdna3`** — MI300X-optimized single-prefill kernel for chunked prefill, `head_dim=256`, `q_len != kv_len`. Experimental; see [`benchmarks/rocm_benchmarks/bench_fa3_cdna3.py`](benchmarks/rocm_benchmarks/bench_fa3_cdna3.py) and [`examples/single_prefill_example.py`](examples/single_prefill_example.py).
+```bash
+# Fast path — skips heavy 1M-trial sampling-frequency tests and 4 GB
+# speculative-sampling cases (~7 min on a CPX 8-card host):
+pytest -n auto --reruns 2 -m "not slow"
 
-Install AITER if you plan to use `backend="aiter"` outside the prebuilt Docker image:
+# Full coverage — including the slow tests (~20 min):
+pytest -n auto --reruns 2
+
+# Slow path only (~13 min):
+pytest -n auto --reruns 2 -m "slow"
+```
+
+**Notes**
+
+* `pytest -n auto` for the `tests/rocm_tests/` suite spawns **half as many xdist workers as physical AMD cards** (e.g. 4 workers on a CPX-mode 8-card MI308X / MI325X host). One worker per physical card was tried first but produced sporadic failures across rope, single_prefill, and logits_cap under residual concurrent load; halving the count produces reliable green runs. Each worker is pinned to its card via `HIP_VISIBLE_DEVICES`. On non-CPX systems the helper applies the same halving; users who want every device used can pass an explicit `-n N`.
+* `--reruns 2` (from `pytest-rerunfailures`) absorbs the residual ~0.01 % of transient HIP runtime crashes (HSA exceptions, HIPBLAS handle-pool exhaustion, intermittent generator non-determinism) that worker pinning cannot fully eliminate. Successful tests are not duplicated; only failed tests are retried.
+* The `slow` marker is registered in [pyproject.toml](pyproject.toml). It tags the 1M-trial sampling-frequency tests, the 4 GB-tensor speculative-sampling cases, and the entire `TestLogitsPipeCompilationHIP` class (every test there runs the sampling kernel twice per case for compile=True/False).
+* The reference attention helper in `tests/attention_reference.py` wraps `torch.matmul` in a `_hipblas_safe_matmul` retry helper that catches `HIPBLAS_STATUS_ALLOC_FAILED` and retries with a short back-off — needed under heavy concurrent xdist load.
+
+## AITER Support
+
+FlashInfer+ROCm supports the use of [AITER](https://github.com/ROCm/aiter) as a
+backend. The `aiter` backend is enabled for the `single_prefill`,
+`batch_prefill` (paged and ragged), `batch_decode`, `append_paged_kv_cache`,
+`rmsnorm`, and `MLA` paths. MLA on ROCm is **only** available via AITER —
+there is no in-tree HIP MLA kernel yet.
+
+**On gfx942/gfx950 GPUs, `backend="auto"` (the default) automatically selects the AITER backend**
+when the call parameters are compatible (fp16/bf16, NHD layout, no custom mask, equal Q/K/V
+dtypes and head dims, `pos_encoding_mode="NONE"`). It falls back to `fa2` with a one-time
+`logger.warning` when any condition is not met. You can also pass `backend="aiter"` explicitly.
+
+Unless you are using the prebuilt docker image, AITER must also be installed on your system. You may follow one of the following ways to do so.
+
+### Install AITER from source
+
+```bash
+git clone --recursive https://github.com/ROCm/aiter.git
+cd aiter
+python3 setup.py develop
+```
+
+### Install AITER wheel package
+
+Wheel packages are available from AMD's PyPI index: [pypi.amd.com/simple](https://pypi.amd.com/simple/).
 
 ```bash
 pip install amd-aiter --index-url https://pypi.amd.com/simple/
-# or: git clone --recursive https://github.com/ROCm/aiter.git && cd aiter && python3 setup.py develop
 ```
 
-Example:
+### Known Limitations
+
+The AITER backend has the following constraints. With `backend="aiter"` the
+call will error on the first group of conditions, or for the second group,
+run but silently ignore the unsupported argument.
+
+**Conditions that fall back to `fa2` under `backend="auto"`:**
+
+* GPU is not gfx942 or gfx950
+* `kv_layout` is not `NHD`
+* a custom attention mask tensor is supplied
+* `q_dtype` is not `float16` / `bfloat16` (no fp32, fp8, or int8)
+* `q_dtype != kv_dtype` (mixed-precision Q/KV is unsupported)
+* `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128 head dims)
+* the `aiter` Python package is not importable
+
+**Features silently ignored on the AITER path** (the kwargs are accepted by
+the FlashInfer wrapper but not forwarded to AITER, which can produce wrong
+results — pass `backend="fa2"` explicitly if you need any of these):
+
+* ALiBi slopes (`maybe_alibi_slopes`)
+* in-kernel positional encoding modes (`pos_encoding_mode`, `rope_scale`,
+  `rope_theta`)
+* attention sinks (`sinks`)
+* multi-modal / prefix-cache helpers (`maybe_prefix_len_ptr`,
+  `maybe_token_pos_in_items_ptr`, `maybe_max_item_len_ptr`)
+* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`)
+* `use_fp16_qk_reduction`, `enable_pdl`
+
+**Other notes:**
+
+* Batch prefill: AITER's CK FMHA kernels natively support page sizes
+  `{16, 1024}` (or `{128, 256, 1024}` on `amd-aiter==0.1.10`). Other page
+  sizes still work but go through an extra GPU gather to flatten paged KV
+  before the AITER call.
+* Ragged (non-paged) batch prefill via AITER is supported through
+  `BatchPrefillWithRaggedKVCacheWrapper`. The wrapper auto-routes to
+  AITER under `backend="auto"` when the standard AITER compatibility
+  conditions are met and falls back to `fa2` otherwise.
+* MLA on ROCm currently supports only `bfloat16` and `page_size=1`
+  through the AITER backend.
+
+### Single Prefill Example
+
+This section provides an example on how to use Single Prefill with AITER.
 
 ```python
-o = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
+import torch
+import flashinfer
+
+# Configuration
+seq_len = 1024        # Prompt length
+num_qo_heads = 32     # Number of query/output heads
+num_kv_heads = 8      # Number of KV heads (GQA with 4:1 ratio)
+head_dim = 128
+
+# Create Q, K, V tensors (NHD layout: sequence, heads, dimension)
+q = torch.randn(seq_len, num_qo_heads, head_dim, dtype=torch.float16, device="cuda")
+k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
+v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=torch.float16, device="cuda")
+
+# Run single prefill attention with causal masking.
+# On gfx942/gfx950, backend="auto" (default) routes to AITER automatically.
+# Pass backend="aiter" to require AITER explicitly, or backend="fa2" to skip it.
+output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="auto")
 ```
 
-## Contributing and License
+## License and Acknowledgements
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Run `pre-commit run -a` and `pytest` before opening a PR.
-
-Upstream project: [flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer). Released under the Apache-2.0 License — [LICENSE](LICENSE), [NOTICE](NOTICE).
+FlashInfer+ROCm is released under the Apache-2.0 License — see
+[LICENSE](LICENSE) and [NOTICE](NOTICE). Upstream project:
+[flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer).
+Run `pre-commit run -a` and `pytest` before opening a PR.
