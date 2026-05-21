@@ -326,3 +326,36 @@ def test_mla_run_before_plan_raises():
             torch.zeros(4, 16, 512, dtype=torch.float16, device=device),
             torch.zeros(4, 16, 64, dtype=torch.float16, device=device),
         )
+
+
+@pytest.mark.skipif(
+    not is_aiter_supported(torch.device("cuda:0")),
+    reason="AITER backend requires gfx942/gfx950",
+)
+@pytest.mark.parametrize("backend", ["auto", "aiter"])
+def test_mla_backend_accepts_auto_and_aiter(backend):
+    """The ROCm MLA wrapper accepts both 'auto' (default) and 'aiter'.
+
+    'auto' resolves to 'aiter' since there is no HIP MLA kernel.
+    """
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = torch.device("cuda:0")
+    ws = torch.empty(1, dtype=torch.float32, device=device)
+    BatchMLAPagedAttentionWrapper(ws, backend=backend)
+
+
+def test_mla_backend_rejects_unsupported():
+    """Any backend other than 'auto'/'aiter' raises ValueError.
+
+    The check fires before the AITER-availability probe, so this test
+    runs on any host (no GPU / no AITER required).
+    """
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = (
+        torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    )
+    ws = torch.empty(1, dtype=torch.float32, device=device)
+    with pytest.raises(ValueError, match="aiter.*auto"):
+        BatchMLAPagedAttentionWrapper(ws, backend="fa2")
