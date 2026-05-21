@@ -22,7 +22,6 @@ each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
 
 ## Table of Contents
 
-* [Basic Usage](#basic-usage)
 * [Feature Support Matrix](#feature-support-matrix)
 * [GPU, ROCm, and PyTorch Support](#gpu-rocm-and-pytorch-support)
 * [Getting Started](#getting-started)
@@ -39,26 +38,8 @@ each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
   * [Known Limitations](#known-limitations)
 * [Environment Variables](#environment-variables)
 * [Runtime Helpers](#runtime-helpers)
+* [Basic Usage](#basic-usage)
 * [License and Acknowledgements](#license-and-acknowledgements)
-
-## Basic Usage
-
-```python
-import torch
-import flashinfer
-
-# PyTorch+ROCm still uses device="cuda" for AMD GPUs.
-q = torch.randn(1024, 32, 128, dtype=torch.float16, device="cuda")
-k = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")  # GQA 4:1
-v = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")
-
-# backend="auto" (default) routes to AITER when supported on gfx942/gfx950
-# and falls back to the in-tree fa2 HIP kernel otherwise.
-output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
-```
-
-See [`examples/`](examples/) for batch prefill, batch decode, and a
-Jupyter tutorial that walks through the full public API on ROCm.
 
 ## Feature Support Matrix
 
@@ -418,6 +399,25 @@ if is_aiter_supported(torch.device("cuda")):
 # (e.g. a CPU-only torch wheel was picked up from PyPI).
 check_torch_rocm_compatibility()
 ```
+
+## Basic Usage
+
+```python
+import torch
+import flashinfer
+
+# PyTorch+ROCm still uses device="cuda" for AMD GPUs.
+q = torch.randn(1024, 32, 128, dtype=torch.float16, device="cuda")
+k = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")  # GQA 4:1
+v = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")
+
+# backend="auto" (default) routes to AITER when supported on gfx942/gfx950
+# and falls back to the in-tree fa2 HIP kernel otherwise.
+output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
+```
+
+See [`examples/`](examples/) for batch prefill, batch decode, and a
+Jupyter tutorial that walks through the full public API on ROCm.
 
 ## License and Acknowledgements
 
