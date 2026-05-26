@@ -229,6 +229,7 @@ include = [
     "flashinfer/mla_rocm.py",
     "flashinfer/norm.py",
     "flashinfer/page.py",
+    "flashinfer/pod.py",
     "flashinfer/prefill_rocm.py",
     "flashinfer/quantization.py",
     "flashinfer/rope.py",
