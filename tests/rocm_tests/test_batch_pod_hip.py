@@ -225,7 +225,7 @@ def test_batch_pod_bf16(q_dtype):
 
     float_buf = torch.empty(64 * 1024 * 1024, device=device, dtype=torch.uint8)
     prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-        float_buf, kv_layout
+        float_buf, kv_layout, backend="fa2"
     )
     prefill_wrapper.plan(
         qo_indptr_p,
@@ -245,7 +245,7 @@ def test_batch_pod_bf16(q_dtype):
 
     float_buf_d = torch.empty(64 * 1024 * 1024, device=device, dtype=torch.uint8)
     decode_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-        float_buf_d, kv_layout
+        float_buf_d, kv_layout, backend="fa2"
     )
     decode_wrapper.plan(
         qo_indptr_d,

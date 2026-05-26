@@ -190,6 +190,7 @@ def test_pod_bf16(q_dtype, kv_dtype):
         v_p,
         causal=False,
         pos_encoding_mode=pos_encoding_mode,
+        backend="fa2",
     )
 
     q_d = torch.randn(
