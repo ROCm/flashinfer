@@ -1,47 +1,96 @@
-# Installation
+# Contributing to FlashInfer+ROCm
 
-For development, the easiest way to install flashinfer is through editable installation:
+This is the **AMD ROCm port** of FlashInfer (`amd-flashinfer`), targeting
+AMD Instinct GPUs — gfx942 (MI300X / MI325X, CDNA3) and gfx950
+(MI355X, CDNA4). The upstream CUDA repo at
+<https://github.com/flashinfer-ai/flashinfer> uses different env vars,
+paths, and toolchains; its contribution guide does not transfer here.
 
-```bash
-git clone git@github.com:flashinfer-ai/flashinfer.git --recursive
-pip install --no-build-isolation -e . -v
-```
-
-We recommend using the `--no-build-isolation` flag to ensure compatibility with your existing environment. Without it, `pip` may attempt to resolve dependencies (e.g., `torch`) from PyPI, which could pull in packages built with older CUDA versions and lead to incompatibility issues.
+For project overview, install steps, running tests, AITER setup, and
+environment variables, see [`README.md`](README.md). This document
+covers only what's specific to contributing code.
 
 # Code Structure
 
 ```text
 flashinfer/
-| --include/  # kernel definitions and common utilities functions
-| --csrc/  # op registration to frameworks (pytorch), and binding codes
-| --python/  # python interface exposed to users
-| --docs/  # documentation (using sphinx)
-| --tests/  # unittests in python (using pytest)
-| --benchmarks/  # kernel benchmarks in python
-| --3rdparty/  # 3rdparty dependencies such as cutlass
+├── include/                  # framework-agnostic kernel headers (raw pointers only)
+│   ├── flashinfer/           # FlashInfer kernel implementations
+│   └── gpu_iface/backend/    # GPU abstraction layer — cuda/ and hip/ shims
+├── csrc/                     # upstream CUDA op registration (PyTorch bindings)
+├── flashinfer/
+│   ├── csrc_rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
+│   ├── jit/                  # Python JIT compilation infra (cpp_ext_hip.py is the HIP entry)
+│   └── *.py                  # Python user-facing API (e.g. attention.py, mla_rocm.py)
+├── tests/rocm_tests/         # HIP test suite (test_*_hip.py)
+├── benchmarks/rocm_benchmarks/  # ROCm-specific benchmarks
+└── 3rdparty/                 # vendored dependencies (cutlass, composable_kernel, …)
 ```
 
-Kernel definitions (framework-agnostic cuda code, accepting raw pointer as input) should be placed under the `include` directory. Whenever possible, reuse existing FlashInfer infrastructure such as logging, exception handling, and utility functions.
-The operator registration code (i.e., framework-specific components, accepting torch tensors as input) should reside in the `csrc` directory. This is where Torch headers may be included and operators can be bound to PyTorch. Note that Torch headers must not be included in any files under the `include` directory.
+**Framework separation.** `include/` files must remain framework-agnostic
+— no PyTorch headers, raw pointers only. PyTorch tensor handling for HIP
+ops lives in `flashinfer/csrc_rocm/`. Violating this causes subtle build
+failures because the same headers are pulled into the JIT compilation
+pipeline that has no PyTorch on its include path.
 
-Code Contribution Procedure
+**`csrc/` vs `flashinfer/csrc_rocm/`.** `csrc/` is the upstream CUDA op
+registration tree — keep it in sync with upstream where possible to
+reduce merge conflicts. New HIP-specific op bindings go in
+`flashinfer/csrc_rocm/`, with a `_hip` or `_aiter` suffix when the file
+routes to a HIP-specific code path or to AITER.
 
-* Write kernel definitions in `include/`
-* Write kernel registration and pytorch interface under `csrc/`
-* Write python interface under `python/`
-* Write unit tests in `tests/`
-* (Optional) Add benchmark suites under `benchmark/`
-* Update (python) documentation index under `docs/`
-* Update `pyproject.toml` if you created new module in flashinfer
+**`include/gpu_iface/`.** Hides CUDA/HIP divergence behind a common
+header surface (`math_ops.hpp`, `mma_ops.hpp`, `memory_ops.hpp`, …).
+When you need a new intrinsic, add the abstraction in `gpu_iface/` and
+provide a HIP implementation under `gpu_iface/backend/hip/`. Don't
+reach for `hipcub`, `__hip_*`, or inline asm from inside
+`include/flashinfer/` — go through `gpu_iface`.
 
-# Release Versioning
+# Adding a Kernel
 
-When incrementing a version and creating a release, follow a "right-shifted" versioning scheme similar to [vLLM Release Versioning](https://github.com/vllm-project/vllm/blob/main/RELEASE.md) (`major.minor.patch[.post1]`) [^1]. In particular:
+1. **Kernel implementation** — framework-agnostic header(s) in
+   `include/flashinfer/`, using `gpu_iface/` for any CUDA/HIP-divergent
+   intrinsic.
+2. **PyTorch binding** — register the op in `flashinfer/csrc_rocm/`.
+   The only layer that may include Torch headers.
+3. **JIT generator** — add the op's JIT spec in `flashinfer/jit/*.py`.
+4. **Python interface** — expose the user-facing API in `flashinfer/*.py`.
+5. **Tests** — `test_*_hip.py` under `tests/rocm_tests/`. Reuse the
+   fixtures in `tests/rocm_tests/conftest.py`.
+6. **(Optional) Benchmark** — script under `benchmarks/rocm_benchmarks/`.
+7. **Pre-commit** — `pre-commit run -a` before submitting.
 
-* _major_ increment signals architectural milestone and/or when incompatible API changes are made, similar to PyTorch 2.0.
-* _minor_ increment signals significant backwards-compatible new features
-* _patch_ increment signals small backwards-compatible features (e.g. new kernels, new SM support, etc) and backwards-compatible bug fixes
-* _post1_ is an optional suffix for a quick follow up release with just backwards-compatible bug fixes
+A step-by-step Claude Code skill (`add-rocm-kernel`) walks through this
+with concrete examples.
 
-[^1]: We have not followed this strictly through v0.4.0. But after v0.4.0, the versioning should follow this "right-shifted" versioning scheme.
+# Build / JIT Gotchas
+
+**JIT cache silently sticky.** `JitSpec.build()` only writes
+`build.ninja` when the file is missing, so changing env vars
+(`FLASHINFER_ROCM_ARCH_LIST`, extra cflags) is a **silent no-op**
+unless you either `rm -rf ~/.cache/flashinfer/` or call
+`spec.write_ninja()` explicitly. When debugging build flags, always
+clear the cache first.
+
+**Debug builds.** `FLASHINFER_JIT_DEBUG=1` is a no-op on ROCm/HIP — it
+only injects debug flags on the CUDA branch. To get a debug build on
+ROCm, append `"-O0", "-g"` via `extra_cuda_cflags` in the op's JIT
+generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so
+the trailing `-O0` is what actually overrides it on the hipcc command
+line) and clear `~/.cache/flashinfer/`.
+
+# Pre-Commit
+
+```bash
+pre-commit install   # one-time, installs the git hook
+pre-commit run -a    # run on all files
+```
+
+CI rejects PRs that don't pass `pre-commit run -a`.
+
+# Submitting Changes
+
+Open PRs against the `amd-integration` branch of
+[`ROCm/flashinfer`](https://github.com/ROCm/flashinfer). For PR
+description conventions (sections, benchmarks, test plan), see the
+"PR Description" section of [`CLAUDE.md`](CLAUDE.md).
