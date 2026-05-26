@@ -44,21 +44,34 @@ __global__ __launch_bounds__(std::max(
 
   int op;
   int linear_bid;
-  // SM-aware CTA scheduler
   if (threadIdx.x == 0) {
     constexpr int blk_factor_p = 1;
     constexpr int blk_factor_d = 1;
 
-    // Find out which CU this threadblock is scheduled on
     linear_bid = static_cast<int>(gpu_iface::get_processor_id() % static_cast<uint32_t>(num_SMs));
     const int prefill_slots = (prefill_blocks + blk_factor_p - 1) / blk_factor_p;
     const int decode_slots = (decode_blocks + blk_factor_d - 1) / blk_factor_d;
 
-    if (prefill_slots <= decode_slots) {
+    if (prefill_slots == 0) {
+      op = POD_DECODE;
+      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
+    } else if (decode_slots == 0) {
+      op = POD_PREFILL;
+      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
+    } else if (prefill_slots <= decode_slots) {
       const int total_tags = decode_slots / prefill_slots + 1;
       op = (atomicAdd(&tbAssign[linear_bid], 1) % total_tags);
       if (op > 0) {
         op = 1;
+      }
+      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
+      // If this CU has exhausted its quota for the chosen op, steal work from the other op.
+      if (op == 0 && linear_bid >= prefill_slots) {
+        linear_bid = atomicAdd(&tbAssign[num_SMs + 1], 1);
+        op = !op;
+      } else if (op == 1 && linear_bid >= decode_slots) {
+        op = !op;
+        linear_bid = atomicAdd(&tbAssign[num_SMs + 0], 1);
       }
     } else {
       const int pref_tags = prefill_slots / decode_slots;
@@ -68,19 +81,16 @@ __global__ __launch_bounds__(std::max(
       } else {
         op = 1;
       }
+      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
+      // If this CU has exhausted its quota for the chosen op, steal work from the other op.
+      if (op == 0 && linear_bid >= prefill_slots) {
+        linear_bid = atomicAdd(&tbAssign[num_SMs + 1], 1);
+        op = !op;
+      } else if (op == 1 && linear_bid >= decode_slots) {
+        op = !op;
+        linear_bid = atomicAdd(&tbAssign[num_SMs + 0], 1);
+      }
     }
-
-    // Get the next blockId for that operation
-    linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
-    // If the blockId obtained exceeds the max blockIds for that op, switch to the other op
-    if (op == 0 && linear_bid >= prefill_slots) {
-      linear_bid = atomicAdd(&tbAssign[num_SMs + 1], 1);
-      op = !op;
-    } else if (op == 1 && linear_bid >= decode_slots) {
-      op = !op;
-      linear_bid = atomicAdd(&tbAssign[num_SMs + 0], 1);
-    }
-    // Write the blockId and operation to shared memory
     ((int*)smem)[0] = linear_bid;
     ((int*)smem)[1] = op;
   }
@@ -110,7 +120,7 @@ __global__ __launch_bounds__(std::max(
       SinglePrefillWithKVCacheDevice<KTraits_P>(prefill_params, smem_storage, tid, bx, chunk_idx,
                                                 kv_head_idx, num_chunks, num_kv_heads_p);
     }
-  } else /* OP == DECODE */ {
+  } else {  // POD_DECODE
     auto& smem_storage = reinterpret_cast<typename KTraits_D::SharedStorage&>(smem);
     if (linear_bid >= decode_blocks) return;
 
@@ -310,7 +320,6 @@ gpuError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
             FI_GPU_CALL(
                 gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-            // Launch kernel (no PDL on HIP)
             void* args[] = {(void*)&xsize, (void*)&prefill_params, (void*)&decode_params,
                             (void*)&tbAssign, (void*)&num_sm};
             FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
