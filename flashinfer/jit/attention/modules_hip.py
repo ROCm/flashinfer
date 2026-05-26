@@ -1169,7 +1169,8 @@ def gen_batch_pod_module(
     )
 
 
-def gen_customize_pod_module(
+def _gen_customize_pod_like_module(
+    prefix: str,
     uri: str,
     dtype_q: torch.dtype,
     dtype_kv: torch.dtype,
@@ -1178,14 +1179,15 @@ def gen_customize_pod_module(
     head_dim: int,
     variant_name_p: str,
     variant_name_d: str,
-    pos_encoding_mode_p: int = 0,
-    use_sliding_window_p: bool = False,
-    use_logits_soft_cap_p: bool = False,
-    pos_encoding_mode_d: int = 0,
-    use_sliding_window_d: bool = False,
-    use_logits_soft_cap_d: bool = False,
-    use_fp16_qk_reduction: bool = False,
+    pos_encoding_mode_p: int,
+    use_sliding_window_p: bool,
+    use_logits_soft_cap_p: bool,
+    pos_encoding_mode_d: int,
+    use_sliding_window_d: bool,
+    use_logits_soft_cap_d: bool,
+    use_fp16_qk_reduction: bool,
 ) -> JitSpec:
+    """Shared body for single (prefix="pod") and batch (prefix="batch_pod") POD JIT modules."""
     gen_directory = FLASHINFER_GEN_SRC_DIR / uri
 
     kwargs = {
@@ -1206,40 +1208,77 @@ def gen_customize_pod_module(
         "use_fp16_qk_reduction": str(use_fp16_qk_reduction).lower(),
     }
 
-    with open(FLASHINFER_CSRC_DIR / "pod_customize_config.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / f"{prefix}_customize_config.jinja") as f:
         config_templ = jinja2.Template(f.read())
-
-    with open(FLASHINFER_CSRC_DIR / "pod_kernel_inst.jinja") as f:
+    with open(FLASHINFER_CSRC_DIR / f"{prefix}_kernel_inst.jinja") as f:
         kernel_inst_templ = jinja2.Template(f.read())
 
-    generated_inc_str = config_templ.render(**kwargs)
     os.makedirs(gen_directory, exist_ok=True)
-    generated_config_path = gen_directory / "pod_config.inc"
-    write_if_different(generated_config_path, generated_inc_str)
+    write_if_different(
+        gen_directory / f"{prefix}_config.inc", config_templ.render(**kwargs)
+    )
 
     source_paths = []
-
     for mask_mode_p in [0, 1, 2]:
         for mask_mode_d in [0, 1, 2]:
-            filename = f"pod_kernel_mask_{mask_mode_p}p_{mask_mode_d}d.cu"
-            dest_path = gen_directory / filename
-            source_paths.append(dest_path)
-            source = kernel_inst_templ.render(
-                mask_mode_p=mask_mode_literal[mask_mode_p],
-                mask_mode_d=mask_mode_literal[mask_mode_d],
-                **kwargs,
+            dest_path = (
+                gen_directory / f"{prefix}_kernel_mask_{mask_mode_p}p_{mask_mode_d}d.cu"
             )
-            write_if_different(dest_path, source)
+            source_paths.append(dest_path)
+            write_if_different(
+                dest_path,
+                kernel_inst_templ.render(
+                    mask_mode_p=mask_mode_literal[mask_mode_p],
+                    mask_mode_d=mask_mode_literal[mask_mode_d],
+                    **kwargs,
+                ),
+            )
 
-    for filename in ["pod.cu", "pod_jit_pybind.cu"]:
+    for filename in [f"{prefix}.cu", f"{prefix}_jit_pybind.cu"]:
         src_path = FLASHINFER_CSRC_DIR / filename
         dest_path = gen_directory / filename
         source_paths.append(dest_path)
         with open(src_path, "r") as f:
-            source = f.read()
-        write_if_different(dest_path, source)
+            write_if_different(dest_path, f.read())
 
     return gen_jit_spec(uri, source_paths)
+
+
+def gen_customize_pod_module(
+    uri: str,
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    dtype_idx: torch.dtype,
+    head_dim: int,
+    variant_name_p: str,
+    variant_name_d: str,
+    pos_encoding_mode_p: int = 0,
+    use_sliding_window_p: bool = False,
+    use_logits_soft_cap_p: bool = False,
+    pos_encoding_mode_d: int = 0,
+    use_sliding_window_d: bool = False,
+    use_logits_soft_cap_d: bool = False,
+    use_fp16_qk_reduction: bool = False,
+) -> JitSpec:
+    return _gen_customize_pod_like_module(
+        "pod",
+        uri,
+        dtype_q,
+        dtype_kv,
+        dtype_o,
+        dtype_idx,
+        head_dim,
+        variant_name_p,
+        variant_name_d,
+        pos_encoding_mode_p,
+        use_sliding_window_p,
+        use_logits_soft_cap_p,
+        pos_encoding_mode_d,
+        use_sliding_window_d,
+        use_logits_soft_cap_d,
+        use_fp16_qk_reduction,
+    )
 
 
 def gen_customize_batch_pod_module(
@@ -1259,57 +1298,21 @@ def gen_customize_batch_pod_module(
     use_logits_soft_cap_d: bool = False,
     use_fp16_qk_reduction: bool = False,
 ) -> JitSpec:
-    gen_directory = FLASHINFER_GEN_SRC_DIR / uri
-
-    kwargs = {
-        "variant_name_p": variant_name_p,
-        "variant_name_d": variant_name_d,
-        "dtype_q": dtype_map_hip[dtype_q],
-        "dtype_kv": dtype_map_hip[dtype_kv],
-        "dtype_o": dtype_map_hip[dtype_o],
-        "idtype": dtype_map_hip[dtype_idx],
-        "head_dim_qk": head_dim,
-        "head_dim_vo": head_dim,
-        "pos_encoding_mode_p": pos_encoding_mode_literal[pos_encoding_mode_p],
-        "pos_encoding_mode_d": pos_encoding_mode_literal[pos_encoding_mode_d],
-        "use_sliding_window_p": str(use_sliding_window_p).lower(),
-        "use_logits_soft_cap_p": str(use_logits_soft_cap_p).lower(),
-        "use_sliding_window_d": str(use_sliding_window_d).lower(),
-        "use_logits_soft_cap_d": str(use_logits_soft_cap_d).lower(),
-        "use_fp16_qk_reduction": str(use_fp16_qk_reduction).lower(),
-    }
-
-    with open(FLASHINFER_CSRC_DIR / "batch_pod_customize_config.jinja") as f:
-        config_templ = jinja2.Template(f.read())
-
-    with open(FLASHINFER_CSRC_DIR / "batch_pod_kernel_inst.jinja") as f:
-        kernel_inst_templ = jinja2.Template(f.read())
-
-    generated_inc_str = config_templ.render(**kwargs)
-    os.makedirs(gen_directory, exist_ok=True)
-    generated_config_path = gen_directory / "batch_pod_config.inc"
-    write_if_different(generated_config_path, generated_inc_str)
-
-    source_paths = []
-
-    for mask_mode_p in [0, 1, 2]:
-        for mask_mode_d in [0, 1, 2]:
-            filename = f"batch_pod_kernel_mask_{mask_mode_p}p_{mask_mode_d}d.cu"
-            dest_path = gen_directory / filename
-            source_paths.append(dest_path)
-            source = kernel_inst_templ.render(
-                mask_mode_p=mask_mode_literal[mask_mode_p],
-                mask_mode_d=mask_mode_literal[mask_mode_d],
-                **kwargs,
-            )
-            write_if_different(dest_path, source)
-
-    for filename in ["batch_pod.cu", "batch_pod_jit_pybind.cu"]:
-        src_path = FLASHINFER_CSRC_DIR / filename
-        dest_path = gen_directory / filename
-        source_paths.append(dest_path)
-        with open(src_path, "r") as f:
-            source = f.read()
-        write_if_different(dest_path, source)
-
-    return gen_jit_spec(uri, source_paths)
+    return _gen_customize_pod_like_module(
+        "batch_pod",
+        uri,
+        dtype_q,
+        dtype_kv,
+        dtype_o,
+        dtype_idx,
+        head_dim,
+        variant_name_p,
+        variant_name_d,
+        pos_encoding_mode_p,
+        use_sliding_window_p,
+        use_logits_soft_cap_p,
+        pos_encoding_mode_d,
+        use_sliding_window_d,
+        use_logits_soft_cap_d,
+        use_fp16_qk_reduction,
+    )
