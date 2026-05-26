@@ -82,3 +82,7 @@ elif IS_HIP:
     from .modules_hip import get_batch_prefill_uri as get_batch_prefill_uri
     from .modules_hip import get_single_decode_uri as get_single_decode_uri
     from .modules_hip import get_single_prefill_uri as get_single_prefill_uri
+    from .modules_hip import gen_pod_module as gen_pod_module
+    from .modules_hip import gen_batch_pod_module as gen_batch_pod_module
+    from .modules_hip import get_pod_uri as get_pod_uri
+    from .modules_hip import get_batch_pod_uri as get_batch_pod_uri
