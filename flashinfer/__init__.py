@@ -277,6 +277,8 @@ elif IS_HIP:
     from .cascade import merge_state as merge_state
     from .cascade import merge_state_in_place as merge_state_in_place
     from .cascade import merge_states as merge_states
+    from .pod import PODWithPagedKVCacheWrapper as PODWithPagedKVCacheWrapper
+    from .pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWrapper
 
     from .utils import next_positive_power_of_2 as next_positive_power_of_2
     from .utils import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled
