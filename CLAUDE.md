@@ -64,4 +64,15 @@ MI300X / MI325X = gfx942 = CDNA3; MI355X = gfx950 = CDNA4.
 
 External tuning references (CK, AITER, HipKittens) live in the
 `benchmark-kernel` skill; PR/`gh` workflow details live in the `pr-workflow`
-skill.
+skill; the interactive plan-review workflow lives in the `plan-review` skill.
+
+## Model Usage Policy
+
+- **Plan Mode** (`/plan` or Shift+Tab): Always use `opus` at max effort for architecture decisions, system design, and multi-file analysis.
+- **Agent / Agentic tasks**: Use `opus` at high effort when running multi-step autonomous tasks (bash commands, multi-file edits).
+- **Edit / Implementation**: Use `sonnet` for routine code implementation, test writing, and refactoring once a plan is approved.
+- **Quick tasks**: Use `sonnet` for Q&A, simple lookups, and documentation.
+
+Switch model before starting each phase:
+  /model opus     → for planning and agent runs
+  /model sonnet   → for implementation and quick tasks
