@@ -80,3 +80,16 @@ Output (under `benchmarks/rocm_benchmarks/`, gitignored):
 - **Empty `_counter_collection.csv`:** `kernel_name_regex` doesn't match the mangled name. Run `rocprofv3 --stats --kernel-trace -- python my_bench.py` first and copy the prefix from `*_kernel_stats.csv`.
 - **Hang or no output:** confirm `which rocprofv3` is on `PATH`; the wrapper uses script `print()` output as a heartbeat — make sure the `if __name__ == "__main__":` block prints something.
 - **Use `--timing-only` first** to verify the kernel path works before involving `rocprofv3`.
+
+## External tuning references
+
+When optimizing a CDNA kernel, consult these in order:
+
+- **Composable Kernel (CK)** — ground truth for LDS layout, `sched_group_barrier`
+  ratios, and tiling on CDNA. For a specific hdim/dtype combination, read
+  `qr_ks_vs.hpp` in [CK](https://github.com/ROCmSoftwarePlatform/composable_kernel)
+  first.
+- **AITER** — performance reference for fp16/hdim=256 attention on gfx942.
+  [AITER repo](https://github.com/ROCm/aiter)
+- **HipKittens** (arxiv 2511.08083) — producer/consumer patterns underperform on
+  CDNA; **4-wave interleave** is the recommended approach instead.

@@ -19,17 +19,10 @@
 
 ## Installing Torch
 
-Torch must come from AMD's ROCm repo via `--index-url`. Using `-f` (find-links)
-still allows PyPI fallback and may silently install a CPU-only wheel.
-
-```bash
-pip install torch==<torch-version> \
-  --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-<rocm-version>/
-```
-
-See the [GPU, ROCm, and PyTorch Support](README.md#gpu-rocm-and-pytorch-support)
-table in `README.md` for current `<torch-version>` and `<rocm-version>`
-values.
+Torch must come from AMD's ROCm repo via `--index-url` (not `-f`, which can
+silently install a CPU-only wheel from PyPI). See the
+[GPU, ROCm, and PyTorch Support](README.md#gpu-rocm-and-pytorch-support) table
+in `README.md` for the version and command.
 
 ## Non-Obvious Gotchas
 
@@ -65,47 +58,10 @@ cd aiter && python3 setup.py develop
 
 Check availability in code: `from flashinfer.aiter_utils import is_aiter_supported`
 
-## Key External References
+## Arch ↔ codename
 
-Arch ↔ codename mapping (frequently needed mid-coding): MI300X / MI325X =
-gfx942 = CDNA3; MI350X = gfx950 = CDNA4.
+MI300X / MI325X = gfx942 = CDNA3; MI350X = gfx950 = CDNA4.
 
-- **Composable Kernel (CK)** — ground truth for LDS layout,
-  `sched_group_barrier` ratios, and tiling on CDNA. When tuning a kernel,
-  read `qr_ks_vs.hpp` in [CK](https://github.com/ROCmSoftwarePlatform/composable_kernel)
-  for the specific hdim/dtype combination first.
-- **AITER** — performance reference for fp16/hdim=256 attention on gfx942.
-  [AITER repo](https://github.com/ROCm/aiter)
-- **HipKittens** (arxiv 2511.08083) — producer/consumer patterns underperform
-  on CDNA; 4-wave interleave is the recommended approach.
-
-## GitHub CLI
-
-`gh pr edit` fails with a "Projects (classic) is being deprecated" GraphQL error on this repo. Use the REST API instead:
-
-```bash
-# Update PR description
-gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
-
-# Or from a file
-gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
-```
-
-Ask to push to remote.
-
-## PR Description
-
-**Body** — include sections that apply, skip the rest:
-
-- `## Summary` — 1–3 sentences on what and why.
-- `### What changed` with `####` per component when the PR spans multiple
-  subsystems. Bullet by file: ``- **`path`** — one-line purpose``. Call out
-  non-obvious design choices.
-- `### Architecture / design notes` — only when there's a real choice to record.
-  Tables for routing/dispatch logic; explain *why*.
-- `## Benchmark results` — for perf-touching PRs. Shape line + table per entry
-  point + mean overhead/speedup row.
-- `## Test plan` — checklist of what was actually run (not aspirational), ending
-  with `pre-commit run -a`.
-
-Don't restate the diff and commits. Explain non-obvious decisions and surprising behaviors.
+External tuning references (CK, AITER, HipKittens) live in the
+`benchmark-kernel` skill; PR/`gh` workflow details live in the `pr-workflow`
+skill.
