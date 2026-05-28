@@ -21,6 +21,15 @@ from typing import Any, Dict, List, Optional
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
 
+from ..device_utils import IS_HIP
+
+# cuda_ipc uses libcudart and the CUDA IPC API (cudaIpcGetMemHandle /
+# cudaIpcOpenMemHandle), which have no ROCm equivalents. Raise ImportError
+# immediately so callers that wrap the import in try/except ImportError
+# (e.g. vLLM's flashinfer_all_reduce.py) degrade gracefully on ROCm.
+if IS_HIP:
+    raise ImportError("flashinfer.comm.cuda_ipc is not available on ROCm/HIP")
+
 # NOTE(Zihao): we should use cuda-python instead of ctypes cuda runtime bindings.
 # However, cuda-python's API is not stable yet, so we use ctypes bindings instead.
 # which is copied from vllm codebase.
