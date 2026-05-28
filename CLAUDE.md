@@ -60,7 +60,7 @@ Check availability in code: `from flashinfer.aiter_utils import is_aiter_support
 
 ## Arch ↔ codename
 
-MI300X / MI325X = gfx942 = CDNA3; MI350X = gfx950 = CDNA4.
+MI300X / MI325X = gfx942 = CDNA3; MI355X = gfx950 = CDNA4.
 
 External tuning references (CK, AITER, HipKittens) live in the
 `benchmark-kernel` skill; PR/`gh` workflow details live in the `pr-workflow`

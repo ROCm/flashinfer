@@ -1,9 +1,12 @@
 ---
 name: pr-workflow
-description: How to create and edit PRs on the amd-flashinfer repo — gh CLI quirks and the project's PR-description conventions.
+description: How to create and edit PRs on the ROCm/flashinfer GitHub repo (which publishes the amd-flashinfer package) — gh CLI quirks and the project's PR-description conventions.
 ---
 
-# PR Workflow (amd-flashinfer)
+# PR Workflow (ROCm/flashinfer)
+
+> The GitHub repo is `ROCm/flashinfer`; the Python package it publishes is
+> `amd-flashinfer`. All `gh` commands below target the GitHub repo.
 
 ## GitHub CLI
 
