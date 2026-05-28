@@ -20,7 +20,8 @@ gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
 ```
 
-Ask to push to remote.
+Ask the user to confirm before running `git push` or `gh pr create` — these
+publish to a shared repo and shouldn't be triggered without explicit consent.
 
 ## PR Description
 
