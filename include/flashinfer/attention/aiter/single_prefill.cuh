@@ -25,9 +25,11 @@ inline constexpr int32_t kAiterMaskBottomRight =
 // as precompiled .co files in aiter_meta/hsa/gfx9{42,50}/fmha_v3_fwd/. Any other
 // shape forces a fallback to fmha_fwd_ck, which in the variant .so we dlopen is
 // JIT-built group-mode only — so callers must keep is_group_mode=true unless
-// ASM v3 will actually be selected.
+// ASM v3 will actually be selected. AITER also ships hd192/hd128 .co files, but
+// the single-prefill entry point hard-requires HEAD_DIM_QK == HEAD_DIM_VO (see
+// static_assert below), so only the equal-hdim pair is reachable here.
 inline constexpr bool AiterAsmV3HdimSupported(uint32_t hdim_q, uint32_t hdim_v) {
-  return (hdim_q == 128 && hdim_v == 128) || (hdim_q == 192 && hdim_v == 128);
+  return hdim_q == 128 && hdim_v == 128;
 }
 
 // Returns true iff AITER's mha_fwd dispatcher will hit the ASM v3 pipeline for
@@ -80,6 +82,12 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   args.how_v3_bf16_cvt = 0;
   args.data_type = dtype_str;
   args.is_group_mode = !args.use_asm_v3;
+  // Defensive: group mode dereferences seqstart_*_ptr in AITER's CK Tile
+  // pipeline. Catch caller/callee predicate drift here rather than as a HIP
+  // memory fault inside the kernel.
+  if (args.is_group_mode && (cu_seqlens_q == nullptr || cu_seqlens_k == nullptr)) {
+    return hipErrorInvalidValue;
+  }
   args.bias_type = 0;  // no bias / no alibi
   args.has_lse = has_lse;
   args.qscale_type = 0;
