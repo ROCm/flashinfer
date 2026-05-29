@@ -157,6 +157,12 @@ std::unordered_map<ExternCKey, void*, ExternCKeyHash> s_ec_cache;
 }  // namespace
 
 void* get_aiter_mha_fwd_handle(VariantKey const& key) {
+  if (key.has_logits_cap) {
+    throw std::runtime_error(
+        "get_aiter_mha_fwd_handle called with has_logits_cap=true; the mha_fwd "
+        "template has no _logits arm and would silently ignore logits_soft_cap. "
+        "Use get_aiter_mha_varlen_fwd_handle for this trait.");
+  }
   std::string so_path = get_jit_dir() + "/" + mha_fwd_variant_so_name(key);
   return load_and_cache_sym(s_mf_mu, s_mf_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
