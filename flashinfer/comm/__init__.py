@@ -86,12 +86,20 @@ else:
             )
 
     class _CudaOnlyFinder(importlib.abc.MetaPathFinder):
+        # Stable marker so the idempotency check below survives
+        # importlib.reload(flashinfer.comm), which redefines the class object
+        # and would otherwise make isinstance() return False against the
+        # already-installed finder from the previous load.
+        _is_flashinfer_cuda_only_finder = True
+
         def find_spec(self, fullname, path=None, target=None):
             if fullname in _CUDA_ONLY_SUBMODULES:
                 return importlib.machinery.ModuleSpec(fullname, _CudaOnlyLoader())
             return None
 
-    if not any(isinstance(f, _CudaOnlyFinder) for f in sys.meta_path):
+    if not any(
+        getattr(f, "_is_flashinfer_cuda_only_finder", False) for f in sys.meta_path
+    ):
         sys.meta_path.insert(0, _CudaOnlyFinder())
 
 # from .mnnvl import MnnvlMemory, MnnvlMoe, MoEAlltoallInfo
