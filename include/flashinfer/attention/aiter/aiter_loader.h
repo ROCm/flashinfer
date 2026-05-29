@@ -34,10 +34,23 @@ struct VariantKeyHash {
   }
 };
 
-// Returns the raw dlsym function pointer for aiter::mha_fwd(mha_fwd_args, stream_config const&).
-// The variant .so matching `key` is loaded via dlopen on first call; cached thereafter.
-// Throws std::runtime_error if the variant .so is not found or the symbol is missing.
+// Returns the raw dlsym function pointer for aiter::mha_fwd(mha_fwd_args, stream_config const&)
+// out of AITER's mha_fwd template .so. The CK Tile kernel instances baked in are batch-mode
+// (matching is_group_mode=false); the ASM v3 path is still reachable via use_asm_v3=true.
+// This is the preferred loader for single-sequence prefill on shapes that don't need
+// logits_soft_cap or min_seqlen_q semantics — it lets us skip group-mode seqstart
+// [0, seqlen] plumbing entirely.
+//
+// has_logits_cap is ignored when building the .so name (the mha_fwd template has no
+// _logits/_nlogits arm); callers must verify has_logits_cap==false before invoking,
+// otherwise the resulting kernel ignores logits_soft_cap.
 void* get_aiter_mha_fwd_handle(VariantKey const& key);
+
+// Returns the raw dlsym function pointer for aiter::mha_fwd out of AITER's mha_varlen_fwd
+// template .so. The CK Tile kernel instances baked in are group-mode only. Use this for
+// genuinely-varlen call sites, and for single-sequence calls that need logits_soft_cap
+// (the non-varlen mha_fwd template does not support that trait).
+void* get_aiter_mha_varlen_fwd_handle(VariantKey const& key);
 
 // Batch-prefill variants share the same key fields as mha_fwd variants.
 // page_size is NOT in the key — the .so dispatches all native page sizes at runtime.

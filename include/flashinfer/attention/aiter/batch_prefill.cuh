@@ -56,7 +56,7 @@ hipError_t BatchPrefillFlatGatherDispatched(
   };
 
   using mha_fwd_fn = float (*)(::aiter::mha_fwd_args, ::ck_tile::stream_config const&);
-  auto fn = reinterpret_cast<mha_fwd_fn>(flashinfer::aiter::get_aiter_mha_fwd_handle(key));
+  auto fn = reinterpret_cast<mha_fwd_fn>(flashinfer::aiter::get_aiter_mha_varlen_fwd_handle(key));
 
   ::aiter::mha_fwd_args args{};
   args.use_asm_v3 = false;

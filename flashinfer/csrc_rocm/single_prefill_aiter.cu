@@ -22,8 +22,10 @@ using flashinfer::MaskMode;
 using flashinfer::QKVLayout;
 
 // Cache of device seqstart tensors keyed by (qo_len, kv_len, device_index).
-// Group-mode AITER variants require seqstart arrays [0, seqlen] on device.
-// Caching eliminates per-call allocation + H2D copy (~15 µs fixed overhead).
+// The mha_fwd .so handles batch=1 in batch mode (no seqstart needed); only the
+// logits_soft_cap path is forced onto the group-mode mha_varlen_fwd .so, which
+// requires seqstart [0, seqlen] arrays on device. Caching eliminates per-call
+// allocation + H2D copy (~15 µs fixed overhead).
 namespace {
 struct SeqstartKey {
   uint32_t qo_len, kv_len;
@@ -121,12 +123,12 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   params.window_left = static_cast<int32_t>(window_left);
   ADDITIONAL_PARAMS_SETTER
 
-  // The ASM v3 fast path is batch-mode; only the group-mode CK Tile fallback
-  // needs the per-(qo_len, kv_len) seqstart [0, len] device tensors.
+  // The mha_fwd .so dispatches batch=1 directly via stride/nhead_stride; only the
+  // mha_varlen_fwd .so (used when logits_soft_cap > 0) needs the per-(qo_len, kv_len)
+  // seqstart [0, len] device tensors.
   const int32_t* cu_seqlens_q_ptr = nullptr;
   const int32_t* cu_seqlens_k_ptr = nullptr;
-  if (!flashinfer::AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum,
-                                      params.logits_soft_cap > 0.0f, params.window_left)) {
+  if (params.logits_soft_cap > 0.0f) {
     std::tie(cu_seqlens_q_ptr, cu_seqlens_k_ptr) =
         get_seqstart_ptrs(params.qo_len, params.kv_len, device);
   }

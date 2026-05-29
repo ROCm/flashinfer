@@ -367,7 +367,7 @@ _aiter_bootstrap_lock = threading.Lock()
 
 
 @functools.lru_cache(maxsize=None)
-def _aiter_bootstrap_single_prefill(
+def _aiter_bootstrap_single_prefill_varlen(
     dtype: torch.dtype,
     head_dim: int,
     device_idx: int,
@@ -376,7 +376,8 @@ def _aiter_bootstrap_single_prefill(
 
     Non-logits and non-causal variants are pre-shipped with the AITER package.
     The logits+causal combination is missing from the pre-built set and must be
-    bootstrapped on first use.
+    bootstrapped on first use. Used by single-prefill when logits_soft_cap > 0
+    (which forces the varlen .so because mha_fwd has no _logits arm).
     """
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
@@ -403,6 +404,43 @@ def _aiter_bootstrap_single_prefill(
         torch.ops.aiter.mha_varlen_fwd(
             q, k, v, cu_q, cu_k, return_softmax_lse=return_lse, **_common
         )
+
+
+@functools.lru_cache(maxsize=None)
+def _aiter_bootstrap_single_prefill_mha_fwd(
+    dtype: torch.dtype,
+    causal: bool,
+    has_lse: bool,
+    head_dim: int,
+    device_idx: int,
+) -> None:
+    """Force AITER's lazy JIT to compile mha_fwd_*.so for this (dtype, causal, has_lse) variant.
+
+    Unlike mha_varlen_fwd, mha_fwd ships no prebuilt .so files in the aiter
+    package; every (dtype, causal, has_lse) combination is JIT-built on first
+    use (~90s per variant). Bootstrapping here surfaces the build at plan time
+    rather than as a dlopen failure inside the C++ path.
+    """
+    from aiter.ops.mha import mha_fwd
+
+    device = torch.device("cuda", device_idx)
+    # mha_fwd expects (batch, seqlen, nhead, hdim) — non-varlen layout.
+    q = torch.zeros(1, 2, 2, head_dim, dtype=dtype, device=device)
+    k = torch.zeros(1, 4, 2, head_dim, dtype=dtype, device=device)
+    v = torch.zeros(1, 4, 2, head_dim, dtype=dtype, device=device)
+    mha_fwd(
+        q,
+        k,
+        v,
+        dropout_p=0.0,
+        softmax_scale=head_dim**-0.5,
+        is_causal=causal,
+        window_size_left=-1,
+        window_size_right=-1,
+        sink_size=0,
+        return_softmax_lse=has_lse,
+        return_dropout_randval=False,
+    )
 
 
 @functools.lru_cache(maxsize=None)
@@ -1298,17 +1336,26 @@ def single_prefill_with_kv_cache(
             head_dim_vo=v.shape[-1],
             pos_encoding_mode=pos_encoding_mode,
         )
-    elif backend == "aiter":
+
+    if backend == "aiter":
         _require_aiter_runtime(q.device)
         if pos_encoding_mode != "NONE":
             raise ValueError(
                 f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
                 "use backend='fa2' or backend='auto' instead."
             )
-        if logits_soft_cap > 0:
-            with _aiter_bootstrap_lock:
-                _aiter_bootstrap_single_prefill(
+        # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
+        # arm); only the (logits, causal) combo isn't pre-shipped by AITER.
+        # logits_soft_cap == 0 takes the mha_fwd .so, none of whose variants are
+        # pre-shipped — JIT-build the exact (dtype, causal, has_lse) we need.
+        with _aiter_bootstrap_lock:
+            if logits_soft_cap > 0:
+                _aiter_bootstrap_single_prefill_varlen(
                     q.dtype, q.shape[-1], q.device.index or 0
+                )
+            else:
+                _aiter_bootstrap_single_prefill_mha_fwd(
+                    q.dtype, causal, return_lse, q.shape[-1], q.device.index or 0
                 )
 
     # o_dtype should be provided for FP8 attention

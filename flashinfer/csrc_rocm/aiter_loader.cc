@@ -32,13 +32,20 @@ std::string get_jit_dir() {
 }
 
 // Build a variant .so filename from a key.
-// Segments: {prefix}{dtype}_{logits}_{bias}_{mask}_{lse}{suffix}
-// mha_varlen_fwd:    prefix="mha_varlen_fwd_",   suffix="_ndropout_nskip_nqscale.so"
-// mha_batch_prefill: prefix="mha_batch_prefill_", suffix="_ndropout_nqscale.so"
-std::string build_so_name(VariantKey const& key, std::string_view prefix, std::string_view suffix) {
+// Segments: {prefix}{dtype}[_{logits}]_{bias}_{mask}_{lse}{suffix}
+// mha_varlen_fwd:    prefix="mha_varlen_fwd_",   include_logits=true,
+//                    suffix="_ndropout_nskip_nqscale.so"
+// mha_fwd:           prefix="mha_fwd_",          include_logits=false,
+//                    suffix="_ndropout_nqscale.so"
+// mha_batch_prefill: prefix="mha_batch_prefill_", include_logits=true,
+//                    suffix="_ndropout_nqscale.so"
+std::string build_so_name(VariantKey const& key, std::string_view prefix, std::string_view suffix,
+                          bool include_logits) {
   std::string name(prefix);
   name += (key.dtype == VariantKey::Dtype::kFp16) ? "fp16" : "bf16";
-  name += key.has_logits_cap ? "_logits" : "_nlogits";
+  if (include_logits) {
+    name += key.has_logits_cap ? "_logits" : "_nlogits";
+  }
   name += key.has_alibi ? "_alibi" : "_nbias";
   name += key.causal ? "_mask" : "_nmask";
   name += key.has_lse ? "_lse" : "_nlse";
@@ -82,25 +89,37 @@ void* load_and_cache_sym(std::shared_mutex& mu, std::unordered_map<Key, void*, H
   return sym;
 }
 
-// ----- varlen MHA cache -----
-
-std::string variant_so_name(VariantKey const& key) {
-  return build_so_name(key, "mha_varlen_fwd_", "_ndropout_nskip_nqscale.so");
-}
-
 // Mangled symbol for aiter::mha_fwd(aiter::mha_fwd_args, ck_tile::stream_config const&).
 // Stable across GCC/Clang Itanium ABI; verified by `nm -D` on all shipped variants.
+// Both the mha_fwd and mha_varlen_fwd .so files export this same dispatcher symbol.
 // Pinned to amd-aiter 0.1.10. Regenerate with: nm -D <variant.so> | grep mha_fwd
 constexpr const char* kMhaFwdSymbol =
     "_ZN5aiter7mha_fwdENS_12mha_fwd_argsERKN7ck_tile13stream_configE";
 
-std::shared_mutex s_mu;
-std::unordered_map<VariantKey, void*, VariantKeyHash> s_cache;
+// ----- mha_fwd (non-varlen, batch-mode CK) cache -----
+
+std::string mha_fwd_variant_so_name(VariantKey const& key) {
+  return build_so_name(key, "mha_fwd_", "_ndropout_nqscale.so", /*include_logits=*/false);
+}
+
+std::shared_mutex s_mf_mu;
+std::unordered_map<VariantKey, void*, VariantKeyHash> s_mf_cache;
+
+// ----- mha_varlen_fwd (varlen, group-mode CK) cache -----
+
+std::string mha_varlen_fwd_variant_so_name(VariantKey const& key) {
+  return build_so_name(key, "mha_varlen_fwd_", "_ndropout_nskip_nqscale.so",
+                       /*include_logits=*/true);
+}
+
+std::shared_mutex s_vl_mu;
+std::unordered_map<VariantKey, void*, VariantKeyHash> s_vl_cache;
 
 // ----- batch-prefill cache -----
 
 std::string batch_prefill_variant_so_name(BatchPrefillVariantKey const& key) {
-  return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale.so");
+  return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale.so",
+                       /*include_logits=*/true);
 }
 
 // Itanium-ABI mangled symbol for aiter::mha_batch_prefill(...).
@@ -138,8 +157,25 @@ std::unordered_map<ExternCKey, void*, ExternCKeyHash> s_ec_cache;
 }  // namespace
 
 void* get_aiter_mha_fwd_handle(VariantKey const& key) {
-  std::string so_path = get_jit_dir() + "/" + variant_so_name(key);
-  return load_and_cache_sym(s_mu, s_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
+  if (key.has_logits_cap) {
+    throw std::runtime_error(
+        "get_aiter_mha_fwd_handle called with has_logits_cap=true; the mha_fwd "
+        "template has no _logits arm and would silently ignore logits_soft_cap. "
+        "Use get_aiter_mha_varlen_fwd_handle for this trait.");
+  }
+  std::string so_path = get_jit_dir() + "/" + mha_fwd_variant_so_name(key);
+  return load_and_cache_sym(s_mf_mu, s_mf_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
+    return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
+           "calling mha_fwd with matching (dtype=" +
+           std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
+           ", causal=" + (key.causal ? "true" : "false") +
+           ", has_lse=" + (key.has_lse ? "true" : "false") + ").";
+  });
+}
+
+void* get_aiter_mha_varlen_fwd_handle(VariantKey const& key) {
+  std::string so_path = get_jit_dir() + "/" + mha_varlen_fwd_variant_so_name(key);
+  return load_and_cache_sym(s_vl_mu, s_vl_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
            "calling mha_varlen_fwd with matching (dtype=" +
            std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +

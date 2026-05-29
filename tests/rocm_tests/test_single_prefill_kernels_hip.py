@@ -21,8 +21,8 @@ logger.setLevel(logging.ERROR)
 def warmup_jit():
     flashinfer.jit.build_jit_specs(
         gen_prefill_attention_modules(
-            [torch.float16],  # q_dtypes
-            [torch.float16],  # kv_dtypes
+            [torch.float16, torch.bfloat16],  # q_dtypes
+            [torch.float16, torch.bfloat16],  # kv_dtypes
             [64, 128, 256],  # head_dims
             [0],  # pos_encoding_modes (NONE)
             [False],  # use_sliding_windows
@@ -207,6 +207,74 @@ def test_single_prefill_threadblock_sync_mdo_states(
     torch.testing.assert_close(o, o_ref.to(o.dtype), rtol=1e-3, atol=1e-3)
     if return_lse:
         torch.testing.assert_close(lse, lse_ref.to(lse.dtype), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("qo_len", [37, 127, 577])
+@pytest.mark.parametrize("kv_len", [128, 512, 2048])
+@pytest.mark.parametrize("num_qo_heads", [4, 32])
+@pytest.mark.parametrize("num_kv_heads", [4])
+@pytest.mark.parametrize("head_dim", [64, 128, 256])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_single_prefill_aiter_bf16(
+    qo_len: int,
+    kv_len: int,
+    num_qo_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+    causal: bool,
+    return_lse: bool,
+):
+    """AITER single-prefill with bf16 inputs. Exercises the ASM v3 (bf16+hd128)
+    fast path inside aiter::mha_fwd in addition to the CK Tile fallback for
+    hd64/hd256. logits_soft_cap is held at 0.0 here so this also covers the
+    mha_fwd (non-varlen, batch-mode) .so loader path that has no bf16 coverage
+    in the fp16-only matrix above."""
+    if not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if causal and qo_len > kv_len:
+        pytest.skip("causal attention requires kv_len >= qo_len")
+
+    q = torch.randn(
+        qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.bfloat16
+    )
+    k = torch.randn(
+        kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.bfloat16
+    )
+    v = torch.randn(
+        kv_len, num_kv_heads, head_dim, device="cuda:0", dtype=torch.bfloat16
+    )
+
+    if return_lse:
+        o, lse = flashinfer.single_prefill_with_kv_cache_return_lse(
+            q,
+            k,
+            v,
+            causal=causal,
+            kv_layout="NHD",
+            backend="aiter",
+        )
+        assert lse.shape == (qo_len, num_qo_heads)
+    else:
+        o = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=causal, kv_layout="NHD", backend="aiter"
+        )
+        lse = None
+
+    assert o.shape == (qo_len, num_qo_heads, head_dim)
+
+    o_ref, lse_ref = naive_attention(
+        q.float(),
+        k.float(),
+        v.float(),
+        causal=causal,
+        pos_encoding_mode="NONE",
+        logits_soft_cap=None,
+        return_lse=return_lse,
+    )
+    torch.testing.assert_close(o, o_ref.to(o.dtype), rtol=1e-2, atol=1e-2)
+    if return_lse:
+        torch.testing.assert_close(lse, lse_ref.to(lse.dtype), rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("head_dim", [64, 128])
