@@ -5,12 +5,11 @@ from .dlpack_utils import pack_strided_memory
 from .mapping import Mapping
 
 # CUDA-only re-exports: cuda_ipc binds to libcudart at import time, and
-# trtllm_ar / vllm_ar / mnnvl wrap kernels and APIs (CUDA IPC, NVSHMEM,
-# NVLink) with no ROCm equivalents. Load only on CUDA so `import
-# flashinfer.comm` succeeds on ROCm — callers that need these features
-# (e.g. vLLM's flashinfer_all_reduce.py) detect availability via attribute
-# checks like `hasattr(flashinfer_comm, "allreduce_fusion")`, which return
-# False here. Matches the IS_CUDA / IS_HIP split in flashinfer/__init__.py.
+# trtllm_ar / vllm_ar wrap kernels and APIs with no ROCm equivalents.
+# Load only on CUDA so `import flashinfer.comm` succeeds on ROCm; callers
+# that need these features can detect availability via the exported CUDA-only
+# names, such as `trtllm_allreduce_fusion`. Matches the IS_CUDA / IS_HIP
+# split in flashinfer/__init__.py.
 if IS_CUDA:
     from .cuda_ipc import CudaRTLibrary, create_shared_buffer, free_shared_buffer
     from .trtllm_ar import AllReduceFusionOp as AllReduceFusionOp
