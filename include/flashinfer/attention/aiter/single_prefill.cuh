@@ -21,8 +21,31 @@ inline constexpr int32_t kAiterMaskTopLeft = 1;  // standard causal (qo_len == k
 inline constexpr int32_t kAiterMaskBottomRight =
     2;  // prefill-with-history causal (kv_len > qo_len)
 
+// AITER's ASM v3 fast path is restricted to the (hdim_q, hdim_v) pairs that ship
+// as precompiled .co files in aiter_meta/hsa/gfx9{42,50}/fmha_v3_fwd/. Any other
+// shape forces a fallback to fmha_fwd_ck, which in the variant .so we dlopen is
+// JIT-built group-mode only — so callers must keep is_group_mode=true unless
+// ASM v3 will actually be selected.
+inline constexpr bool AiterAsmV3HdimSupported(uint32_t hdim_q, uint32_t hdim_v) {
+  return (hdim_q == 128 && hdim_v == 128) || (hdim_q == 192 && hdim_v == 128);
+}
+
+// Returns true iff AITER's mha_fwd dispatcher will hit the ASM v3 pipeline for
+// these traits (matches the guard in aiter::fmha_fwd_v3). On a hit, we use
+// batch mode (is_group_mode=false) to avoid the per-launch seqstart [0, len]
+// H2D plumbing; the kernel ignores batch_stride_* for batch=1.
+inline constexpr bool AiterAsmV3Eligible(uint32_t hdim_q, uint32_t hdim_v,
+                                         flashinfer::aiter::VariantKey::Dtype dtype,
+                                         bool has_logits_cap, int32_t window_left) {
+  return AiterAsmV3HdimSupported(hdim_q, hdim_v) &&
+         dtype == flashinfer::aiter::VariantKey::Dtype::kBf16 && !has_logits_cap && window_left < 0;
+}
+
 // params.lse: [num_qo_heads, qo_len] float32 scratch in natural-log scale; nullptr to skip.
 // tmp: unused; accepted for API parity with the FA2 template.
+// cu_seqlens_q / cu_seqlens_k: [0, seqlen] arrays on device; consumed only on the
+// group-mode (CK Tile) fallback path. May be nullptr when the caller has verified
+// that AiterAsmV3Eligible() holds.
 template <uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO, typename Params>
 hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
                                               const char* dtype_str,
@@ -33,7 +56,7 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   static_assert(HEAD_DIM_QK == HEAD_DIM_VO, "AITER backend requires HEAD_DIM_QK == HEAD_DIM_VO");
 
   const bool has_lse = (params.lse != nullptr);
-  const bool has_logits_cap = (params.logits_soft_cap > 0.0);
+  const bool has_logits_cap = (params.logits_soft_cap > 0.0f);
 
   const flashinfer::aiter::VariantKey key{
       .dtype = dtype_enum,
@@ -47,14 +70,16 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   auto fn = reinterpret_cast<mha_fwd_fn>(flashinfer::aiter::get_aiter_mha_fwd_handle(key));
 
   ::aiter::mha_fwd_args args{};
-  // Runtime traits baked into mha_fwd_args (select pipeline within the variant .so)
-  args.use_asm_v3 = false;
+  // ASM v3 path (bf16 + hd128/hd192_128, batch mode) is ~10-15% faster than the
+  // CK Tile group-mode fallback. Pre-compiled .co files in aiter_meta/hsa/gfx9*/
+  // fmha_v3_fwd/ ship batch-mode kernels; when ineligible we fall back to the
+  // group-mode CK Tile instances that AITER JIT-builds into the variant .so.
+  args.use_asm_v3 =
+      AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum, has_logits_cap, params.window_left);
   args.v3_api_check = false;
   args.how_v3_bf16_cvt = 0;
   args.data_type = dtype_str;
-  // AITER JIT variants only contain group-mode kernel specializations.
-  // Use group mode with seqstart arrays [0, seqlen] to represent batch=1.
-  args.is_group_mode = true;
+  args.is_group_mode = !args.use_asm_v3;
   args.bias_type = 0;  // no bias / no alibi
   args.has_lse = has_lse;
   args.qscale_type = 0;
@@ -66,9 +91,11 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   args.o_ptr = static_cast<void*>(params.o);
   args.lse_ptr = static_cast<void*>(params.lse);
 
-  // Group mode with seqstart arrays [0, seqlen] encodes a single-sequence batch.
-  args.seqstart_q_ptr = static_cast<const void*>(cu_seqlens_q);
-  args.seqstart_k_ptr = static_cast<const void*>(cu_seqlens_k);
+  // Group mode encodes batch=1 as seqstart arrays [0, seqlen] on device.
+  // Batch mode addresses tensors via stride/nhead_stride only — batch_stride_*
+  // are unused at batch=1 and left at their default 0.
+  args.seqstart_q_ptr = args.use_asm_v3 ? nullptr : static_cast<const void*>(cu_seqlens_q);
+  args.seqstart_k_ptr = args.use_asm_v3 ? nullptr : static_cast<const void*>(cu_seqlens_k);
 
   args.seqlen_q = static_cast<int32_t>(params.qo_len);
   args.seqlen_k = static_cast<int32_t>(params.kv_len);

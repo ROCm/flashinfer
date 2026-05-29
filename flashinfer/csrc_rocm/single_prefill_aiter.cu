@@ -12,6 +12,7 @@
 #include <gpu_iface/layout.cuh>
 #include <mutex>
 #include <optional>
+#include <tuple>
 #include <unordered_map>
 
 #include "pytorch_extension_utils.h"
@@ -120,9 +121,15 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   params.window_left = static_cast<int32_t>(window_left);
   ADDITIONAL_PARAMS_SETTER
 
-  // AITER JIT variants use group mode; encode batch=1 as seqstart arrays [0, seqlen].
-  auto [cu_seqlens_q_ptr, cu_seqlens_k_ptr] =
-      get_seqstart_ptrs(params.qo_len, params.kv_len, device);
+  // The ASM v3 fast path is batch-mode; only the group-mode CK Tile fallback
+  // needs the per-(qo_len, kv_len) seqstart [0, len] device tensors.
+  const int32_t* cu_seqlens_q_ptr = nullptr;
+  const int32_t* cu_seqlens_k_ptr = nullptr;
+  if (!flashinfer::AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum,
+                                      params.logits_soft_cap > 0.0f, params.window_left)) {
+    std::tie(cu_seqlens_q_ptr, cu_seqlens_k_ptr) =
+        get_seqstart_ptrs(params.qo_len, params.kv_len, device);
+  }
 
   hipError_t status = flashinfer::SinglePrefillWithKVCacheDispatched<HEAD_DIM_QK, HEAD_DIM_VO>(
       params, causal, dtype_str, dtype_enum, cu_seqlens_q_ptr, cu_seqlens_k_ptr,
