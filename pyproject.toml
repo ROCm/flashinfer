@@ -211,6 +211,7 @@ include = [
     "flashinfer/aiter_utils.py",
     "flashinfer/aot_hip.py",
     "flashinfer/cascade.py",
+    "flashinfer/comm/__init__.py",
     "flashinfer/compilation_context_hip.py",
     "flashinfer/decode_rocm.py",
     "flashinfer/device_utils.py",
