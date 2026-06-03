@@ -24,7 +24,7 @@ subtrees:
 
 - caption: About
   entries:
-  - url: https://rocm.blogs.amd.com/artificial-intelligence/flashinfer/README.html
+  - url: https://rocm.blogs.amd.com/artificial-intelligence/flashinfer-release2/README.html
     title: ROCm FlashInfer blog
   - file: about/license.rst
     title: License
