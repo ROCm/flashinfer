@@ -61,6 +61,28 @@ CUDA_ONLY_MODULES = frozenset(
         "flashinfer.gemm",
         "flashinfer.grouped_mm",
         "flashinfer.trtllm_low_latency_gemm",
+        # deep_gemm and green_ctx reach cuda_utils, which re-raises unless
+        # cuda-python is installed -- an error about a missing pip package
+        # rather than about the backend. cuda_utils itself stays ungated: it is
+        # private, and these two are its only importers on this path.
+        "flashinfer.deep_gemm",
+        "flashinfer.green_ctx",
+        # gdn_prefill is CuTe DSL, so it stops at `No module named 'cutlass'`.
+        "flashinfer.gdn_prefill",
+        # parallel_attention wants prefill.fmha_varlen, upstream's CUTLASS
+        # varlen FMHA. The ROCm twin is right not to carry it, so ungated the
+        # failure reads as a name missing from a module we own.
+        "flashinfer.parallel_attention",
+        # aot and __main__ are CUDA-shaped end to end: jit/cpp_ext.py shells
+        # out to nvcc with no HIP branch. flashinfer.rocm.aot is the ROCm entry
+        # point, and shadowing cannot substitute it -- runpy resolves
+        # `python -m flashinfer.aot` through the aliased spec's loader, which
+        # refuses the name mismatch.
+        "flashinfer.aot",
+        "flashinfer.__main__",
+        # Enumerates CUDA backend tactics; stops at an ActivationType the ROCm
+        # arm of flashinfer/__init__.py does not bind.
+        "flashinfer.tactics_blocklist_gen",
     }
 )
 

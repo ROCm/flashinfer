@@ -43,18 +43,54 @@ fails later:
 | `flashinfer.fused_moe` | The upstream CUTLASS MoE. **ROCm has MoE** — use `flashinfer.aiter_fused_moe`, below |
 | `flashinfer.dsv3_ops` | DeepSeek-V3 fusions built on the above |
 | `flashinfer.comm.*` — `cuda_ipc`, `mixed_comm`, `mnnvl`, `nvshmem`, `nvshmem_allreduce`, `trtllm_alltoall`, `trtllm_ar`, `trtllm_mnnvl_ar`, `vllm_ar` | NVLink / NVSHMEM transports |
+| `flashinfer.deep_gemm`, `flashinfer.green_ctx` | Both reach `flashinfer.cuda_utils`, which requires `cuda-python`; CUDA green contexts have no HIP analogue |
+| `flashinfer.gdn_prefill` | Gated Delta-Rule prefill, written in CuTe DSL |
+| `flashinfer.parallel_attention` | Needs `prefill.fmha_varlen`, upstream's CUTLASS varlen FMHA |
+| `flashinfer.aot`, `flashinfer.__main__` | CUDA-only AOT build and CLI — they shell out to `nvcc`. **ROCm has AOT** — use `flashinfer.rocm.aot` |
+| `flashinfer.tactics_blocklist_gen` | Enumerates CUDA backend tactics |
 
 `importlib.util.find_spec` still reports these as present — the files ship,
 the import is what is gated. Feature-detect with `hasattr(flashinfer, ...)`
 or a `try: import ... except ImportError`, not `find_spec`.
 
-The list is exactly what is gated. A module that merely *imports* one of
-them — `flashinfer.comm.trtllm_moe_alltoall`, for instance — still fails,
-but transitively, so the error names the gated dependency rather than the
-module you asked for.
+A module that merely *imports* a gated one — `flashinfer.comm.trtllm_moe_alltoall`,
+for instance — still fails, but transitively, so the error names the gated
+dependency rather than the module you asked for. `flashinfer.cuda_utils` is
+deliberately ungated: it is private, and the modules that reach it are listed
+above.
 
 `flashinfer.quantization`'s `packbits` and `segment_packbits` are unaffected
 and have in-tree HIP kernels.
+
+### Imports, but has no ROCm kernel
+
+Gating is not the whole story. These import cleanly and fail on first call,
+in ninja, naming the source that does not exist:
+
+```text
+ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
+```
+
+`flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc`,
+`flashinfer.xqa` and `flashinfer.nvfp4_attention_sm120`. They stay importable
+because working code reaches them — `flashinfer.topk_varlen` imports `topk` at
+module scope and `flashinfer.sampling` uses it for the top-k-first path — so
+gating them would break more than it documents. Two logging side paths are in
+the same state: `utils.set_log_level()` and the opt-in GPU stats counter in
+`api_logging`.
+
+`tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
+newly vendored op names a kernel source absent from `csrc/rocm`, so the set
+above cannot grow unnoticed.
+
+### Unverified
+
+Everything else imports, and nothing has been run: `mamba`, `gdn_decode`,
+`moe_ep`, `msa_ops`, `diffusion_ops`, `topk_varlen`, `cute_dsl`, `cutile`,
+`trace` and `trace_apply`, plus the KDA family, which needs `tvm_ffi` — as
+`flashinfer.profiler` needs `tg4perfetto` and `flashinfer.artifacts` needs
+`requests`, none of them installed by `docker/Dockerfile.rocm`. Unverified is
+not unsupported; some are Triton-based and may well work.
 
 ## Installing AITER
 
