@@ -44,7 +44,7 @@ fails later:
 | `flashinfer.dsv3_ops` | DeepSeek-V3 fusions built on the above |
 | `flashinfer.comm.*` — `cuda_ipc`, `mixed_comm`, `mnnvl`, `nvshmem`, `nvshmem_allreduce`, `trtllm_alltoall`, `trtllm_ar`, `trtllm_mnnvl_ar`, `vllm_ar` | NVLink / NVSHMEM transports |
 | `flashinfer.deep_gemm`, `flashinfer.green_ctx` | Both reach `flashinfer.cuda_utils`, which requires `cuda-python`; CUDA green contexts have no HIP analogue |
-| `flashinfer.gdn_prefill` | Gated Delta-Rule prefill, written in CuTe DSL |
+| `flashinfer.gdn_prefill`, `flashinfer.mamba.ssd_combined` | CuTe DSL — both import `cutlass` eagerly. The rest of `flashinfer.mamba` imports fine |
 | `flashinfer.parallel_attention` | Needs `prefill.fmha_varlen`, upstream's CUTLASS varlen FMHA |
 | `flashinfer.aot`, `flashinfer.__main__` | CUDA-only AOT build and CLI — they shell out to `nvcc`. **ROCm has AOT** — use `flashinfer.rocm.aot` |
 | `flashinfer.tactics_blocklist_gen` | Enumerates CUDA backend tactics |
@@ -74,11 +74,14 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 `flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc`,
 `flashinfer.xqa` and `flashinfer.nvfp4_attention_sm120`. They stay importable
 because working code reaches them — `flashinfer.topk_varlen` imports `topk` at
-module scope — so gating them would break more than it documents. `flashinfer.mamba` is in the
-same state — `selective_state_update`, `ssd_combined` and `checkpointing_ssu`
-all name SSM kernels that do not exist here — as are three side paths of
-otherwise supported modules: `utils.set_log_level()`, the opt-in GPU stats
-counter in `api_logging`, and `norm`'s fused rmsnorm+silu variant.
+module scope — so gating them would break more than it documents. In the same state:
+`flashinfer.tllm_utils`, whose `delay_kernel()` builds five absent
+`nv_internal` sources and which `flashinfer.autotuner` imports;
+`flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu` (its
+`ssd_combined` is gated instead — it imports `cutlass` eagerly and so never
+reaches a kernel); and three side paths of otherwise supported modules —
+`utils.set_log_level()`, the opt-in GPU stats counter in `api_logging`, and
+`norm`'s fused rmsnorm+silu variant.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
 newly vendored op names a kernel source absent from `csrc/rocm`, so the set

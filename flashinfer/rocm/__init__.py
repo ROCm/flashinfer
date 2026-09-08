@@ -67,8 +67,10 @@ CUDA_ONLY_MODULES = frozenset(
         # private, and these two are its only importers on this path.
         "flashinfer.deep_gemm",
         "flashinfer.green_ctx",
-        # gdn_prefill is CuTe DSL, so it stops at `No module named 'cutlass'`.
+        # gdn_prefill and mamba.ssd_combined are CuTe DSL, so both stop at
+        # `No module named 'cutlass'`. The rest of flashinfer.mamba imports.
         "flashinfer.gdn_prefill",
+        "flashinfer.mamba.ssd_combined",
         # parallel_attention wants prefill.fmha_varlen, upstream's CUTLASS
         # varlen FMHA. The ROCm twin is right not to carry it, so ungated the
         # failure reads as a name missing from a module we own.

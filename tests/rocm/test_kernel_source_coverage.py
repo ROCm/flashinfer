@@ -52,7 +52,6 @@ _UNPORTED = {
     # Mamba/SSM kernels arrived with v0.6.18 and are unported.
     "flashinfer.mamba.checkpointing_ssu": "Mamba SSM kernels",
     "flashinfer.mamba.selective_state_update": "Mamba SSM kernels",
-    "flashinfer.mamba.ssd_combined": "Mamba SSM kernels",
     # norm itself is supported; only its fused rmsnorm+silu variant has no
     # ROCm source, and nothing in tree calls it.
     "flashinfer.norm": "rmsnorm_silu.cu",
@@ -179,20 +178,20 @@ def _csrc_names(jit_file: Path) -> set[str]:
     """
     tree = ast.parse(jit_file.read_text())
     bound = _string_bindings(tree)
-    roots = {"FLASHINFER_CSRC_DIR"} | {
-        target.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and ast.unparse(node.value).endswith("FLASHINFER_CSRC_DIR")
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
+    # Alias name -> the relative prefixes it stands for. An alias is not always
+    # the bare root: cute_sm120_mxfp8_groupwise.py binds
+    # `csrc_dir = FLASHINFER_CSRC_DIR / "cute_sm120_mxfp8_groupwise"` and then
+    # appends six filenames to it.
+    aliases: dict[str, set[str]] = {}
 
     def components(node) -> set[str] | None:
         """Relative paths this expression builds, or None if not rooted here."""
         if isinstance(node, (ast.Name, ast.Attribute)):
-            unparsed = ast.unparse(node)
-            return {""} if any(unparsed.endswith(r) for r in roots) else None
+            if ast.unparse(node).endswith("FLASHINFER_CSRC_DIR"):
+                return {""}
+            if isinstance(node, ast.Name) and node.id in aliases:
+                return set(aliases[node.id])
+            return None
         if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
             return None
         prefixes = components(node.left)
@@ -202,6 +201,18 @@ def _csrc_names(jit_file: Path) -> set[str]:
         # An unreadable tail makes the whole path unknown; keeping the prefix
         # would check a directory and call the file present.
         return {f"{p}/{t}" if p else t for p in prefixes for t in tails} or None
+
+    # Two passes so an alias built from another alias resolves.
+    for _ in range(2):
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            prefixes = components(node.value)
+            if not prefixes:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    aliases.setdefault(target.id, set()).update(prefixes)
 
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -299,6 +310,8 @@ def test_extractor_reads_the_shapes_the_generators_actually_use(tmp_path):
         '    for filename in [f"{prefix}.cu", "plain.cu"]:\n'
         "        open(csrc / filename)\n"
         '    open(jit_env.FLASHINFER_CSRC_DIR / "nested" / "deep.cu")\n'
+        '    subdir = jit_env.FLASHINFER_CSRC_DIR / "sub"\n'
+        '    open(subdir / "under_alias.cu")\n'
         "    open(jit_env.FLASHINFER_CSRC_DIR / unknowable)\n"
         "def gen_x():\n"
         '    return _body("pod")\n'
@@ -309,6 +322,8 @@ def test_extractor_reads_the_shapes_the_generators_actually_use(tmp_path):
         "plain.cu",  # plain literal in the same iterable
         "nested/deep.cu",  # chained, not just the "nested" prefix
         "nested",  # the inner node of that chain, harmlessly
+        "sub/under_alias.cu",  # alias bound to a subdirectory, not the root
+        "sub",
     }
 
 
