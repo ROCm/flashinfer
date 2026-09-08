@@ -238,7 +238,26 @@ Run this gate on the branch's full diff before `gh pr create`, in order:
    that touch no Python have no relevant tests — say so explicitly rather than
    claiming a run.
 
-4. **Commit** the resulting changes.
+4. **Update the documentation the change invalidates.** Ask what a reader would
+   now find wrong, and check each of these against the diff:
+
+   | Where | Covers |
+   | :--- | :--- |
+   | `README.md` | Support matrix, env vars, quick start, supported versions |
+   | `docs/rocm/backends.md` | Routing rules, per-op constraints, unavailable modules, AITER install |
+   | `CONTRIBUTING.md` | Build, tests, coverage, code structure, upstream-sync procedure |
+   | `CLAUDE.md`, `.claude/skills/` | Commands, gotchas and workflows an agent will act on |
+   | `benchmarks/README.md`, `amd-flashinfer-jit-cache/README.md`, module docstrings | Their own subject |
+
+   A new env var, backend, gate, marker or script belongs in whichever of those
+   describes that subject — and a *removed* one has to come back out. Two
+   traps: the README support matrix is generated, so edit
+   `flashinfer/rocm/arch_caps.py` and run
+   `python3 scripts/gen_arch_support_matrix.py` rather than the table; and a
+   fact stated in two files will drift, so cite the one that owns it rather
+   than restating it.
+
+5. **Commit** the resulting changes.
 
 Only after this gate passes do the pre-flight safeguards and `gh pr create`.
 
