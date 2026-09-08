@@ -87,9 +87,7 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 
 They stay importable because working code reaches them — `topk_varlen` imports
 `topk` at module scope, and `autotuner` imports `tllm_utils` — so gating would
-break more than it documents. `flashinfer.topk_varlen` belongs here
-too: its optimized backends admit only NVIDIA compute capabilities, and the
-general fallback calls `get_topk_module()`, so no path is available.
+break more than it documents.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
 newly vendored op names a kernel source absent from `csrc/rocm`, so the set

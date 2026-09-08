@@ -33,30 +33,37 @@ _JIT_ROCM = _PKG / "jit" / "rocm"
 # `not IS_HIP` guard, so it is not a reason.) Their ninja error already names
 # the missing file, which is a fair report for an op nobody has ported.
 _UNPORTED = {
-    "flashinfer.concat_ops": "no concat_mla kernel",
-    "flashinfer.mhc": "no mhc kernel",
-    "flashinfer.nvfp4_attention_sm120": "SM120 NVFP4 attention",
-    "flashinfer.topk": "no topk kernel",
-    "flashinfer.xqa": "SM90+ XQA kernels",
+    # Keyed by (importing module, generator file): flashinfer.norm reaches
+    # both jit/norm.py, which is supported, and jit/rmsnorm_silu.py, which is
+    # not. Excusing the module would stop guarding the supported half.
+    ("flashinfer.concat_ops", "dsv3_optimizations.py"): "no concat_mla kernel",
+    ("flashinfer.mhc", "mhc.py"): "no mhc kernel",
+    ("flashinfer.nvfp4_attention_sm120", "nvfp4_attention_sm120.py"): "SM120 NVFP4",
+    ("flashinfer.topk", "topk.py"): "no topk kernel",
+    ("flashinfer.xqa", "xqa.py"): "SM90+ XQA kernels",
     # Two logging side paths, both lazily built and neither reached by any
     # in-tree caller: set_log_level() in utils, and the opt-in GPU stats
     # counter in api_logging. Porting them is a separate change.
-    "flashinfer.utils": "spdlog logging.cc",
-    "flashinfer.api_logging": "api_log_stats.cu",
+    ("flashinfer.utils", "spdlog.py"): "spdlog logging.cc",
+    ("flashinfer.api_logging", "api_log_stats.py"): "api_log_stats.cu",
     # comm submodules that are not themselves gated but whose only JIT spec is
     # the CUDA comm module; importing one already fails transitively through a
     # gated dependency.
-    "flashinfer.comm.dcp_alltoall": "CUDA comm kernels",
-    "flashinfer.comm.trtllm_moe_alltoall": "CUDA comm kernels",
-    "flashinfer.comm.ulysses": "CUDA comm kernels",
-    # Mamba/SSM kernels arrived with v0.6.18 and are unported.
-    "flashinfer.mamba.checkpointing_ssu": "Mamba SSM kernels",
-    "flashinfer.mamba.selective_state_update": "Mamba SSM kernels",
+    ("flashinfer.comm.dcp_alltoall", "comm.py"): "CUDA comm kernels",
+    ("flashinfer.comm.trtllm_moe_alltoall", "comm.py"): "CUDA comm kernels",
+    ("flashinfer.comm.ulysses", "comm.py"): "CUDA comm kernels",
+    # Mamba/SSM kernels arrived with v0.6.18 and are unported. ssd_combined is
+    # gated instead -- it imports cutlass eagerly.
+    ("flashinfer.mamba.checkpointing_ssu", "checkpointing_ssu.py"): "Mamba SSM",
+    (
+        "flashinfer.mamba.selective_state_update",
+        "selective_state_update.py",
+    ): "Mamba SSM",
     # norm itself is supported; only its fused rmsnorm+silu variant has no
     # ROCm source, and nothing in tree calls it.
-    "flashinfer.norm": "rmsnorm_silu.cu",
+    ("flashinfer.norm", "rmsnorm_silu.py"): "rmsnorm_silu.cu",
     # TensorRT-LLM host utilities (nv_internal).
-    "flashinfer.tllm_utils": "nv_internal TensorRT-LLM sources",
+    ("flashinfer.tllm_utils", "tllm_utils.py"): "nv_internal TensorRT-LLM sources",
 }
 
 
@@ -295,7 +302,7 @@ _CASES = sorted({(dotted, str(jit)) for dotted, jit in _gen_importers()})
 
 @pytest.mark.parametrize("dotted,jit_file", _CASES, ids=[c[0] for c in _CASES])
 def test_kernel_sources_present_or_module_classified(dotted, jit_file):
-    if _exempt(dotted) or dotted in _UNPORTED:
+    if _exempt(dotted) or (dotted, Path(jit_file).name) in _UNPORTED:
         pytest.skip(f"{dotted} is gated, shadowed, or a known unported op")
     names, unresolved = _csrc_names(Path(jit_file))
     missing = sorted(n for n in names if not (_CSRC / n).exists())
@@ -363,7 +370,7 @@ def test_unported_allowlist_has_no_stale_entries():
     Presence in _CASES is not the test -- a ported module stays in _CASES
     forever. What retires an entry is having nothing left to miss.
     """
-    covered = {dotted for dotted, _ in _CASES}
+    covered = {(dotted, Path(jit).name) for dotted, jit in _CASES}
     unproven = set()
     for dotted, jit_file in _CASES:
         sources, unreadable = _csrc_names(Path(jit_file))
@@ -371,11 +378,13 @@ def test_unported_allowlist_has_no_stale_entries():
         # parameter -- is unknown, not ported. Retiring on that would drop the
         # entry for a kernel that is still missing.
         if unreadable or not sources or any(not (_CSRC / n).exists() for n in sources):
-            unproven.add(dotted)
+            unproven.add((dotted, Path(jit_file).name))
     stale = sorted(
-        name
-        for name in _UNPORTED
-        if name not in covered or _exempt(name) or name not in unproven
+        f"{module} ({generator})"
+        for module, generator in _UNPORTED
+        if (module, generator) not in covered
+        or _exempt(module)
+        or (module, generator) not in unproven
     )
     assert not stale, f"remove from _UNPORTED: {', '.join(stale)}"
 
