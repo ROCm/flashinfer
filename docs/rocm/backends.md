@@ -75,9 +75,11 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 `flashinfer.xqa` and `flashinfer.nvfp4_attention_sm120`. They stay importable
 because working code reaches them — `flashinfer.topk_varlen` imports `topk` at
 module scope and `flashinfer.sampling` uses it for the top-k-first path — so
-gating them would break more than it documents. Two logging side paths are in
-the same state: `utils.set_log_level()` and the opt-in GPU stats counter in
-`api_logging`.
+gating them would break more than it documents. `flashinfer.mamba` is in the
+same state — `selective_state_update`, `ssd_combined` and `checkpointing_ssu`
+all name SSM kernels that do not exist here — as are three side paths of
+otherwise supported modules: `utils.set_log_level()`, the opt-in GPU stats
+counter in `api_logging`, and `norm`'s fused rmsnorm+silu variant.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
 newly vendored op names a kernel source absent from `csrc/rocm`, so the set
@@ -85,7 +87,7 @@ above cannot grow unnoticed.
 
 ### Unverified
 
-These import on ROCm but have never been run: `mamba`, `gdn_decode`, `moe_ep`,
+These import on ROCm but have never been run: `gdn_decode`, `moe_ep`,
 `msa_ops`, `diffusion_ops`, `topk_varlen`, `cute_dsl`, `cutile`, `trace` and
 `trace_apply`.
 

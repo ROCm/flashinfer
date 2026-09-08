@@ -83,7 +83,9 @@ def _dotted(path: Path) -> str:
 
 
 def _resolve(module: str | None, level: int, package: str) -> str:
-    """Absolute name for a relative import, as importlib would resolve it."""
+    """Absolute name for an import, as importlib would resolve it."""
+    if level == 0:  # already absolute: `from flashinfer.jit import ...`
+        return module or ""
     base = package.rsplit(".", level - 1)[0] if level > 1 else package
     return f"{base}.{module}" if module else base
 
@@ -141,16 +143,34 @@ def _csrc_names(jit_file: Path) -> set[str]:
         if isinstance(target, ast.Name)
     }
 
+    def components(node) -> set[str] | None:
+        """Relative paths this expression builds, or None if not rooted here."""
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            unparsed = ast.unparse(node)
+            return {""} if any(unparsed.endswith(r) for r in roots) else None
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
+            return None
+        prefixes = components(node.left)
+        if prefixes is None:
+            return None
+        if isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
+            tails = {node.right.value}
+        elif isinstance(node.right, ast.Name):
+            tails = bound.get(node.right.id, set())
+        else:
+            tails = set()
+        # An unreadable tail makes the whole path unknown; keeping the prefix
+        # would check a directory and call the file present.
+        return {f"{p}/{t}" if p else t for p in prefixes for t in tails} or None
+
     names: set[str] = set()
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
-            continue
-        if not any(ast.unparse(node.left).endswith(root) for root in roots):
-            continue
-        if isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
-            names.add(node.right.value)
-        elif isinstance(node.right, ast.Name):
-            names.update(bound.get(node.right.id, ()))
+        # Chained: CSRC_DIR / "fused_moe" / "hash_topk.cu". Only the outermost
+        # node carries the whole path; the inner one names a directory that
+        # exists whether or not the source does.
+        for path in components(node) or ():
+            if path:
+                names.add(path)
     return names
 
 
