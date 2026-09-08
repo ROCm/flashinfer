@@ -85,8 +85,9 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 * `flashinfer.kda_prefill` and the `flashinfer.kda_kernels` entry points —
   `csrc/rocm` has no `kda/` tree. (`flashinfer.kda` itself does not import at
   all; see below.)
-* `flashinfer.moe_ep` and `flashinfer.trace.templates.gemm`, both through the
-  `nv_internal` FP4 quantization sources.
+* `flashinfer.moe_ep` — its fused-MoE bridge through the `nv_internal` FP4
+  quantization sources, and its SM90 push-style MegaMoE shim through the
+  `nv_internal` DeepGEMM tree — and `flashinfer.trace.templates.gemm`.
 * Three side paths of otherwise supported modules: `utils.set_log_level()`,
   the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
   rmsnorm+silu variant.

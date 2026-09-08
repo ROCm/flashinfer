@@ -83,6 +83,19 @@ _UNPORTED = {
         "flashinfer.trace.templates.gemm",
         "fp4_quantization.py",
     ): "nv_internal FP4 sources",
+    # moe_ep's SM90 push-style MegaMoE shim, on the nv_internal DeepGEMM tree.
+    (
+        "flashinfer.moe_ep.kernel_src.sm90.push_style_megamoe",
+        "gemm.py",
+    ): "SM90 MegaMoE",
+    (
+        "flashinfer.moe_ep.kernel_src.sm90.push_style_megamoe.shim",
+        "gemm.py",
+    ): "SM90 MegaMoE",
+    (
+        "flashinfer.moe_ep.kernel_src.sm90.push_style_megamoe.shim.runner",
+        "gemm.py",
+    ): "SM90 MegaMoE",
 }
 
 
@@ -213,6 +226,10 @@ def _csrc_names(jit_file: Path) -> tuple[set[str], set[str]]:
     # from "no sources at all": an empty result for both would let a generator
     # using an unsupported dynamic expression pass unexamined.
     unresolved: set[str] = set()
+    # Helper name -> the prefixes it returns. monomoe, bgmv_moe and flash_kda
+    # all bind `csrc_dir = _get_..._csrc_dir()`, and a Call the analysis cannot
+    # see through yields neither sources nor an unresolved marker.
+    helpers: dict[str, set[str]] = {}
 
     def components(node) -> set[str] | None:
         """Relative paths this expression builds, or None if not rooted here."""
@@ -221,6 +238,10 @@ def _csrc_names(jit_file: Path) -> tuple[set[str], set[str]]:
                 return {""}
             if isinstance(node, ast.Name) and node.id in aliases:
                 return set(aliases[node.id])
+            return None
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in helpers:
+                return set(helpers[node.func.id])
             return None
         if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
             return None
@@ -234,9 +255,17 @@ def _csrc_names(jit_file: Path) -> tuple[set[str], set[str]]:
         # would check a directory and call the file present.
         return {f"{p}/{t}" if p else t for p in prefixes for t in tails} or None
 
-    # Two passes so an alias built from another alias resolves.
-    for _ in range(2):
+    # Three passes: a helper feeds an alias, which can feed another alias.
+    for _ in range(3):
         for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                returned = set()
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Return) and inner.value is not None:
+                        returned |= components(inner.value) or set()
+                if returned:
+                    helpers.setdefault(node.name, set()).update(returned)
+                continue
             if not isinstance(node, ast.Assign):
                 continue
             prefixes = components(node.value)
@@ -400,7 +429,10 @@ def test_extractor_reads_the_shapes_the_generators_actually_use(tmp_path):
         '    open(jit_env.FLASHINFER_CSRC_DIR / "nested" / "deep.cu")\n'
         '    subdir = jit_env.FLASHINFER_CSRC_DIR / "sub"\n'
         '    open(subdir / "under_alias.cu")\n'
+        '    open(_root() / "via_helper.cu")\n'
         "    open(jit_env.FLASHINFER_CSRC_DIR / unknowable)\n"
+        "def _root():\n"
+        '    return jit_env.FLASHINFER_CSRC_DIR / "helper"\n'
         "def gen_x():\n"
         '    return _body("pod")\n'
     )
@@ -414,6 +446,8 @@ def test_extractor_reads_the_shapes_the_generators_actually_use(tmp_path):
         "nested",  # the inner node of that chain, harmlessly
         "sub/under_alias.cu",  # alias bound to a subdirectory, not the root
         "sub",
+        "helper/via_helper.cu",  # root returned by a local helper call
+        "helper",
     }
 
 
