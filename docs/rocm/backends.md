@@ -85,12 +85,16 @@ above cannot grow unnoticed.
 
 ### Unverified
 
-Everything else imports, and nothing has been run: `mamba`, `gdn_decode`,
-`moe_ep`, `msa_ops`, `diffusion_ops`, `topk_varlen`, `cute_dsl`, `cutile`,
-`trace` and `trace_apply`, plus the KDA family, which needs `tvm_ffi` — as
-`flashinfer.profiler` needs `tg4perfetto` and `flashinfer.artifacts` needs
-`requests`, none of them installed by `docker/Dockerfile.rocm`. Unverified is
-not unsupported; some are Triton-based and may well work.
+These import on ROCm but have never been run: `mamba`, `gdn_decode`, `moe_ep`,
+`msa_ops`, `diffusion_ops`, `topk_varlen`, `cute_dsl`, `cutile`, `trace` and
+`trace_apply`.
+
+These do not import, but for want of a third-party package rather than a ROCm
+kernel, so nothing is known about them either way: the KDA family (`tvm_ffi`),
+`flashinfer.profiler` (`tg4perfetto`) and `flashinfer.artifacts` (`requests`).
+None is installed by `docker/Dockerfile.rocm`.
+
+Unverified is not unsupported — several are Triton-based and may well work.
 
 ## Installing AITER
 

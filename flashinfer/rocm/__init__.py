@@ -105,14 +105,24 @@ def install_shadow_modules() -> Dict[str, ModuleType]:
     return imported
 
 
+_CUDA_ONLY_MESSAGE = "{name} is CUDA-only and not available on ROCm"
+
+
 class _CudaOnlyLoader(importlib.abc.Loader):
     def create_module(self, spec):
         return None
 
     def exec_module(self, module):
-        raise ImportError(
-            f"{module.__spec__.name} is CUDA-only and not available on ROCm"
-        )
+        raise ImportError(_CUDA_ONLY_MESSAGE.format(name=module.__spec__.name))
+
+    # runpy asks the loader for code rather than executing the module, so
+    # `python -m flashinfer.aot` never reaches exec_module. Without this it
+    # fails with AttributeError: no get_code -- the opposite of uniform.
+    def get_code(self, fullname):
+        raise ImportError(_CUDA_ONLY_MESSAGE.format(name=fullname))
+
+    def get_source(self, fullname):
+        raise ImportError(_CUDA_ONLY_MESSAGE.format(name=fullname))
 
 
 class _CudaOnlyFinder(importlib.abc.MetaPathFinder):

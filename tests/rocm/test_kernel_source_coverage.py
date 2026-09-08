@@ -24,6 +24,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PKG = _REPO_ROOT / "flashinfer"
 # The JIT resolves FLASHINFER_CSRC_DIR here on ROCm (get_include_paths.py).
 _CSRC = _REPO_ROOT / "csrc" / "rocm"
+_JIT_ROCM = _PKG / "jit" / "rocm"
 
 # Ops with no ROCm kernel that are deliberately left importable, because
 # gating them would break a module that does work: topk_varlen imports topk at
@@ -50,7 +51,11 @@ _UNPORTED = {
     "flashinfer.comm.ulysses": "CUDA comm kernels",
     # Mamba/SSM kernels arrived with v0.6.18 and are unported.
     "flashinfer.mamba.checkpointing_ssu": "Mamba SSM kernels",
+    "flashinfer.mamba.selective_state_update": "Mamba SSM kernels",
     "flashinfer.mamba.ssd_combined": "Mamba SSM kernels",
+    # norm itself is supported; only its fused rmsnorm+silu variant has no
+    # ROCm source, and nothing in tree calls it.
+    "flashinfer.norm": "rmsnorm_silu.cu",
     # TensorRT-LLM host utilities (nv_internal).
     "flashinfer.tllm_utils": "nv_internal TensorRT-LLM sources",
 }
@@ -83,18 +88,69 @@ def _resolve(module: str | None, level: int, package: str) -> str:
     return f"{base}.{module}" if module else base
 
 
+def _string_bindings(tree: ast.AST) -> dict[str, set[str]]:
+    """Names bound to string literals, including loop variables over lists.
+
+    `for filename in ["pod.cu", ...]: ... CSRC_DIR / filename` is as common in
+    the generators as a literal, and a check that only saw literals would pass
+    with those sources deleted.
+    """
+    bound: dict[str, set[str]] = {}
+
+    def literals(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return {
+                elt.value
+                for elt in node.elts
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+            }
+        return set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            values = literals(node.value)
+            targets = node.targets
+        elif isinstance(node, (ast.For, ast.comprehension)):
+            values = literals(node.iter)
+            targets = [node.target]
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name) and values:
+                bound.setdefault(target.id, set()).update(values)
+    return bound
+
+
 def _csrc_names(jit_file: Path) -> set[str]:
-    """Every "..." in a `FLASHINFER_CSRC_DIR / "..."` expression."""
-    names = set()
-    for node in ast.walk(ast.parse(jit_file.read_text())):
-        if (
-            isinstance(node, ast.BinOp)
-            and isinstance(node.op, ast.Div)
-            and isinstance(node.right, ast.Constant)
-            and isinstance(node.right.value, str)
-            and ast.unparse(node.left).endswith("FLASHINFER_CSRC_DIR")
-        ):
+    """Every source path built from FLASHINFER_CSRC_DIR in this generator.
+
+    Follows one level of aliasing -- both `csrc_dir = FLASHINFER_CSRC_DIR`
+    on the left and a string-bound name on the right -- which is as far as the
+    generators go today.
+    """
+    tree = ast.parse(jit_file.read_text())
+    bound = _string_bindings(tree)
+    roots = {"FLASHINFER_CSRC_DIR"} | {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and ast.unparse(node.value).endswith("FLASHINFER_CSRC_DIR")
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
+            continue
+        if not any(ast.unparse(node.left).endswith(root) for root in roots):
+            continue
+        if isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
             names.add(node.right.value)
+        elif isinstance(node.right, ast.Name):
+            names.update(bound.get(node.right.id, ()))
     return names
 
 
@@ -108,8 +164,27 @@ def _exempt(dotted: str) -> bool:
     )
 
 
+def _definition_sites() -> dict[str, set[Path]]:
+    """gen_* name -> the file(s) under flashinfer/jit that define it.
+
+    Resolving by definition rather than by the imported path is what makes
+    re-exports work: `from .jit import gen_pod_module` names the package, and
+    `from ..jit.gemm import ...` names a package directory, so a path built
+    from the import alone points at no file in either case.
+    """
+    sites: dict[str, set[Path]] = {}
+    for path in (_PKG / "jit").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("gen_"):
+                sites.setdefault(node.name, set()).add(path)
+    return sites
+
+
+_SITES = _definition_sites()
+
+
 def _gen_importers():
-    """(importing module, jit file) for each `import gen_*` an op makes.
+    """(importing module, generator file) for each `import gen_*` an op makes.
 
     Function-scope imports count -- concat_ops defers its generator, and a
     deferred import fails just as hard on the first call. Generators importing
@@ -124,14 +199,18 @@ def _gen_importers():
         for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.ImportFrom):
                 continue
-            if not any(alias.name.startswith("gen_") for alias in node.names):
-                continue
             target = _resolve(node.module, node.level, package)
-            if not target.startswith("flashinfer.jit."):
+            if target != "flashinfer.jit" and not target.startswith("flashinfer.jit."):
                 continue
-            jit_file = _REPO_ROOT / (target.replace(".", "/") + ".py")
-            if jit_file.exists():
-                yield dotted, jit_file
+            for alias in node.names:
+                sites = _SITES.get(alias.name, set())
+                # A generator defined on both branches resolves to the ROCm one
+                # at runtime: flashinfer/jit/__init__.py star-imports
+                # .rocm.api on IS_HIP. Scoring the CUDA twin's sources would
+                # fail every supported op.
+                rocm = {p for p in sites if _JIT_ROCM in p.parents}
+                for jit_file in rocm or sites:
+                    yield dotted, jit_file
 
 
 _CASES = sorted({(dotted, str(jit)) for dotted, jit in _gen_importers()})
@@ -150,9 +229,25 @@ def test_kernel_sources_present_or_module_classified(dotted, jit_file):
 
 
 def test_unported_allowlist_has_no_stale_entries():
-    """An entry that now builds, or is gated, must leave the allowlist."""
+    """An entry whose sources all landed, or that is now gated, must go.
+
+    Presence in _CASES is not the test -- a ported module stays in _CASES
+    forever. What retires an entry is having nothing left to miss.
+    """
     covered = {dotted for dotted, _ in _CASES}
-    stale = sorted(name for name in _UNPORTED if name not in covered or _exempt(name))
+    unproven = set()
+    for dotted, jit_file in _CASES:
+        sources = _csrc_names(Path(jit_file))
+        # No literal to read -- nvfp4_attention_sm120 takes its filename as a
+        # parameter -- is unknown, not ported. Retiring on that would drop the
+        # entry for a kernel that is still missing.
+        if not sources or any(not (_CSRC / n).exists() for n in sources):
+            unproven.add(dotted)
+    stale = sorted(
+        name
+        for name in _UNPORTED
+        if name not in covered or _exempt(name) or name not in unproven
+    )
     assert not stale, f"remove from _UNPORTED: {', '.join(stale)}"
 
 
