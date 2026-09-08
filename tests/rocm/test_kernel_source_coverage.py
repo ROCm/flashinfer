@@ -28,10 +28,10 @@ _JIT_ROCM = _PKG / "jit" / "rocm"
 
 # Ops with no ROCm kernel that are deliberately left importable, because
 # gating them would break a module that does work: topk_varlen imports topk at
-# module scope, sampling reaches it for the top-k-first path, and
-# tests/trace/template_registry.py registers four of the five. Their ninja
-# error already names the missing file, which is a fair report for an op
-# nobody has ported.
+# module scope, and tests/trace/template_registry.py registers four of the
+# five. (sampling's top-k-first path also imports topk, but behind a
+# `not IS_HIP` guard, so it is not a reason.) Their ninja error already names
+# the missing file, which is a fair report for an op nobody has ported.
 _UNPORTED = {
     "flashinfer.concat_ops": "no concat_mla kernel",
     "flashinfer.mhc": "no mhc kernel",

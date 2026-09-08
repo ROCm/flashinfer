@@ -74,8 +74,7 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 `flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc`,
 `flashinfer.xqa` and `flashinfer.nvfp4_attention_sm120`. They stay importable
 because working code reaches them — `flashinfer.topk_varlen` imports `topk` at
-module scope and `flashinfer.sampling` uses it for the top-k-first path — so
-gating them would break more than it documents. `flashinfer.mamba` is in the
+module scope — so gating them would break more than it documents. `flashinfer.mamba` is in the
 same state — `selective_state_update`, `ssd_combined` and `checkpointing_ssu`
 all name SSM kernels that do not exist here — as are three side paths of
 otherwise supported modules: `utils.set_log_level()`, the opt-in GPU stats
