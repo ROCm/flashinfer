@@ -71,17 +71,25 @@ in ninja, naming the source that does not exist:
 ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 ```
 
-`flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc`,
-`flashinfer.xqa` and `flashinfer.nvfp4_attention_sm120`. They stay importable
-because working code reaches them — `flashinfer.topk_varlen` imports `topk` at
-module scope — so gating them would break more than it documents. In the same state:
-`flashinfer.tllm_utils`, whose `delay_kernel()` builds five absent
-`nv_internal` sources and which `flashinfer.autotuner` imports;
-`flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu` (its
-`ssd_combined` is gated instead — it imports `cutlass` eagerly and so never
-reaches a kernel); and three side paths of otherwise supported modules —
-`utils.set_log_level()`, the opt-in GPU stats counter in `api_logging`, and
-`norm`'s fused rmsnorm+silu variant.
+* `flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc`,
+  `flashinfer.xqa`, `flashinfer.nvfp4_attention_sm120`.
+* `flashinfer.topk_varlen` — its optimized backends admit only NVIDIA compute
+  capabilities and the general fallback calls `get_topk_module()`, so no path
+  is available.
+* `flashinfer.tllm_utils` — `delay_kernel()` builds five absent `nv_internal`
+  sources, and `flashinfer.autotuner` imports the module.
+* `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu`. Its
+  `ssd_combined` is gated instead: it imports `cutlass` eagerly and so never
+  reaches a kernel.
+* Three side paths of otherwise supported modules: `utils.set_log_level()`,
+  the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
+  rmsnorm+silu variant.
+
+They stay importable because working code reaches them — `topk_varlen` imports
+`topk` at module scope, and `autotuner` imports `tllm_utils` — so gating would
+break more than it documents. `flashinfer.topk_varlen` belongs here
+too: its optimized backends admit only NVIDIA compute capabilities, and the
+general fallback calls `get_topk_module()`, so no path is available.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
 newly vendored op names a kernel source absent from `csrc/rocm`, so the set
@@ -90,8 +98,7 @@ above cannot grow unnoticed.
 ### Unverified
 
 These import on ROCm but have never been run: `gdn_decode`, `moe_ep`,
-`msa_ops`, `diffusion_ops`, `topk_varlen`, `cute_dsl`, `cutile`, `trace` and
-`trace_apply`.
+`msa_ops`, `diffusion_ops`, `cute_dsl`, `cutile`, `trace` and `trace_apply`.
 
 These do not import, but for want of a third-party package rather than a ROCm
 kernel, so nothing is known about them either way: the KDA family (`tvm_ffi`),

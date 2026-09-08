@@ -169,7 +169,7 @@ def _values(node, bound: dict[str, set[str]]) -> set[str]:
     return set()
 
 
-def _csrc_names(jit_file: Path) -> set[str]:
+def _csrc_names(jit_file: Path) -> tuple[set[str], set[str]]:
     """Every source path built from FLASHINFER_CSRC_DIR in this generator.
 
     Follows one level of aliasing -- both `csrc_dir = FLASHINFER_CSRC_DIR`
@@ -183,6 +183,10 @@ def _csrc_names(jit_file: Path) -> set[str]:
     # `csrc_dir = FLASHINFER_CSRC_DIR / "cute_sm120_mxfp8_groupwise"` and then
     # appends six filenames to it.
     aliases: dict[str, set[str]] = {}
+    # Rooted expressions whose filename this analysis cannot read. Distinct
+    # from "no sources at all": an empty result for both would let a generator
+    # using an unsupported dynamic expression pass unexamined.
+    unresolved: set[str] = set()
 
     def components(node) -> set[str] | None:
         """Relative paths this expression builds, or None if not rooted here."""
@@ -198,6 +202,8 @@ def _csrc_names(jit_file: Path) -> set[str]:
         if prefixes is None:
             return None
         tails = _values(node.right, bound)
+        if not tails:
+            unresolved.add(ast.unparse(node))
         # An unreadable tail makes the whole path unknown; keeping the prefix
         # would check a directory and call the file present.
         return {f"{p}/{t}" if p else t for p in prefixes for t in tails} or None
@@ -222,7 +228,7 @@ def _csrc_names(jit_file: Path) -> set[str]:
         for path in components(node) or ():
             if path:
                 names.add(path)
-    return names
+    return names, unresolved
 
 
 def _exempt(dotted: str) -> bool:
@@ -291,11 +297,19 @@ _CASES = sorted({(dotted, str(jit)) for dotted, jit in _gen_importers()})
 def test_kernel_sources_present_or_module_classified(dotted, jit_file):
     if _exempt(dotted) or dotted in _UNPORTED:
         pytest.skip(f"{dotted} is gated, shadowed, or a known unported op")
-    missing = sorted(n for n in _csrc_names(Path(jit_file)) if not (_CSRC / n).exists())
+    names, unresolved = _csrc_names(Path(jit_file))
+    missing = sorted(n for n in names if not (_CSRC / n).exists())
     assert not missing, (
         f"{dotted} builds kernels that do not exist under csrc/rocm: "
         f"{', '.join(missing)}. Port them, add the module to CUDA_ONLY_MODULES "
         f"in flashinfer/rocm/__init__.py, or record it in _UNPORTED here."
+    )
+    # Fail closed: a rooted path this analysis cannot read is exactly how a
+    # newly vendored generator would slip through unexamined.
+    assert not unresolved, (
+        f"{dotted} builds kernel paths this test cannot read: "
+        f"{', '.join(sorted(unresolved))}. Teach _values() the expression, or "
+        f"classify the module as gated or _UNPORTED."
     )
 
 
@@ -316,7 +330,9 @@ def test_extractor_reads_the_shapes_the_generators_actually_use(tmp_path):
         "def gen_x():\n"
         '    return _body("pod")\n'
     )
-    assert _csrc_names(source) == {
+    names, unresolved = _csrc_names(source)
+    assert unresolved == {"jit_env.FLASHINFER_CSRC_DIR / unknowable"}
+    assert names == {
         "pod_customize_config.jinja",  # f-string over a call-site argument
         "pod.cu",  # f-string inside a loop iterable
         "plain.cu",  # plain literal in the same iterable
@@ -333,7 +349,7 @@ def test_pod_kernel_sources_are_resolved_and_present():
     A regression in the extractor shows up here as an empty set rather than as
     a failure somewhere else, which is what makes the guard's silence safe.
     """
-    names = _csrc_names(_PKG / "jit" / "rocm" / "modules.py")
+    names, _ = _csrc_names(_PKG / "jit" / "rocm" / "modules.py")
     expected = {
         f"{p}{s}" for p in ("pod", "batch_pod") for s in (".cu", "_jit_pybind.cu")
     }
@@ -350,11 +366,11 @@ def test_unported_allowlist_has_no_stale_entries():
     covered = {dotted for dotted, _ in _CASES}
     unproven = set()
     for dotted, jit_file in _CASES:
-        sources = _csrc_names(Path(jit_file))
+        sources, unreadable = _csrc_names(Path(jit_file))
         # No literal to read -- nvfp4_attention_sm120 takes its filename as a
         # parameter -- is unknown, not ported. Retiring on that would drop the
         # entry for a kernel that is still missing.
-        if not sources or any(not (_CSRC / n).exists() for n in sources):
+        if unreadable or not sources or any(not (_CSRC / n).exists() for n in sources):
             unproven.add(dotted)
     stale = sorted(
         name
