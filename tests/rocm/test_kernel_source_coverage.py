@@ -90,39 +90,84 @@ def _resolve(module: str | None, level: int, package: str) -> str:
     return f"{base}.{module}" if module else base
 
 
-def _string_bindings(tree: ast.AST) -> dict[str, set[str]]:
-    """Names bound to string literals, including loop variables over lists.
+def _parameter_bindings(tree: ast.AST) -> dict[str, set[str]]:
+    """Parameters bound to the string literals this file's call sites pass.
 
-    `for filename in ["pod.cu", ...]: ... CSRC_DIR / filename` is as common in
-    the generators as a literal, and a check that only saw literals would pass
-    with those sources deleted.
+    The ROCm POD generators share one body and name every source off a
+    `prefix` argument -- "pod" from one caller, "batch_pod" from the other --
+    so without this the guard sees no sources for a supported op at all.
     """
+    params = {
+        node.name: [a.arg for a in node.args.args]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
     bound: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        names = params.get(node.func.id)
+        if names is None:
+            continue
+        pairs = list(zip(names, node.args, strict=False)) + [
+            (kw.arg, kw.value) for kw in node.keywords if kw.arg
+        ]
+        for name, value in pairs:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                bound.setdefault(name, set()).add(value.value)
+    return bound
+
+
+def _string_bindings(tree: ast.AST) -> dict[str, set[str]]:
+    """Names bound to string values, following literals, loops and f-strings.
+
+    `for filename in [f"{prefix}.cu", ...]: ... CSRC_DIR / filename` is as
+    common in the generators as a plain literal, and a check that only saw
+    literals would stay green with those sources deleted.
+    """
+    bound: dict[str, set[str]] = _parameter_bindings(tree)
 
     def literals(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return {node.value}
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            return {
-                elt.value
-                for elt in node.elts
-                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-            }
-        return set()
+            return {v for elt in node.elts for v in literals(elt)}
+        return _values(node, bound)
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            values = literals(node.value)
-            targets = node.targets
-        elif isinstance(node, (ast.For, ast.comprehension)):
-            values = literals(node.iter)
-            targets = [node.target]
-        else:
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name) and values:
-                bound.setdefault(target.id, set()).update(values)
+    # Two passes: an f-string can interpolate a name bound earlier in the file.
+    for _ in range(2):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                values, targets = literals(node.value), node.targets
+            elif isinstance(node, (ast.For, ast.comprehension)):
+                values, targets = literals(node.iter), [node.target]
+            else:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and values:
+                    bound.setdefault(target.id, set()).update(values)
     return bound
+
+
+def _values(node, bound: dict[str, set[str]]) -> set[str]:
+    """The strings this expression can evaluate to, empty when not knowable."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, ast.Name):
+        return set(bound.get(node.id, ()))
+    if isinstance(node, ast.JoinedStr):
+        out = {""}
+        for part in node.values:
+            pieces = (
+                {part.value}
+                if isinstance(part, ast.Constant)
+                else _values(part.value, bound)
+                if isinstance(part, ast.FormattedValue)
+                else set()
+            )
+            if not pieces:  # one unknown interpolation makes the whole unknown
+                return set()
+            out = {prefix + piece for prefix in out for piece in pieces}
+        return out
+    return set()
 
 
 def _csrc_names(jit_file: Path) -> set[str]:
@@ -153,12 +198,7 @@ def _csrc_names(jit_file: Path) -> set[str]:
         prefixes = components(node.left)
         if prefixes is None:
             return None
-        if isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
-            tails = {node.right.value}
-        elif isinstance(node.right, ast.Name):
-            tails = bound.get(node.right.id, set())
-        else:
-            tails = set()
+        tails = _values(node.right, bound)
         # An unreadable tail makes the whole path unknown; keeping the prefix
         # would check a directory and call the file present.
         return {f"{p}/{t}" if p else t for p in prefixes for t in tails} or None
@@ -246,6 +286,44 @@ def test_kernel_sources_present_or_module_classified(dotted, jit_file):
         f"{', '.join(missing)}. Port them, add the module to CUDA_ONLY_MODULES "
         f"in flashinfer/rocm/__init__.py, or record it in _UNPORTED here."
     )
+
+
+def test_extractor_reads_the_shapes_the_generators_actually_use(tmp_path):
+    """Each clause here is a shape that once slipped past the extractor."""
+    source = tmp_path / "gen.py"
+    source.write_text(
+        "from . import env as jit_env\n"
+        "def _body(prefix):\n"
+        "    csrc = jit_env.FLASHINFER_CSRC_DIR\n"
+        '    open(csrc / f"{prefix}_customize_config.jinja")\n'
+        '    for filename in [f"{prefix}.cu", "plain.cu"]:\n'
+        "        open(csrc / filename)\n"
+        '    open(jit_env.FLASHINFER_CSRC_DIR / "nested" / "deep.cu")\n'
+        "    open(jit_env.FLASHINFER_CSRC_DIR / unknowable)\n"
+        "def gen_x():\n"
+        '    return _body("pod")\n'
+    )
+    assert _csrc_names(source) == {
+        "pod_customize_config.jinja",  # f-string over a call-site argument
+        "pod.cu",  # f-string inside a loop iterable
+        "plain.cu",  # plain literal in the same iterable
+        "nested/deep.cu",  # chained, not just the "nested" prefix
+        "nested",  # the inner node of that chain, harmlessly
+    }
+
+
+def test_pod_kernel_sources_are_resolved_and_present():
+    """POD is supported on ROCm and names every source through an f-string.
+
+    A regression in the extractor shows up here as an empty set rather than as
+    a failure somewhere else, which is what makes the guard's silence safe.
+    """
+    names = _csrc_names(_PKG / "jit" / "rocm" / "modules.py")
+    expected = {
+        f"{p}{s}" for p in ("pod", "batch_pod") for s in (".cu", "_jit_pybind.cu")
+    }
+    assert expected <= names
+    assert all((_CSRC / name).exists() for name in expected)
 
 
 def test_unported_allowlist_has_no_stale_entries():
