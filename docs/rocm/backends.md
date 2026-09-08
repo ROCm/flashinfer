@@ -65,7 +65,8 @@ and have in-tree HIP kernels.
 ### Imports, but has no ROCm kernel
 
 Gating is not the whole story. These import cleanly and fail on first call,
-in ninja, naming the source that does not exist:
+while resolving or building their JIT sources, naming the file that does not
+exist. Usually that surfaces from ninja:
 
 ```text
 ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
@@ -88,6 +89,10 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 They stay importable because working code reaches them — `topk_varlen` imports
 `topk` at module scope, and `autotuner` imports `tllm_utils` — so gating would
 break more than it documents.
+
+Some fail earlier, as a plain `FileNotFoundError`: the Mamba generators open
+their templates directly, and fused rmsnorm+silu copies its source before any
+build starts.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
 newly vendored op names a kernel source absent from `csrc/rocm`, so the set

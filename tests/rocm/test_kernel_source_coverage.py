@@ -257,7 +257,10 @@ def _definition_sites() -> dict[str, set[Path]]:
     from the import alone points at no file in either case.
     """
     sites: dict[str, set[Path]] = {}
-    for path in (_PKG / "jit").rglob("*.py"):
+    # Package-wide, not just flashinfer/jit: moe_ep keeps its generators under
+    # kernel_src/.../shim/, and a generator the index misses is a module the
+    # guard never scores.
+    for path in _PKG.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("gen_"):
                 sites.setdefault(node.name, set()).add(path)
@@ -265,6 +268,20 @@ def _definition_sites() -> dict[str, set[Path]]:
 
 
 _SITES = _definition_sites()
+
+
+def _cuda_only_line_ranges(tree: ast.AST) -> list[tuple[int, int]]:
+    """Line spans of `if IS_CUDA:` bodies -- code ROCm never executes.
+
+    flashinfer/comm/__init__.py imports its generators there, so without this
+    the guard scores a package that imports fine on ROCm against CUDA sources.
+    """
+    spans = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and "IS_CUDA" in ast.unparse(node.test):
+            body = node.body
+            spans.append((body[0].lineno, body[-1].end_lineno or body[-1].lineno))
+    return spans
 
 
 def _gen_importers():
@@ -280,11 +297,15 @@ def _gen_importers():
         if dotted == "flashinfer.jit" or dotted.startswith("flashinfer.jit."):
             continue
         package = dotted if path.name == "__init__.py" else dotted.rsplit(".", 1)[0]
-        for node in ast.walk(ast.parse(path.read_text())):
+        tree = ast.parse(path.read_text())
+        cuda_only = _cuda_only_line_ranges(tree)
+        for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom):
                 continue
+            if any(lo <= node.lineno <= hi for lo, hi in cuda_only):
+                continue
             target = _resolve(node.module, node.level, package)
-            if target != "flashinfer.jit" and not target.startswith("flashinfer.jit."):
+            if not target.startswith("flashinfer."):
                 continue
             for alias in node.names:
                 sites = _SITES.get(alias.name, set())
