@@ -201,9 +201,9 @@ falls into three groups:
 
 | | What happens | Examples |
 | :--- | :--- | :--- |
-| **CUDA-only, gated** | `ImportError` naming the module, at import | `gemm`, `fused_moe`, `cudnn`, `deep_gemm`, `green_ctx`, `aot`, `comm`'s NVLink/NVSHMEM transports |
-| **No ROCm kernel** | Imports, then fails on first call while building its JIT sources | `topk`, `xqa`, `mhc`, `concat_ops`, `nvfp4_attention_sm120`, `topk_varlen`, `tllm_utils`, most of `mamba` |
-| **Unverified** | Imports; never run here | `gdn_decode`, `msa_ops`, `diffusion_ops`, `cute_dsl`, `cutile`, `trace_apply` |
+| **CUDA-only, gated** | `ImportError` naming the module, at import | `flashinfer.gemm`, `flashinfer.fused_moe` (the upstream CUTLASS MoE — the `fused_moe` *op* in the matrix above is AITER's and works), `flashinfer.cudnn`, `flashinfer.deep_gemm`, `flashinfer.green_ctx`, `flashinfer.aot`, `flashinfer.mamba.ssd_combined`, and `flashinfer.comm`'s NVLink/NVSHMEM transports |
+| **No ROCm kernel** | Imports, then fails on first call while building its JIT sources | `flashinfer.topk`, `flashinfer.topk_varlen`, `flashinfer.xqa`, `flashinfer.mhc`, `flashinfer.concat_ops`, `flashinfer.nvfp4_attention_sm120`, `flashinfer.tllm_utils`, `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu` |
+| **Unverified** | Imports; never run here | `flashinfer.gdn_decode`, `flashinfer.msa_ops`, `flashinfer.diffusion_ops`, `flashinfer.cute_dsl`, `flashinfer.cutile`, `flashinfer.trace_apply` |
 
 Gating is deliberate: it turns an obscure failure from inside the JIT into one
 catchable error that names the module. Feature-detect with `hasattr` or

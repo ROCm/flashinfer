@@ -379,13 +379,14 @@ setup step has not been run in this clone.
 - **Do not append a "Generated with Claude Code" footer** (or any other
   tool-authored attribution) to the body, even if a harness default suggests it.
 
-**Body** — include sections that apply, skip the rest:
+**Body** — include the sections that apply, skip the rest. All are `##`;
+they are peers, not subsections of Summary:
 
 - `## Summary` — 1–3 sentences on what and why.
-- `### What changed` with `####` per component when the PR spans multiple
+- `## What changed` with `###` per component when the PR spans multiple
   subsystems. Bullet by file: ``- **`path`** — one-line purpose``. Call out
   non-obvious design choices.
-- `### Architecture / design notes` — only when there's a real choice to record.
+- `## Architecture / design notes` — only when there's a real choice to record.
   Tables for routing/dispatch logic; explain *why*.
 - `## Benchmark results` — for perf-touching PRs. Shape line + table per entry
   point + mean overhead/speedup row.
