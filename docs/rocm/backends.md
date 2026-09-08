@@ -82,6 +82,11 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 * `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu`. Its
   `ssd_combined` is gated instead: it imports `cutlass` eagerly and so never
   reaches a kernel.
+* `flashinfer.kda_prefill` and the `flashinfer.kda_kernels` entry points —
+  `csrc/rocm` has no `kda/` tree. (`flashinfer.kda` itself does not import at
+  all; see below.)
+* `flashinfer.moe_ep` and `flashinfer.trace.templates.gemm`, both through the
+  `nv_internal` FP4 quantization sources.
 * Three side paths of otherwise supported modules: `utils.set_log_level()`,
   the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
   rmsnorm+silu variant.
@@ -100,8 +105,8 @@ above cannot grow unnoticed.
 
 ### Unverified
 
-These import on ROCm but have never been run: `gdn_decode`, `moe_ep`,
-`msa_ops`, `diffusion_ops`, `cute_dsl`, `cutile`, `trace` and `trace_apply`.
+These import on ROCm but have never been run: `gdn_decode`, `msa_ops`,
+`diffusion_ops`, `cute_dsl`, `cutile` and `trace_apply`.
 
 These do not import, but for want of a third-party package rather than a ROCm
 kernel, so nothing is known about them either way: the KDA family (`tvm_ffi`),

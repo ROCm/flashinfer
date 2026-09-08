@@ -64,6 +64,25 @@ _UNPORTED = {
     ("flashinfer.norm", "rmsnorm_silu.py"): "rmsnorm_silu.cu",
     # TensorRT-LLM host utilities (nv_internal).
     ("flashinfer.tllm_utils", "tllm_utils.py"): "nv_internal TensorRT-LLM sources",
+    # KDA: csrc/rocm has no kda/ tree. These import on ROCm, unlike
+    # flashinfer.kda itself, which stops at a missing tvm_ffi.
+    ("flashinfer.kda_prefill", "flash_kda.py"): "no kda/ sources",
+    ("flashinfer.kda_kernels.recurrent_kda", "flash_kda_decode.py"): "no kda/ sources",
+    ("flashinfer.kda_kernels.cake_packed_kda_decode", "cake_flash_kda_packed_t1.py"): (
+        "no kda/ sources"
+    ),
+    ("flashinfer.kda_kernels.cake_packed_kda_decode", "cake_kda_packed_t1.py"): (
+        "no kda/ sources"
+    ),
+    # Both reach the nv_internal FP4 quantization sources.
+    (
+        "flashinfer.moe_ep.backends.split.kernel.fused_moe.bridge",
+        "fp4_quantization.py",
+    ): ("nv_internal FP4 sources"),
+    (
+        "flashinfer.trace.templates.gemm",
+        "fp4_quantization.py",
+    ): "nv_internal FP4 sources",
 }
 
 
@@ -262,12 +281,26 @@ def _definition_sites() -> dict[str, set[Path]]:
     # guard never scores.
     for path in _PKG.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("gen_"):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            # Wrappers count: kda_prefill imports get_flash_kda_prefill_module,
+            # which calls the generators beside it, so indexing only gen_*
+            # leaves that whole source tree unscored.
+            calls_generator = any(
+                isinstance(inner, ast.Name) and inner.id.startswith("gen_")
+                for inner in ast.walk(node)
+            )
+            if node.name.startswith("gen_") or calls_generator:
                 sites.setdefault(node.name, set()).add(path)
     return sites
 
 
 _SITES = _definition_sites()
+# Files that define at least one generator, so an import of any name from one
+# is an import of its kernel sources.
+_GENERATOR_FILES = {
+    path for name, paths in _SITES.items() if name.startswith("gen_") for path in paths
+}
 
 
 def _cuda_only_line_ranges(tree: ast.AST) -> list[tuple[int, int]]:
@@ -307,14 +340,27 @@ def _gen_importers():
             target = _resolve(node.module, node.level, package)
             if not target.startswith("flashinfer."):
                 continue
+            # An import naming a generator module reaches that file's sources
+            # whatever it pulls out of it: kda_prefill imports
+            # get_flash_kda_prefill_module, a two-hop wrapper over the
+            # generators beside it.
+            for candidate in (
+                _REPO_ROOT / (target.replace(".", "/") + ".py"),
+                _REPO_ROOT / target.replace(".", "/") / "__init__.py",
+            ):
+                if candidate.exists() and candidate in _GENERATOR_FILES:
+                    yield dotted, candidate
             for alias in node.names:
                 sites = _SITES.get(alias.name, set())
-                # A generator defined on both branches resolves to the ROCm one
-                # at runtime: flashinfer/jit/__init__.py star-imports
-                # .rocm.api on IS_HIP. Scoring the CUDA twin's sources would
-                # fail every supported op.
+                # An import naming a module outright means that file, even when
+                # a ROCm twin defines the same generator.
+                named = {p for p in sites if _dotted(p) == target}
+                # Otherwise the import went through a package re-export, which
+                # resolves to the ROCm definition at runtime:
+                # flashinfer/jit/__init__.py star-imports .rocm.api on IS_HIP.
+                # Scoring the CUDA twin would fail every supported op.
                 rocm = {p for p in sites if _JIT_ROCM in p.parents}
-                for jit_file in rocm or sites:
+                for jit_file in named or rocm or sites:
                     yield dotted, jit_file
 
 
