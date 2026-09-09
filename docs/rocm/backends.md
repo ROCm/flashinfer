@@ -8,6 +8,8 @@ constraints that are easy to trip over.
 
 * [Choosing a backend](#choosing-a-backend)
 * [Not available on ROCm](#not-available-on-rocm)
+  * [Not ported yet](#not-ported-yet-imports-but-has-no-rocm-kernel)
+  * [NVIDIA-only, but not gated](#nvidia-only-but-not-gated)
 * [Installing AITER](#installing-aiter)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
 * [CUDA-only arguments](#cuda-only-arguments)
@@ -62,7 +64,7 @@ above.
 `flashinfer.quantization`'s `packbits` and `segment_packbits` are unaffected
 and have in-tree HIP kernels.
 
-### Imports, but has no ROCm kernel
+### Not ported yet: imports, but has no ROCm kernel
 
 Gating is not the whole story. These import cleanly and fail on first call,
 while resolving or building their JIT sources, naming the file that does not
@@ -72,22 +74,21 @@ exist. Usually that surfaces from ninja:
 ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 ```
 
-* `flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc`,
-  `flashinfer.xqa`, `flashinfer.nvfp4_attention_sm120`.
+* `flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc` and
+  `flashinfer.xqa` — ordinary kernels with no `csrc/rocm` source. `xqa` is an
+  SM90+ design, but nothing in it requires NVIDIA hardware.
 * `flashinfer.topk_varlen` — its optimized backends admit only NVIDIA compute
   capabilities and the general fallback calls `get_topk_module()`, so no path
   is available.
-* `flashinfer.tllm_utils` — `delay_kernel()` builds five absent `nv_internal`
-  sources, and `flashinfer.autotuner` imports the module.
 * `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu`. Its
   `ssd_combined` is gated instead: it imports `cutlass` eagerly and so never
   reaches a kernel.
 * `flashinfer.kda_prefill` and the `flashinfer.kda_kernels` entry points —
   `csrc/rocm` has no `kda/` tree. (`flashinfer.kda` itself does not import at
   all; see below.)
-* `flashinfer.moe_ep` — its fused-MoE bridge through the `nv_internal` FP4
-  quantization sources, and its SM90 push-style MegaMoE shim through the
-  `nv_internal` DeepGEMM tree — and `flashinfer.trace.templates.gemm`.
+* `flashinfer.diffusion_ops` — it re-exports four fused DiT entry points from
+  `flashinfer.norm`, and `csrc/rocm/norm.cu` defines none of them.
+* `flashinfer.trace.templates.gemm`, through the `nv_internal` FP4 sources.
 * Three side paths of otherwise supported modules: `utils.set_log_level()`,
   the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
   rmsnorm+silu variant.
@@ -104,17 +105,29 @@ build starts.
 newly vendored op names a kernel source absent from `csrc/rocm`, so the set
 above cannot grow unnoticed.
 
-### Unverified
+### NVIDIA-only, but not gated
 
-These import on ROCm but have never been run: `gdn_decode`, `msa_ops`,
-`diffusion_ops`, `cute_dsl`, `cutile` and `trace_apply`.
+These import cleanly and fail only when called, so the gate never sees them —
+but a ROCm equivalent would be a rewrite, not a port:
 
-These do not import, but for want of a third-party package rather than a ROCm
-kernel, so nothing is known about them either way: the KDA family (`tvm_ffi`),
-`flashinfer.profiler` (`tg4perfetto`) and `flashinfer.artifacts` (`requests`).
-None is installed by `docker/Dockerfile.rocm`.
+* `flashinfer.cute_dsl` and `flashinfer.cutile` — CuTe DSL. `cute_dsl/__init__.py`
+  hides its whole surface behind `is_cute_dsl_available()`, so on ROCm it
+  imports as an empty shell.
+* `flashinfer.msa_ops` and `flashinfer.moe_ep` — `cutlass.cute` plus, for
+  `moe_ep`, NVSHMEM.
+* `flashinfer.gdn_decode` and `flashinfer.gdn_prefill` — every kernel under
+  `gdn_kernels/` is `@cute.jit`. `gdn_prefill` stops at `No module named
+  'cutlass'` and is gated for that reason; `gdn_decode` imports and fails later.
+* `flashinfer.nvfp4_attention_sm120` — `supported_compute_capability([120, 121])`.
+* `flashinfer.tllm_utils` — `delay_kernel()` builds five `nv_internal`
+  TensorRT-LLM sources. `flashinfer.autotuner` imports the module, which is why
+  it is not gated.
 
-Unverified is not unsupported — several are Triton-based and may well work.
+### Blocked on a missing package, not on ROCm
+
+`flashinfer.profiler` needs `tg4perfetto` and `flashinfer.artifacts` needs
+`requests`; `docker/Dockerfile.rocm` ships neither, so neither imports here.
+That says nothing about their ROCm support either way.
 
 ## Installing AITER
 
