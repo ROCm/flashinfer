@@ -197,24 +197,30 @@ and logits-cap files, and `quantization` by `tests/utils/test_quantization.py`.
 ### What upstream has that this does not
 
 The table above is what works. Upstream v0.6.18 is larger, and the rest of it
-falls into three groups:
+splits by *why* it is absent, not by how it fails:
 
-| | What happens | Examples |
-| :--- | :--- | :--- |
-| **CUDA-only, gated** | `ImportError` naming the module, at import | `flashinfer.gemm`, `flashinfer.fused_moe` (the upstream CUTLASS MoE — the `fused_moe` *op* in the matrix above is AITER's and works), `flashinfer.cudnn`, `flashinfer.deep_gemm`, `flashinfer.green_ctx`, `flashinfer.aot`, `flashinfer.mamba.ssd_combined`, and `flashinfer.comm`'s NVLink/NVSHMEM transports |
-| **No ROCm kernel** | Imports, then fails on first call while building its JIT sources | `flashinfer.topk`, `flashinfer.topk_varlen`, `flashinfer.xqa`, `flashinfer.mhc`, `flashinfer.concat_ops`, `flashinfer.nvfp4_attention_sm120`, `flashinfer.tllm_utils`, `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu` |
-| **Unverified** | Imports; never run here | `flashinfer.gdn_decode`, `flashinfer.msa_ops`, `flashinfer.diffusion_ops`, `flashinfer.cute_dsl`, `flashinfer.cutile`, `flashinfer.trace_apply` |
+| | Why | How it fails | Examples |
+| :--- | :--- | :--- | :--- |
+| **NVIDIA-only** | Wraps a vendor library, NVIDIA PTX, an SM-gated kernel, the CUDA driver API, or CuTe DSL. A ROCm equivalent means a rewrite, not a port | Gated where the import already breaks; otherwise the kernel surface is simply absent (`cute_dsl`, `cutile`) or the call fails | `flashinfer.gemm`, `flashinfer.fused_moe` (upstream's CUTLASS MoE — the `fused_moe` *op* above is AITER's and works), `flashinfer.cudnn`, `flashinfer.deep_gemm`, `flashinfer.green_ctx`, `flashinfer.aot`, `flashinfer.cute_dsl`, `flashinfer.cutile`, `flashinfer.msa_ops`, `flashinfer.moe_ep`, `flashinfer.gdn_decode`, `flashinfer.gdn_prefill`, `flashinfer.xqa`, `flashinfer.nvfp4_attention_sm120`, `flashinfer.tllm_utils`, `flashinfer.mamba.ssd_combined`, `flashinfer.comm`'s NVLink/NVSHMEM transports |
+| **Not ported yet** | An ordinary kernel with no `csrc/rocm` source. Portable in principle; nobody has done it | On first call, from ninja or the binding lookup | `flashinfer.topk`, `flashinfer.topk_varlen`, `flashinfer.mhc`, `flashinfer.concat_ops`, `flashinfer.diffusion_ops`, `flashinfer.kda*`, `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu` |
 
 Gating is deliberate: it turns an obscure failure from inside the JIT into one
-catchable error that names the module. Feature-detect with `hasattr` or
-`try: import ... except ImportError`, not `importlib.util.find_spec` — the
-files ship, the import is what is gated.
+catchable error naming the module. For those entries, feature-detect with
+`try: import ... except ImportError` rather than `importlib.util.find_spec` —
+the files ship, the import is what is gated. **A successful import is not a
+support check**: most rows above import fine and fail later, so probe the
+symbol you actually need (`hasattr`, or `is_cute_dsl_available()` and
+`is_cuda_tile_available()` for those two).
+
+Two modules are simply uninstallable here rather than unsupported:
+`flashinfer.profiler` needs `tg4perfetto` and `flashinfer.artifacts` needs
+`requests`, neither of which `docker/Dockerfile.rocm` ships.
 
 [`docs/rocm/backends.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md)
-has the complete lists and the reason for each entry;
+has the complete lists and the evidence for each entry;
 `tests/rocm/test_kernel_source_coverage.py` fails when a newly vendored op
-names a kernel source that `csrc/rocm` does not have, so the second group
-cannot grow unnoticed.
+names a kernel source `csrc/rocm` does not have, so the second group cannot
+grow unnoticed.
 
 **Soft-capped causal prefill falls back to `fa2`.** AITER's `mha_varlen_fwd`
 miscomputes `logits_soft_cap` at `head_dim=128`, so `auto` declines it and
