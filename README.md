@@ -201,13 +201,16 @@ splits by *why* it is absent, not by how it fails:
 
 | | Why | How it fails | Examples |
 | :--- | :--- | :--- | :--- |
-| **NVIDIA-only** | Wraps a vendor library, an SM-gated kernel, the CUDA driver API, or CuTe DSL. A ROCm equivalent means a rewrite, not a port | Gated where the import already breaks; otherwise on first call | `flashinfer.gemm`, `flashinfer.fused_moe` (upstream's CUTLASS MoE — the `fused_moe` *op* above is AITER's and works), `flashinfer.cudnn`, `flashinfer.deep_gemm`, `flashinfer.green_ctx`, `flashinfer.aot`, `flashinfer.cute_dsl`, `flashinfer.cutile`, `flashinfer.msa_ops`, `flashinfer.moe_ep`, `flashinfer.gdn_decode`, `flashinfer.gdn_prefill`, `flashinfer.nvfp4_attention_sm120`, `flashinfer.tllm_utils`, `flashinfer.mamba.ssd_combined`, `flashinfer.comm`'s NVLink/NVSHMEM transports |
-| **Not ported yet** | An ordinary kernel with no `csrc/rocm` source. Portable in principle; nobody has done it | On first call, from ninja or the binding lookup | `flashinfer.topk`, `flashinfer.topk_varlen`, `flashinfer.xqa`, `flashinfer.mhc`, `flashinfer.concat_ops`, `flashinfer.diffusion_ops`, `flashinfer.kda*`, `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu` |
+| **NVIDIA-only** | Wraps a vendor library, NVIDIA PTX, an SM-gated kernel, the CUDA driver API, or CuTe DSL. A ROCm equivalent means a rewrite, not a port | Gated where the import already breaks; otherwise the kernel surface is simply absent (`cute_dsl`, `cutile`) or the call fails | `flashinfer.gemm`, `flashinfer.fused_moe` (upstream's CUTLASS MoE — the `fused_moe` *op* above is AITER's and works), `flashinfer.cudnn`, `flashinfer.deep_gemm`, `flashinfer.green_ctx`, `flashinfer.aot`, `flashinfer.cute_dsl`, `flashinfer.cutile`, `flashinfer.msa_ops`, `flashinfer.moe_ep`, `flashinfer.gdn_decode`, `flashinfer.gdn_prefill`, `flashinfer.xqa`, `flashinfer.nvfp4_attention_sm120`, `flashinfer.tllm_utils`, `flashinfer.mamba.ssd_combined`, `flashinfer.comm`'s NVLink/NVSHMEM transports |
+| **Not ported yet** | An ordinary kernel with no `csrc/rocm` source. Portable in principle; nobody has done it | On first call, from ninja or the binding lookup | `flashinfer.topk`, `flashinfer.topk_varlen`, `flashinfer.mhc`, `flashinfer.concat_ops`, `flashinfer.diffusion_ops`, `flashinfer.kda*`, `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu` |
 
 Gating is deliberate: it turns an obscure failure from inside the JIT into one
-catchable error naming the module. Feature-detect with `hasattr` or
-`try: import ... except ImportError`, not `importlib.util.find_spec` — the
-files ship, the import is what is gated.
+catchable error naming the module. For those entries, feature-detect with
+`try: import ... except ImportError` rather than `importlib.util.find_spec` —
+the files ship, the import is what is gated. **A successful import is not a
+support check**: most rows above import fine and fail later, so probe the
+symbol you actually need (`hasattr`, or `is_cute_dsl_available()` and
+`is_cuda_tile_available()` for those two).
 
 Two modules are simply uninstallable here rather than unsupported:
 `flashinfer.profiler` needs `tg4perfetto` and `flashinfer.artifacts` needs

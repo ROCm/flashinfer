@@ -10,6 +10,7 @@ constraints that are easy to trip over.
 * [Not available on ROCm](#not-available-on-rocm)
   * [Not ported yet](#not-ported-yet-imports-but-has-no-rocm-kernel)
   * [NVIDIA-only, but not gated](#nvidia-only-but-not-gated)
+  * [Blocked on a missing package](#blocked-on-a-missing-package-not-on-rocm)
 * [Installing AITER](#installing-aiter)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
 * [CUDA-only arguments](#cuda-only-arguments)
@@ -74,9 +75,8 @@ exist. Usually that surfaces from ninja:
 ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
 ```
 
-* `flashinfer.topk`, `flashinfer.concat_ops`, `flashinfer.mhc` and
-  `flashinfer.xqa` — ordinary kernels with no `csrc/rocm` source. `xqa` is an
-  SM90+ design, but nothing in it requires NVIDIA hardware.
+* `flashinfer.topk`, `flashinfer.concat_ops` and `flashinfer.mhc` — ordinary
+  kernels with no `csrc/rocm` source.
 * `flashinfer.topk_varlen` — its optimized backends admit only NVIDIA compute
   capabilities and the general fallback calls `get_topk_module()`, so no path
   is available.
@@ -84,8 +84,8 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
   `ssd_combined` is gated instead: it imports `cutlass` eagerly and so never
   reaches a kernel.
 * `flashinfer.kda_prefill` and the `flashinfer.kda_kernels` entry points —
-  `csrc/rocm` has no `kda/` tree. (`flashinfer.kda` itself does not import at
-  all; see below.)
+  `csrc/rocm` has no `kda/` tree. `flashinfer.kda` does not even import, for
+  want of `tvm_ffi`, which the image does not ship.
 * `flashinfer.diffusion_ops` — it re-exports four fused DiT entry points from
   `flashinfer.norm`, and `csrc/rocm/norm.cu` defines none of them.
 * `flashinfer.trace.templates.gemm`, through the `nv_internal` FP4 sources.
@@ -94,8 +94,7 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
   rmsnorm+silu variant.
 
 They stay importable because working code reaches them — `topk_varlen` imports
-`topk` at module scope, and `autotuner` imports `tllm_utils` — so gating would
-break more than it documents.
+`topk` at module scope — so gating would break more than it documents.
 
 Some fail earlier, as a plain `FileNotFoundError`: the Mamba generators open
 their templates directly, and fused rmsnorm+silu copies its source before any
@@ -110,15 +109,20 @@ above cannot grow unnoticed.
 These import cleanly and fail only when called, so the gate never sees them —
 but a ROCm equivalent would be a rewrite, not a port:
 
-* `flashinfer.cute_dsl` and `flashinfer.cutile` — CuTe DSL. `cute_dsl/__init__.py`
-  hides its whole surface behind `is_cute_dsl_available()`, so on ROCm it
-  imports as an empty shell.
+* `flashinfer.cute_dsl` and `flashinfer.cutile` — CuTe DSL. Neither fails on
+  call: `cute_dsl/__init__.py:37` imports its kernels only when
+  `is_cute_dsl_available()`, so on ROCm the module offers its availability
+  helpers and no kernels, and `cutile` exports `is_cuda_tile_available()`
+  alone, which answers `False`. Probe those rather than the import.
 * `flashinfer.msa_ops` and `flashinfer.moe_ep` — `cutlass.cute` plus, for
   `moe_ep`, NVSHMEM.
-* `flashinfer.gdn_decode` and `flashinfer.gdn_prefill` — every kernel under
-  `gdn_kernels/` is `@cute.jit`. `gdn_prefill` stops at `No module named
-  'cutlass'` and is gated for that reason; `gdn_decode` imports and fails later.
+* `flashinfer.gdn_decode` — every kernel under `gdn_kernels/` is `@cute.jit`.
+  It imports and fails when called, where `gdn_prefill` reaches `import
+  cutlass` at module scope and is gated in the table above instead.
 * `flashinfer.nvfp4_attention_sm120` — `supported_compute_capability([120, 121])`.
+* `flashinfer.xqa` — `csrc/xqa/{mma.cuh,gmma.cuh,gmma_impl.cuh,tma.h}` emit
+  NVIDIA PTX directly (`mma.sync`, `wgmma`, `cp.async.bulk`), so an AMD path is
+  a rewrite rather than a port.
 * `flashinfer.tllm_utils` — `delay_kernel()` builds five `nv_internal`
   TensorRT-LLM sources. `flashinfer.autotuner` imports the module, which is why
   it is not gated.
