@@ -315,6 +315,21 @@ being ignored.
 
 ## Per-op notes
 
+### Soft-capped causal prefill avoids one AITER kernel
+
+AITER's
+`mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill at
+`head_dim=128` (through amd-aiter 0.1.21) — from `kv_len >= 512` on gfx942, at
+*every* length on gfx950, so the threshold lives in `arch_caps.py` rather than
+at the call sites. Single and ragged prefill always dispatch through that
+kernel, so `auto` serves them with `fa2` and `backend="aiter"` raises rather
+than returning wrong numbers.
+
+Paged prefill keeps AITER at a native page size, since that route takes
+`mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
+fp32 reference on both architectures — and falls back only when the run-time
+probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
+
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 
 The `native` fused kernels stage the fp32 row in shared memory, costing
