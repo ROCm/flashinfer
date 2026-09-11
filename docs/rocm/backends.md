@@ -88,6 +88,13 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
   want of `tvm_ffi`, which the image does not ship.
 * `flashinfer.diffusion_ops` — it re-exports four fused DiT entry points from
   `flashinfer.norm`, and `csrc/rocm/norm.cu` defines none of them.
+* `flashinfer.norm`'s `layernorm`, `layernorm_quant`, `rmsnorm_quant` and
+  `fused_add_rmsnorm_quant`. These fail differently: the JIT source exists and
+  builds, but `csrc/rocm/flashinfer_norm_binding.cu` binds only `rmsnorm`,
+  `fused_add_rmsnorm`, `gemma_rmsnorm` and `gemma_fused_add_rmsnorm`, so the
+  call dies on a bare `AttributeError`. AITER's CK `layernorm2d` cannot stand in
+  for `layernorm`: it reads fp32 `gamma`/`beta` as the input dtype and returns
+  NaN, and casting them down misses the op's 1e-2 bf16 tolerance.
 * `flashinfer.trace.templates.gemm`, through the `nv_internal` FP4 sources.
 * Three side paths of otherwise supported modules: `utils.set_log_level()`,
   the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
@@ -101,8 +108,12 @@ their templates directly, and fused rmsnorm+silu copies its source before any
 build starts.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
-newly vendored op names a kernel source absent from `csrc/rocm`, so the set
-above cannot grow unnoticed.
+newly vendored op names a kernel source absent from `csrc/rocm`.
+
+It only sees missing *files*, though, which is how the unbound `norm` entry
+points above went unnoticed — there the file exists and the symbol does not.
+`tests/rocm/test_norm_entry_points.py` covers that case for `norm`, asserting
+the unresolvable set in both directions so porting one is also a test change.
 
 ### NVIDIA-only, but not gated
 
