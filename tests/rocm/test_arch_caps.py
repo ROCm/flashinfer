@@ -649,18 +649,27 @@ class TestLegend:
         assert "**not available**" in self._render_only(archs=archs)
 
 
-class TestAiterSoftcapFloor:
-    """The kv_len where AITER's causal soft-cap defect starts is per-arch.
+class TestAiterSoftcapDefectArchs:
+    """AITER's causal soft-cap defect is per-arch, not per-kv_len.
 
-    gfx950 is wrong at every length on amd-aiter 0.1.20 while gfx942 is only
-    wrong from 512 up, so a single literal cannot express both.
+    On amd-aiter 0.1.20 gfx950 is wrong at every shape and gfx942 at none, so
+    the table records which architectures are affected rather than a length.
     """
 
-    def test_gfx942_keeps_the_512_floor(self):
-        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx942") == 512
+    def test_both_architectures_are_declared(self):
+        # Without this, the gfx942 assertion below would pass on a missing key:
+        # the accessor defaults to False, so "declared clean" and "never
+        # declared" are indistinguishable through it.
+        assert set(arch_caps._AITER_SOFTCAP_DEFECT_ARCHS) == {"gfx942", "gfx950"}
 
-    def test_gfx950_has_no_safe_kv_len(self):
-        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx950") == 0
+    def test_gfx942_is_not_affected(self):
+        assert arch_caps.aiter_softcap_defect_arch("gfx942") is False
+
+    def test_gfx950_is_affected(self):
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+
+    def test_arch_qualifiers_are_normalized(self):
+        assert arch_caps.aiter_softcap_defect_arch("gfx950:sramecc+:xnack-") is True
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
-        assert arch_caps.aiter_softcap_defect_min_kv_len("unknown") is None
+        assert arch_caps.aiter_softcap_defect_arch("unknown") is False

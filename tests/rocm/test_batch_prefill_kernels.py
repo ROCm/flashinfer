@@ -1005,6 +1005,11 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    # Plumbing only, no numbers compared: force the flag rather than skipping,
+    # or this whole branch is unreachable on an unaffected architecture.
+    monkeypatch.setattr(
+        "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: True
+    )
     page_size = 128
     if page_size not in _aiter_native_page_sizes():
         pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
@@ -1229,7 +1234,7 @@ def test_paged_softcap_is_numerically_correct(kv_len, page_size):
     )
 
 
-def test_paged_softcap_guard_tracks_the_paging_route():
+def test_paged_softcap_guard_tracks_the_paging_route(monkeypatch):
     """The explicit-aiter soft-cap guard must key on the route, not the shape.
 
     Native page sizes dispatch to mha_batch_prefill, which is exact; only
@@ -1239,6 +1244,11 @@ def test_paged_softcap_guard_tracks_the_paging_route():
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    # Plumbing only, no numbers compared: force the flag rather than skipping,
+    # or this whole branch is unreachable on an unaffected architecture.
+    monkeypatch.setattr(
+        "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: True
+    )
     kv_len, qo_len, num_heads, head_dim, soft_cap = 512, 37, 4, 128, 8.0
     # Only page sizes that divide kv_len: a partial trailing page would need a
     # kv_last_page_len this test does not model, and one larger than kv_len

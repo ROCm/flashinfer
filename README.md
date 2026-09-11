@@ -222,9 +222,12 @@ has the complete lists and the evidence for each entry;
 names a kernel source `csrc/rocm` does not have, so the second group cannot
 grow unnoticed.
 
-**Soft-capped causal prefill falls back to `fa2`.** AITER's `mha_varlen_fwd`
-miscomputes `logits_soft_cap` at `head_dim=128`, so `auto` declines it and
-`backend="aiter"` raises rather than returning wrong numbers — see
+**Soft-capped causal single and ragged prefill fall back to `fa2` on gfx950.**
+AITER's `mha_varlen_fwd` miscomputes `logits_soft_cap` at `head_dim=128` there,
+so `auto` declines it and `backend="aiter"` raises rather than returning wrong
+numbers. Paged prefill at a native page size is exempt — it dispatches
+`mha_batch_prefill`, which is exact — and gfx942 is unaffected at every route.
+See
 [per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
 
 ## `torch.compile`
