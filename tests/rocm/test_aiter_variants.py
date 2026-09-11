@@ -8,7 +8,9 @@ prebuild it. Nothing links the two, so a prefix or suffix edited on one side
 produces a store full of files the loader never asks for -- and the symptom is
 not a crash but a silent return to the 74-360s first-call build.
 
-These read the C++ source instead of trusting the Python copy. No torch, no GPU.
+These read the C++ source instead of trusting the Python copy rather than
+introspecting a built module, so they catch drift without a GPU. They do
+still import torch, transitively through ``flashinfer.jit``.
 """
 
 import re
@@ -304,18 +306,22 @@ class TestPrune:
 
         current, stale, other = self._roots(tmp_path, monkeypatch)
         found = drv.prune()
-        assert set(found) == {stale, other}
+        assert set(found) == {stale}
         assert current.is_dir() and stale.is_dir() and other.is_dir()
         assert "--prune --yes" in capsys.readouterr().out
 
-    def test_apply_removes_only_the_stale_ones(self, tmp_path, monkeypatch):
+    def test_apply_removes_only_this_architectures_stale_stores(
+        self, tmp_path, monkeypatch
+    ):
+        """FLASHINFER_CACHE_DIR is shared and both arch stores are expected to
+        exist, so a gfx942 run must not delete the gfx950 one."""
         from flashinfer.rocm import prebuild_aiter_variants as drv
 
         current, stale, other = self._roots(tmp_path, monkeypatch)
         drv.prune(apply=True)
         assert current.is_dir(), "the live store must survive"
         assert not stale.exists()
-        assert not other.exists()
+        assert other.is_dir(), "another architecture's store is not ours to delete"
 
     def test_a_missing_root_is_not_an_error(self, tmp_path, monkeypatch):
         from flashinfer.rocm import prebuild_aiter_variants as drv
@@ -324,3 +330,106 @@ class TestPrune:
             drv, "variant_store_dir", lambda arch=None: tmp_path / "gone" / "tag"
         )
         assert drv.prune() == []
+
+
+class TestReviewRegressions:
+    """Cases found by review of the first cut of the store, each a real defect."""
+
+    def test_batch_prefill_bootstrap_is_not_short_circuited(self):
+        """It doubles as _aiter_native_paging_available's page-size probe, and
+        the variant filename has no page-size axis -- so a store built at one
+        page size would answer for every other, turning a warned flat-gather
+        fallback into "no matching kernel found" inside run()."""
+        import inspect
+
+        from flashinfer.rocm import prefill
+
+        src = inspect.getsource(prefill._aiter_bootstrap_batch_prefill)
+        assert "_variants.prebuilt(" not in src
+
+    def test_the_other_three_bootstraps_are_short_circuited(self):
+        """Guard the guard: if these lost their skip, the store would silently
+        stop being a latency win and every test here would still pass."""
+        import inspect
+
+        from flashinfer.rocm import prefill
+
+        for fn in (
+            prefill._aiter_bootstrap_single_prefill_varlen,
+            prefill._aiter_bootstrap_single_prefill_mha_fwd,
+            prefill._aiter_bootstrap_batch_ragged_prefill,
+        ):
+            assert "_variants.prebuilt(" in inspect.getsource(fn), fn.__name__
+
+    def test_symbol_visible_false_clears_an_ambient_flag(self, tmp_path, monkeypatch):
+        """Only skipping the set would let an operator's AITER_SYMBOL_VISIBLE=1
+        compile a dlopen'd variant with the linkable flags -- same filename,
+        different build."""
+        import os
+
+        from flashinfer.jit.rocm import aiter_source
+
+        monkeypatch.setenv("AITER_SYMBOL_VISIBLE", "1")
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+        with aiter_source._aiter_env_scope(tmp_path, symbol_visible=False):
+            assert "AITER_SYMBOL_VISIBLE" not in os.environ
+        assert os.environ["AITER_SYMBOL_VISIBLE"] == "1"
+
+    def test_find_variant_survives_an_unusable_store_tag(self, monkeypatch):
+        """find_variant is now on the plan() path; letting variant_store_dir's
+        ValueError escape would demote AITER for the whole process."""
+
+        def boom(arch=None):
+            raise ValueError("refusing to build a cache directory name")
+
+        monkeypatch.setattr(av, "variant_store_dir", boom)
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        assert av.find_variant(av.reachable_variants()[0]) is None
+
+    def test_a_mismatched_arch_is_refused(self, monkeypatch):
+        """--arch only renames the store; GPU_ARCHS and the launching device
+        come from elsewhere, so it would file this box's objects under another
+        architecture's tag."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(drv, "resolve_aiter_build_arch", lambda: "gfx942")
+        with pytest.raises(SystemExit, match="does not match the resolved build arch"):
+            drv.main(["--arch", "gfx950", "--list"])
+
+    def test_a_matching_arch_is_allowed(self, monkeypatch, capsys):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(drv, "resolve_aiter_build_arch", lambda: "gfx942")
+        assert drv.main(["--arch", "gfx942", "--list"]) == 0
+        assert "40 variants from 32 builds" in capsys.readouterr().out
+
+    def test_list_counts_only_the_selected_variants(self, capsys):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        drv.main(["--only", "mha_fwd", "--list"])
+        assert "8 variants from 8 builds" in capsys.readouterr().out
+
+    def test_locate_prefers_the_installed_copy_over_the_staged_one(self, tmp_path):
+        """AITER stages under <jit_dir>/build/<md_name>/ before installing; the
+        first hit in path order is the staged copy."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        key = av.reachable_variants()[0]
+        name = av.so_name(key)
+        staged = tmp_path / "build" / "mod"
+        staged.mkdir(parents=True)
+        (staged / name).write_bytes(b"staged")
+        (tmp_path / name).write_bytes(b"installed")
+        assert drv._locate([key], [tmp_path]) == [tmp_path / name]
+
+    def test_locate_falls_back_to_the_shallowest_nested_hit(self, tmp_path):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        key = av.reachable_variants()[0]
+        name = av.so_name(key)
+        deep = tmp_path / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        (deep / name).write_bytes(b"deep")
+        shallow = tmp_path / "a"
+        (shallow / name).write_bytes(b"shallow")
+        assert drv._locate([key], [tmp_path]) == [shallow / name]

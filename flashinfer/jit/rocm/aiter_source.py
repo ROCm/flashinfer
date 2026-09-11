@@ -367,8 +367,13 @@ def _aiter_env_scope(
         # directory.
         from ...rocm.hip_utils import get_rocm_home
 
+        # Set *or clear*: an ambient AITER_SYMBOL_VISIBLE=1 from the operator or
+        # the image would otherwise compile a dlopen'd variant with the linkable
+        # flags -- same filename, different build, silently shipped.
         if symbol_visible:
             os.environ["AITER_SYMBOL_VISIBLE"] = "1"
+        else:
+            os.environ.pop("AITER_SYMBOL_VISIBLE", None)
         if build_dir is not None:
             os.environ["AITER_JIT_DIR"] = str(build_dir)
         # AITER splits GPU_ARCHS on ';' and validates each entry, so a

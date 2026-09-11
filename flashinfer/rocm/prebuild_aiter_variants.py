@@ -43,7 +43,6 @@ from ..jit.rocm.aiter_variants import (
     Family,
     VariantKey,
     builds,
-    reachable_variants,
     so_name,
     variant_store_dir,
 )
@@ -76,31 +75,44 @@ def _run_build(spec: BuildSpec, device_idx: int, head_dim: int) -> None:
             dtype, spec.has_logits_cap, spec.needs_mask, head_dim, device_idx
         )
     elif spec.family is Family.MHA_BATCH_PREFILL:
-        page_size = _native_page_size()
-        _prefill._aiter_bootstrap_batch_prefill(
-            dtype,
-            spec.has_logits_cap,
-            spec.needs_mask,
-            bool(spec.has_lse),
-            page_size,
-            head_dim,
-            device_idx,
-        )
+        _build_batch_prefill(spec, dtype, head_dim, device_idx)
     else:  # pragma: no cover - Family is closed
         raise AssertionError(f"unhandled family {spec.family}")
 
 
-def _native_page_size() -> int:
-    """A page size this AITER build actually has a paged kernel for.
+def _build_batch_prefill(
+    spec: BuildSpec, dtype, head_dim: int, device_idx: int
+) -> None:
+    """Build the paged variant, trying each page size the predicate offers.
 
-    The version predicate can name sizes the installed build rejects with "no
-    matching kernel found", so try each and let the caller see the failure only
-    when none work.
+    ``_aiter_native_page_sizes()`` is a version predicate, and an installed build
+    can reject a size it names with "no matching kernel found" -- which is the
+    whole reason ``_aiter_native_paging_available`` probes at runtime. Stopping
+    at the smallest would fail the entire family when a larger size would have
+    built. The variant filename has no page-size axis, so any working size
+    produces the artifact the loader wants.
     """
-    from .prefill import _aiter_native_page_sizes
+    from . import prefill as _prefill
 
-    sizes = sorted(_aiter_native_page_sizes())
-    return sizes[0] if sizes else 16
+    sizes = sorted(_prefill._aiter_native_page_sizes()) or [16]
+    errors = []
+    for page_size in sizes:
+        try:
+            _prefill._aiter_bootstrap_batch_prefill(
+                dtype,
+                spec.has_logits_cap,
+                spec.needs_mask,
+                bool(spec.has_lse),
+                page_size,
+                head_dim,
+                device_idx,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - try the next size
+            errors.append(f"page_size={page_size}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        "no page size produced a paged kernel:\n  " + "\n  ".join(errors)
+    )
 
 
 def _publish(produced: Iterable[Path], store: Path) -> List[str]:
@@ -117,6 +129,12 @@ def _publish(produced: Iterable[Path], store: Path) -> List[str]:
 
 
 def _locate(keys: Sequence[VariantKey], search: Sequence[Path]) -> List[Path]:
+    """Find each variant's artifact. Missing keys are simply absent from the result.
+
+    The recursive fallback prefers the shallowest match: AITER stages a module
+    under ``<jit_dir>/build/<md_name>/`` before installing it alongside the
+    others, and taking the first hit in path order would publish the staged copy.
+    """
     found = []
     for key in keys:
         name = so_name(key)
@@ -125,7 +143,11 @@ def _locate(keys: Sequence[VariantKey], search: Sequence[Path]) -> List[Path]:
             if candidate.is_file():
                 found.append(candidate)
                 break
-            hits = sorted(root.rglob(name)) if root.exists() else []
+            hits = (
+                sorted(root.rglob(name), key=lambda p: len(p.parts))
+                if root.exists()
+                else []
+            )
             if hits:
                 found.append(hits[0])
                 break
@@ -161,36 +183,62 @@ def prebuild(
     store.mkdir(parents=True, exist_ok=True)
 
     built = skipped = 0
+    failures: List[str] = []
     for index, spec in enumerate(specs, start=1):
         wanted = [so_name(key) for key in spec.produces]
-        if not force and all((store / name).is_file() for name in wanted):
+        if force:
+            # The bootstraps short-circuit on a store hit, so leaving the old
+            # copies in place would make --force a no-op. Removing them first
+            # re-arms both that guard and this one; AITER still skips its own
+            # compile if it holds the artifact, which is what "re-publish"
+            # should mean.
+            for name in wanted:
+                (store / name).unlink(missing_ok=True)
+        elif all((store / name).is_file() for name in wanted):
             skipped += 1
             continue
 
         label = ", ".join(wanted)
         print(f"[{index}/{len(specs)}] building {label}", flush=True)
         started = time.time()
-        # build_dir=None on purpose: AITER imports the variant it just built,
-        # and only puts AITER_JIT_DIR on sys.path at its own import time, so
-        # redirecting it here yields ModuleNotFoundError for the new module.
-        # Let AITER build where it wants and copy the result into the store.
-        with _BUILD_LOCK, _aiter_env_scope(None, symbol_visible=False):
-            _run_build(spec, device_idx, head_dim)
-            from aiter.jit import core as aiter_core
+        try:
+            # build_dir=None on purpose: AITER imports the variant it just built,
+            # and only puts AITER_JIT_DIR on sys.path at its own import time, so
+            # redirecting it here yields ModuleNotFoundError for the new module.
+            # Let AITER build where it wants and copy the result into the store.
+            with _BUILD_LOCK, _aiter_env_scope(None, symbol_visible=False):
+                _run_build(spec, device_idx, head_dim)
+                from aiter.jit import core as aiter_core
 
-            search = [Path(aiter_core.get_user_jit_dir())]
-            produced = _locate(spec.produces, search)
-        if not produced:
-            raise RuntimeError(
-                f"AITER produced none of {label}. Searched {[str(p) for p in search]}."
+                search = [Path(aiter_core.get_user_jit_dir())]
+                produced = _locate(spec.produces, search)
+            # Every output, not merely one: a varlen spec emits two files, and
+            # publishing half of it would record a store the caller believes is
+            # complete.
+            if len(produced) != len(spec.produces):
+                got = {p.name for p in produced}
+                raise RuntimeError(
+                    f"AITER produced {len(produced)} of {len(spec.produces)}; "
+                    f"missing {sorted(set(wanted) - got)}. "
+                    f"Searched {[str(p) for p in search]}."
+                )
+            names = _publish(produced, store)
+            built += 1
+            print(
+                f"    -> {len(names)} file(s) in {time.time() - started:.1f}s",
+                flush=True,
             )
-        names = _publish(produced, store)
-        built += 1
-        print(
-            f"    -> {len(names)} file(s) in {time.time() - started:.1f}s", flush=True
-        )
+        except Exception as exc:  # noqa: BLE001 - one bad spec must not end the run
+            # 32 builds is a one-to-three hour job; aborting it on the first
+            # failure would also skip the manifest for everything that worked.
+            failures.append(f"{label}: {type(exc).__name__}: {exc}")
+            print(f"    !! FAILED: {type(exc).__name__}: {exc}", flush=True)
 
     _write_manifest(store, arch)
+    if failures:
+        print(f"\n{len(failures)} spec(s) failed:", flush=True)
+        for line in failures:
+            print(f"  {line}", flush=True)
     return built, skipped
 
 
@@ -229,14 +277,20 @@ def prune(*, apply: bool = False) -> List[Path]:
     the old ones, so every upgrade leaves ~165 MB behind -- on shared nodes,
     indefinitely.
 
-    Dry-run by default, and it deletes the enumerated paths it printed rather
-    than sweeping a glob: the store lives under a shared cache root, and "every
-    directory except the current one" is how somebody else's arch gets deleted.
+    Scoped to the running architecture on purpose, and dry-run unless ``apply``.
+    FLASHINFER_CACHE_DIR is shared on these nodes and both a gfx942 and a gfx950
+    store are expected to exist, so "every directory except the current one"
+    would have a gfx942 session delete a colleague's gfx950 build.
     """
-    root = variant_store_dir().parent
-    current = variant_store_dir().name
+    current_dir = variant_store_dir()
+    root = current_dir.parent
+    arch = current_dir.name.split("__", 1)[0]
     stale = (
-        sorted(d for d in root.glob("*") if d.is_dir() and d.name != current)
+        sorted(
+            d
+            for d in root.glob(f"{arch}__*")
+            if d.is_dir() and d.name != current_dir.name
+        )
         if root.is_dir()
         else []
     )
@@ -290,11 +344,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prune(apply=args.yes)
         return 0
 
+    if args.arch:
+        resolved = resolve_aiter_build_arch()
+        if args.arch != resolved:
+            # --arch only renames the store; GPU_ARCHS comes from the env
+            # scope and the bootstraps launch on the local device, so this
+            # would file this box's objects under another arch's tag and
+            # fault when loaded there.
+            raise SystemExit(
+                f"--arch {args.arch} does not match the resolved build arch "
+                f"{resolved}; this would mislabel the artifacts. Set "
+                "FLASHINFER_ROCM_ARCH_LIST and run on that device instead."
+            )
+
     specs = _select(args.only)
     store = variant_store_dir(args.arch)
     if args.list:
         print(f"store: {store}")
-        print(f"{len(reachable_variants())} variants from {len(specs)} builds")
+        n_variants = sum(len(spec.produces) for spec in specs)
+        print(f"{n_variants} variants from {len(specs)} builds")
         for spec in specs:
             state = (
                 "present"

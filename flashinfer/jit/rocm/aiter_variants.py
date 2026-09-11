@@ -21,7 +21,6 @@ run those builds twice, concurrently, into one output directory -- hence
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -240,7 +239,15 @@ def find_variant(key: VariantKey) -> Optional[Path]:
     The override is searched first so an image-supplied store wins over a
     half-populated cache dir from an earlier run.
     """
-    for root in (store_override(), variant_store_dir()):
+    try:
+        roots = (store_override(), variant_store_dir())
+    except Exception:
+        # variant_store_dir raises on an unusable arch tag. This is now reached
+        # from all four bootstraps, and the two probe wrappers would turn that
+        # into a permanent "AITER unavailable" for the process. No store is the
+        # honest answer: the caller then builds, exactly as it did before.
+        return None
+    for root in roots:
         if root is None:
             continue
         candidate = root / so_name(key)
@@ -307,15 +314,3 @@ def export_variant_store() -> Optional[Path]:
         return None
     os.environ["FLASHINFER_AITER_VARIANT_DIR"] = str(store)
     return store
-
-
-def read_manifest(root: Path) -> Optional[dict]:
-    """The store's manifest, or None when it is absent or unreadable.
-
-    Unreadable resolves to None rather than raising, matching ``_aot_arch_is_usable``:
-    a half-written manifest must not make the package unimportable.
-    """
-    try:
-        return json.loads((root / MANIFEST_NAME).read_text())
-    except Exception:
-        return None

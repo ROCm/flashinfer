@@ -730,19 +730,16 @@ def _aiter_bootstrap_batch_prefill(
     head_dim: int,
     device_idx: int,
 ) -> None:
-    """Force AITER's lazy JIT to compile mha_batch_prefill_*.so for this variant."""
-    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
-    # exists, so there is nothing to force. Skipping here is what turns the
-    # store into a latency win: otherwise AITER rebuilds it regardless.
-    if _variants.prebuilt(
-        _variants.Family.MHA_BATCH_PREFILL,
-        dtype,
-        has_logits_cap=has_logits_cap,
-        needs_mask=needs_mask,
-        has_lse=has_lse,
-    ):
-        return
+    """Force AITER's lazy JIT to compile mha_batch_prefill_*.so for this variant.
 
+    Deliberately *not* short-circuited on a prebuilt-store hit, unlike the other
+    three bootstraps. ``_aiter_native_paging_available`` uses this call as its
+    capability probe for ``page_size`` -- and the variant filename carries no
+    page-size axis, so a store built at one page size would answer for every
+    other. Skipping here would turn a warned flat-gather fallback into
+    "no matching kernel found" inside run(). The launch is cheap once AITER has
+    the .so; it is the build that is expensive, and that is already skipped.
+    """
     from aiter.ops.mha import mha_batch_prefill_func
 
     device = torch.device("cuda", device_idx)
