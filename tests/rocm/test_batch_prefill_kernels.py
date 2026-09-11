@@ -9,6 +9,7 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 from flashinfer.jit.core import logger
 from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_arch
 from flashinfer.rocm.prefill import (
     _aiter_native_page_sizes,
     _aiter_native_paging_available,
@@ -1005,6 +1006,8 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if not aiter_softcap_defect_arch(_device_arch(device)):
+        pytest.skip("this architecture is not affected by the soft-cap defect")
     page_size = 128
     if page_size not in _aiter_native_page_sizes():
         pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
@@ -1239,6 +1242,8 @@ def test_paged_softcap_guard_tracks_the_paging_route():
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if not aiter_softcap_defect_arch(_device_arch(device)):
+        pytest.skip("this architecture is not affected by the soft-cap defect")
     kv_len, qo_len, num_heads, head_dim, soft_cap = 512, 37, 4, 128, 8.0
     # Only page sizes that divide kv_len: a partial trailing page would need a
     # kv_last_page_len this test does not model, and one larger than kv_len

@@ -77,21 +77,17 @@ def test_single_prefill_with_kv_cache(
 
     # A non-zero soft cap disables AITER's asm paths, leaving mha_varlen_fwd's
     # CK kernel, which applies the cap wrongly. Non-causal is unaffected, and
-    # mha_batch_prefill is exact on the same inputs. The kv_len where it starts
-    # is architecture-dependent, so take it from the capability table rather
-    # than repeating a literal that is only right on gfx942.
-    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+    # mha_batch_prefill is exact on the same inputs. Which architectures are
+    # affected comes from the capability table, not a literal.
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_arch
 
-    softcap_floor = aiter_softcap_defect_min_kv_len(
-        _device_arch(torch.device("cuda:0"))
-    )
+    softcap_defective = aiter_softcap_defect_arch(_device_arch(torch.device("cuda:0")))
     if (
         backend == "aiter"
         and logits_soft_cap > 0
         and causal
         and head_dim == 128
-        and softcap_floor is not None
-        and kv_len >= softcap_floor
+        and softcap_defective
     ):
         pytest.skip("AITER mha_varlen_fwd soft-cap defect (aiter<=0.1.21)")
 
@@ -370,13 +366,9 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if expect_aiter is None:
-        from flashinfer.rocm.arch_caps import (
-            _device_arch,
-            aiter_softcap_defect_min_kv_len,
-        )
+        from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_arch
 
-        floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
-        expect_aiter = floor is None or kv_len < floor
+        expect_aiter = not aiter_softcap_defect_arch(_device_arch(device))
 
     from flashinfer.rocm.prefill import _auto_select_prefill_backend
 
@@ -408,13 +400,13 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     'auto' silently falls back; asking for AITER by name is a deliberate choice,
     so the defect region has to raise rather than degrade.
     """
-    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_arch
 
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    if aiter_softcap_defect_min_kv_len(_device_arch(device)) is None:
-        pytest.skip("no defective kv_len range on this architecture")
+    if not aiter_softcap_defect_arch(_device_arch(device)):
+        pytest.skip("this architecture is not affected by the soft-cap defect")
 
     kv_len, qo_len, num_heads, head_dim = 512, 37, 4, 128
     q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
@@ -431,26 +423,59 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
 
 
+@pytest.mark.parametrize(
+    "affected,causal,cap,head_dim,kv_len,expected",
+    [
+        (True, True, 8.0, 128, 1024, True),  # the gated combination
+        (False, True, 8.0, 128, 1024, False),  # unaffected arch: never gated
+        (True, False, 8.0, 128, 1024, False),  # non-causal is exact
+        (True, True, 0.0, 128, 1024, False),  # no cap: asm path
+        (True, True, 8.0, 64, 1024, False),  # other head dims unaffected
+        (True, True, 8.0, 128, None, False),  # kv_len=None disarms (paged route)
+    ],
+)
+def test_softcap_predicate_covers_every_branch(
+    monkeypatch, affected, causal, cap, head_dim, kv_len, expected
+):
+    """Exercise _aiter_softcap_defect's matrix without depending on the host GPU.
+
+    On an unaffected architecture every GPU-backed soft-cap test skips, so the
+    guard itself would otherwise only be covered by a gfx950 run.
+    """
+    from flashinfer.rocm import prefill as rocm_prefill
+
+    # _aiter_softcap_defect imports the accessor inside the function body, so the
+    # patch has to land on arch_caps itself, not on a prefill-level alias.
+    monkeypatch.setattr(
+        "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: affected
+    )
+    got = rocm_prefill._aiter_softcap_defect(causal, cap, head_dim, kv_len, None)
+    assert got is expected
+
+
 @pytest.mark.parametrize("qo_len", [17, 512, 2048])
 @pytest.mark.parametrize("kv_len", [512, 2048, 4096])
 def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len):
-    """Every shape the table leaves ungated must hold up against fp32.
+    """AITER must be right on every shape the table declines to gate.
 
-    The routing test and the numeric skip both read the bound from arch_caps, so
-    on their own they stay green however it is edited -- a wrongly widened range
-    would simply be believed. Swept over qo_len *and* kv_len because a single
-    square size cannot tell the two apart, and the defect does not track kv_len.
+    The routing test and the numeric skip both read the table, so on their own
+    they stay green however it is edited; this checks the numbers. Swept over
+    qo_len as well as kv_len -- a square sweep cannot separate the two.
     """
-    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+    from flashinfer.rocm import arch_caps
 
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     if qo_len > kv_len:
         pytest.skip("causal attention requires kv_len >= qo_len")
-    floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
-    if floor is not None and kv_len >= floor:
-        pytest.skip("kv_len is inside this architecture's gated range")
+    arch = arch_caps.normalize_arch(arch_caps._device_arch(device))
+    # _device_arch answers "unknown" on any read failure, and the table makes no
+    # claim there -- skip rather than assert numerics it does not cover.
+    if arch not in arch_caps._AITER_SOFTCAP_DEFECT_ARCHS:
+        pytest.skip(f"no soft-cap measurement declared for arch {arch!r}")
+    if arch_caps.aiter_softcap_defect_arch(arch):
+        pytest.skip("this architecture gates soft-capped causal prefill entirely")
 
     num_heads, head_dim, cap = 4, 128, 8.0
     torch.manual_seed(0)

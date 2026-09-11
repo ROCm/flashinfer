@@ -35,7 +35,7 @@ __all__ = [
     "KnownBad",
     "Support",
     "aiter_fallback_backend",
-    "aiter_softcap_defect_min_kv_len",
+    "aiter_softcap_defect_arch",
     "capability_available",
     "capability_reason",
     "normalize_arch",
@@ -268,26 +268,24 @@ _MEASURED_950_MLA = (
 
 # AITER's soft-cap defect is parameter-dependent, so it is not a KnownBad row:
 # those gate a whole (op, backend, arch) on toolchain version and would also
-# disable the logits_soft_cap=0 path, which measures clean. Only the kv_len
-# threshold differs by architecture, so that is what lives here.
+# disable the logits_soft_cap=0 path, which measures clean. What differs by
+# architecture is *whether* the kernel is affected, not at which length.
 #
 # Measured on amd-aiter 0.1.20 against an fp32 reference, causal head_dim=128,
 # swept over qo_len x kv_len rather than a single square size:
-#   gfx942  clean at every cell and every cap -- no defective range
+#   gfx942  clean at every cell and every cap
 #   gfx950  wrong at every cell, 0.04-2.8 abs err with NaNs, where cap=0 is
-#           clean to 0.008. No safe kv_len, so the gate cannot be narrowed.
-_AITER_SOFTCAP_DEFECT_MIN_KV_LEN = {"gfx942": None, "gfx950": 0}
+#           clean to 0.008 -- no safe length to narrow the gate to
+_AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
 
-def aiter_softcap_defect_min_kv_len(arch: str) -> Optional[int]:
-    """Smallest kv_len at which AITER miscomputes a causal soft cap on ``arch``.
+def aiter_softcap_defect_arch(arch: str) -> bool:
+    """Does AITER miscompute a causal soft cap on ``arch``?
 
-    ``0`` means no length is safe, so compare with ``is not None`` rather than
-    truthiness. ``None`` means nothing is gated -- the architecture has no
-    defective range, or it is unrecognised and the guard disarms rather than
-    refusing to route on a machine that is probably fine.
+    An unrecognised architecture answers ``False``, disarming the guard rather
+    than refusing to route on a machine that is probably fine.
     """
-    return _AITER_SOFTCAP_DEFECT_MIN_KV_LEN.get(normalize_arch(arch))
+    return _AITER_SOFTCAP_DEFECT_ARCHS.get(normalize_arch(arch), False)
 
 
 def _archs(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport]:
