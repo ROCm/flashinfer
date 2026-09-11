@@ -280,3 +280,47 @@ def test_the_cpp_tries_the_variant_dir_and_keeps_aiter_jit_dir_first(loader_src)
     aiter_at = loader_src.index('getenv("AITER_JIT_DIR")')
     variant_at = loader_src.index('getenv("FLASHINFER_AITER_VARIANT_DIR")')
     assert aiter_at < variant_at
+
+
+class TestPrune:
+    """Dry-run by default, and it must never touch the live store."""
+
+    def _roots(self, tmp_path, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        current = tmp_path / "gfx942__aiter-1__rocm-2"
+        stale = tmp_path / "gfx942__aiter-0__rocm-2"
+        other_arch = tmp_path / "gfx950__aiter-1__rocm-2"
+        for d in (current, stale, other_arch):
+            d.mkdir(parents=True)
+            (d / "x.so").write_bytes(b"\x7fELF")
+        # The driver imported variant_store_dir by name, so patching it on
+        # aiter_variants would not reach the reference prune() actually uses.
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: current)
+        return current, stale, other_arch
+
+    def test_dry_run_deletes_nothing(self, tmp_path, monkeypatch, capsys):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        current, stale, other = self._roots(tmp_path, monkeypatch)
+        found = drv.prune()
+        assert set(found) == {stale, other}
+        assert current.is_dir() and stale.is_dir() and other.is_dir()
+        assert "--prune --yes" in capsys.readouterr().out
+
+    def test_apply_removes_only_the_stale_ones(self, tmp_path, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        current, stale, other = self._roots(tmp_path, monkeypatch)
+        drv.prune(apply=True)
+        assert current.is_dir(), "the live store must survive"
+        assert not stale.exists()
+        assert not other.exists()
+
+    def test_a_missing_root_is_not_an_error(self, tmp_path, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(
+            drv, "variant_store_dir", lambda arch=None: tmp_path / "gone" / "tag"
+        )
+        assert drv.prune() == []

@@ -12,6 +12,7 @@ constraints that are easy to trip over.
   * [NVIDIA-only, but not gated](#nvidia-only-but-not-gated)
   * [Blocked on a missing package](#blocked-on-a-missing-package-not-on-rocm)
 * [Installing AITER](#installing-aiter)
+  * [Prebuilding the variants](#prebuilding-the-variants)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
 * [CUDA-only arguments](#cuda-only-arguments)
 * [Known limitations](#known-limitations)
@@ -224,11 +225,47 @@ prefill builds the gaps.
 
 Two consequences worth planning for:
 
-* Budget **20+ minutes** for a cold variant. This is the same first-build
-  cost as the C++ AITER modules above, not a separate surprise.
+* A cold variant costs a CK-tile compile. Measured at `MAX_JOBS=32` on
+  gfx942 (MI300X, ROCm 10.0), one variant per family: `mha_fwd` 280-360 s,
+  `mha_batch_prefill` 119 s, `mha_varlen_fwd` 74 s. A 16-core gfx950 box took
+  roughly 2x each, tracking core count rather than architecture. It is paid per
+  *shape*, and again on any restart that does not persist `site-packages`.
 * A read-only or foreign-owned `site-packages/aiter/jit/` lets the build
   succeed but the install step fail. That error currently propagates out of
   `backend="auto"` instead of falling back to `fa2`.
+
+Both are what the variant store below exists to remove.
+
+### Prebuilding the variants
+
+`plan()` resolves a variant from FlashInfer's own store before asking AITER to
+build one, so the whole set can be built once, ahead of time:
+
+```bash
+python -m flashinfer.rocm.prebuild_aiter_variants --list    # 40 variants, 32 builds
+python -m flashinfer.rocm.prebuild_aiter_variants           # build the missing ones
+python -m flashinfer.rocm.prebuild_aiter_variants --prune   # report stores from an older pin
+```
+
+**It needs a GPU**: the only supported way to make AITER emit a variant is to
+call the op. So it cannot be a `docker build` step — run it as a GPU-attached
+job and copy the resulting directory into the image.
+
+The store lives at
+`$FLASHINFER_CACHE_DIR/aiter_variants/<arch>__aiter-<version>__rocm-<version>/`.
+All three components are in the tag on purpose: these are CK-tile objects that
+travel between machines, so bumping AITER or ROCm names a directory that does
+not exist, and the lookup misses into a rebuild rather than loading a
+mismatched artifact. Nothing prunes the old ones — each is ~165 MB per
+architecture — hence `--prune`, which is dry-run unless you add `--yes`.
+
+`FLASHINFER_AITER_VARIANT_DIR` points the loader at a store somewhere else, for
+an image or wheel that ships one. `AITER_JIT_DIR` still takes precedence over
+both, so an operator pointing at a custom AITER build is unaffected.
+
+40 variants are reachable per architecture, not 64: `has_alibi` is hard-coded
+false at every call site, and `mha_fwd` has no `_logits` arm. One `.so` serves
+every head dim.
 
 ## How `backend="auto"` resolves
 

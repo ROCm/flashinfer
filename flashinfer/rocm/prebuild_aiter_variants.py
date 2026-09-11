@@ -222,6 +222,37 @@ def _write_manifest(store: Path, arch: Optional[str]) -> None:
     )
 
 
+def prune(*, apply: bool = False) -> List[Path]:
+    """Stores whose tag does not match this install. Deletes only when ``apply``.
+
+    Each (arch, aiter, rocm) tuple gets its own directory and nothing removes
+    the old ones, so every upgrade leaves ~165 MB behind -- on shared nodes,
+    indefinitely.
+
+    Dry-run by default, and it deletes the enumerated paths it printed rather
+    than sweeping a glob: the store lives under a shared cache root, and "every
+    directory except the current one" is how somebody else's arch gets deleted.
+    """
+    root = variant_store_dir().parent
+    current = variant_store_dir().name
+    stale = (
+        sorted(d for d in root.glob("*") if d.is_dir() and d.name != current)
+        if root.is_dir()
+        else []
+    )
+
+    for path in stale:
+        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        print(f"{'removing' if apply else 'stale'}   {path}  ({size / 1e6:.0f} MB)")
+        if apply:
+            shutil.rmtree(path)
+    if not stale:
+        print(f"no stale stores under {root}")
+    elif not apply:
+        print(f"{len(stale)} stale store(s); re-run with --prune --yes to delete")
+    return stale
+
+
 def _select(only: Optional[str]) -> List[BuildSpec]:
     specs = list(builds())
     if only:
@@ -249,7 +280,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--only", help="comma-separated families, e.g. mha_fwd")
     parser.add_argument("--force", action="store_true", help="rebuild present variants")
     parser.add_argument("--list", action="store_true", help="print the plan and exit")
+    parser.add_argument(
+        "--prune", action="store_true", help="report stores from other arch/aiter/rocm"
+    )
+    parser.add_argument("--yes", action="store_true", help="with --prune, delete them")
     args = parser.parse_args(argv)
+
+    if args.prune:
+        prune(apply=args.yes)
+        return 0
 
     specs = _select(args.only)
     store = variant_store_dir(args.arch)
