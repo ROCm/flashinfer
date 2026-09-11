@@ -433,3 +433,137 @@ class TestReviewRegressions:
         shallow = tmp_path / "a"
         (shallow / name).write_bytes(b"shallow")
         assert drv._locate([key], [tmp_path]) == [shallow / name]
+
+
+class TestWheelStore:
+    """A store shipped inside the amd-flashinfer-jit-cache wheel."""
+
+    def _fake_wheel(self, tmp_path, monkeypatch, *, tag, accessor=True):
+        """Stand in for the jit-cache package, with or without the accessor."""
+        import sys
+        import types
+
+        root = tmp_path / "wheel" / "aiter_variants"
+        (root / tag).mkdir(parents=True)
+        mod = types.ModuleType("amd_flashinfer_jit_cache")
+        if accessor:
+            mod.get_aiter_variant_dir = lambda: str(root)
+        monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", mod)
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        return root / tag
+
+    def test_the_matching_tag_is_used(self, tmp_path, monkeypatch):
+        tag = "gfx942__aiter-1__rocm-2"
+        shipped = self._fake_wheel(tmp_path, monkeypatch, tag=tag)
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / tag)
+        assert av.store_override() == shipped
+
+    def test_a_wheel_for_another_tag_is_ignored(self, tmp_path, monkeypatch):
+        """A multi-arch wheel carries several tags; one that is not ours must
+        not be loaded, since the tag is the only compatibility check."""
+        self._fake_wheel(tmp_path, monkeypatch, tag="gfx950__aiter-1__rocm-2")
+        monkeypatch.setattr(
+            av,
+            "variant_store_dir",
+            lambda arch=None: tmp_path / "gfx942__aiter-1__rocm-2",
+        )
+        assert av.store_override() is None
+
+    def test_an_older_wheel_without_the_accessor_degrades(self, tmp_path, monkeypatch):
+        """FLASHINFER_DISABLE_VERSION_CHECK can get an older wheel past the
+        version gate, so a bare attribute access would be an import-time crash."""
+        self._fake_wheel(
+            tmp_path, monkeypatch, tag="gfx942__aiter-1__rocm-2", accessor=False
+        )
+        monkeypatch.setattr(
+            av,
+            "variant_store_dir",
+            lambda arch=None: tmp_path / "gfx942__aiter-1__rocm-2",
+        )
+        assert av.store_override() is None
+
+    def test_no_wheel_at_all_is_fine(self, tmp_path, monkeypatch):
+        import sys
+
+        monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", None)
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / "x")
+        assert av.store_override() is None
+
+    def test_the_env_var_still_wins(self, tmp_path, monkeypatch):
+        tag = "gfx942__aiter-1__rocm-2"
+        self._fake_wheel(tmp_path, monkeypatch, tag=tag)
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / tag)
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", "/operator/choice")
+        assert av.store_override() == Path("/operator/choice")
+
+    def test_a_wheel_store_is_exported_to_the_cpp(self, tmp_path, monkeypatch):
+        """The C++ reads only the env var, so a wheel-shipped store that is
+        merely *resolved* would never be loaded. Returning early on any override
+        was exactly that bug."""
+        import os
+
+        tag = "gfx942__aiter-1__rocm-2"
+        shipped = self._fake_wheel(tmp_path, monkeypatch, tag=tag)
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / tag)
+        assert av.export_variant_store() == shipped
+        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == str(shipped)
+
+    def test_an_operator_value_needs_no_export(self, tmp_path, monkeypatch):
+        import os
+
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", "/operator/choice")
+        assert av.export_variant_store() == Path("/operator/choice")
+        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == "/operator/choice"
+
+
+class TestPackagingTheStore:
+    def test_a_store_is_copied_under_its_own_tag(self, tmp_path, monkeypatch):
+        from flashinfer.rocm import aot as aot_hip
+
+        store = tmp_path / "cache" / "gfx942__aiter-1__rocm-2"
+        store.mkdir(parents=True)
+        (store / "mha_fwd_bf16_nbias_mask_nlse_ndropout_nqscale.so").write_bytes(
+            b"\x7fELF"
+        )
+        monkeypatch.setattr(
+            "flashinfer.jit.rocm.aiter_variants.variant_store_dir",
+            lambda arch=None: store,
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        aot_hip._copy_aiter_variant_store(out)
+        assert (
+            out
+            / "aiter_variants"
+            / store.name
+            / "mha_fwd_bf16_nbias_mask_nlse_ndropout_nqscale.so"
+        ).is_file()
+
+    def test_no_store_packages_nothing(self, tmp_path, monkeypatch):
+        """A wheel built without running the prebuild must be exactly as before."""
+        from flashinfer.rocm import aot as aot_hip
+
+        monkeypatch.setattr(
+            "flashinfer.jit.rocm.aiter_variants.variant_store_dir",
+            lambda arch=None: tmp_path / "never",
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        aot_hip._copy_aiter_variant_store(out)
+        assert not (out / "aiter_variants").exists()
+
+    def test_an_empty_store_packages_nothing(self, tmp_path, monkeypatch):
+        from flashinfer.rocm import aot as aot_hip
+
+        store = tmp_path / "cache" / "gfx942__aiter-1__rocm-2"
+        store.mkdir(parents=True)
+        (store / "variants_manifest.json").write_text("{}")
+        monkeypatch.setattr(
+            "flashinfer.jit.rocm.aiter_variants.variant_store_dir",
+            lambda arch=None: store,
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        aot_hip._copy_aiter_variant_store(out)
+        assert not (out / "aiter_variants").exists()

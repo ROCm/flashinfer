@@ -220,6 +220,38 @@ def copy_built_kernels(
             json.dumps({"rocm_arch_list": rocm_arch_list}) + "\n"
         )
 
+    _copy_aiter_variant_store(out_dir)
+
+
+def _copy_aiter_variant_store(out_dir: Path) -> None:
+    """Package the prebuilt AITER variants, if this box has built any.
+
+    Kept out of the manifest deliberately. The manifest's ``rocm_arch_list`` is
+    a comma-joined multi-arch list while a store is always single-arch, so the
+    two cannot agree; instead each store keeps its own
+    ``<arch>__aiter-<ver>__rocm-<ver>`` directory name and the consumer looks up
+    its own tag. A wheel for two architectures therefore carries two
+    subdirectories, and one built without running the prebuild carries none --
+    in which case FlashInfer builds variants on demand exactly as before.
+    """
+    from ..jit.rocm.aiter_variants import variant_store_dir
+
+    try:
+        store = variant_store_dir()
+    except Exception:
+        return
+    if not store.is_dir():
+        return
+    artifacts = sorted(store.glob("*.so"))
+    if not artifacts:
+        return
+
+    dst = out_dir / "aiter_variants" / store.name
+    dst.mkdir(parents=True, exist_ok=True)
+    for src in artifacts:
+        shutil.copy2(src, dst / src.name)
+    print(f"  packaged {len(artifacts)} AITER variant(s) from {store}")
+
 
 @contextlib.contextmanager
 def _redirected_jit_env(build_dir: Path) -> Iterator[None]:

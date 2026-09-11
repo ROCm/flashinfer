@@ -224,13 +224,42 @@ def variant_store_dir(arch: Optional[str] = None) -> Path:
 
 
 def store_override() -> Optional[Path]:
-    """``FLASHINFER_AITER_VARIANT_DIR``, for a store shipped outside the cache.
+    """A store shipped outside the cache: the env var, else the jit-cache wheel.
 
-    Set by the container image and by the jit-cache wheel, both of which place
-    the store somewhere the running user can read but not necessarily write.
+    Both place the store somewhere the running user can read but not necessarily
+    write, which is the case the on-demand build cannot serve.
     """
     raw = os.environ.get("FLASHINFER_AITER_VARIANT_DIR")
-    return Path(raw) if raw else None
+    if raw:
+        return Path(raw)
+    return _wheel_store()
+
+
+def _wheel_store() -> Optional[Path]:
+    """The store this install's tag names inside the jit-cache wheel, if any.
+
+    The wheel holds one subdirectory per ``<arch>__aiter-<ver>__rocm-<ver>``, so
+    a multi-arch wheel can carry several and the consumer picks its own. That
+    also settles the mismatch between the AOT manifest, which is a comma-joined
+    multi-arch list, and a store, which is always single-arch: the tag *is* the
+    check, so no cross-read of the manifest is needed.
+
+    ``getattr`` rather than a plain attribute: an older jit-cache wheel exports
+    only ``get_jit_cache_dir``, and ``FLASHINFER_DISABLE_VERSION_CHECK`` can get
+    one past the version gate, so this must degrade rather than raise at import.
+    """
+    try:
+        import amd_flashinfer_jit_cache
+    except Exception:
+        return None
+    accessor = getattr(amd_flashinfer_jit_cache, "get_aiter_variant_dir", None)
+    if accessor is None:
+        return None
+    try:
+        candidate = Path(accessor()) / variant_store_dir().name
+    except Exception:
+        return None
+    return candidate if candidate.is_dir() else None
 
 
 def find_variant(key: VariantKey) -> Optional[Path]:
@@ -299,18 +328,24 @@ def export_variant_store() -> Optional[Path]:
     had, which does not exist on the consumer's. ``aiter_loader.cc`` reads this
     at call time.
 
-    An operator-set value wins -- that is how a store shipped in an image or a
-    jit-cache wheel is pointed at. A store that does not exist is not exported,
-    so the loader's candidate list stays as short as the install warrants.
+    An operator-set value wins and needs no export -- the loader reads the same
+    variable. A wheel-shipped store does need one, since the C++ has no way to
+    find it otherwise. A store that does not exist is not exported, so the
+    loader's candidate list stays as short as the install warrants.
     """
-    existing = store_override()
-    if existing is not None:
-        return existing
-    try:
-        store = variant_store_dir()
-    except Exception:
+    raw = os.environ.get("FLASHINFER_AITER_VARIANT_DIR")
+    if raw:
+        return Path(raw)
+
+    store = _wheel_store()
+    if store is None:
+        try:
+            candidate = variant_store_dir()
+        except Exception:
+            return None
+        store = candidate if candidate.is_dir() else None
+    if store is None:
         return None
-    if not store.is_dir():
-        return None
+
     os.environ["FLASHINFER_AITER_VARIANT_DIR"] = str(store)
     return store

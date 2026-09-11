@@ -260,8 +260,16 @@ mismatched artifact. Nothing prunes the old ones — each is ~165 MB per
 architecture — hence `--prune`, which is dry-run unless you add `--yes`.
 
 `FLASHINFER_AITER_VARIANT_DIR` points the loader at a store somewhere else, for
-an image or wheel that ships one. `AITER_JIT_DIR` still takes precedence over
-both, so an operator pointing at a custom AITER build is unaffected.
+an image that ships one. `AITER_JIT_DIR` still takes precedence over both, so an
+operator pointing at a custom AITER build is unaffected.
+
+The `amd-flashinfer-jit-cache` wheel carries a store when one was built before
+the wheel was, under `aiter_variants/<tag>/` — one subdirectory per tag, so a
+wheel for several architectures can hold several and each consumer picks its
+own. The tag is the whole compatibility check, which is why this is not recorded
+in the AOT manifest: that names a comma-joined list of architectures, and a
+store is always single-arch. A wheel built without running the prebuild simply
+carries none, and variants are built on demand exactly as before.
 
 40 variants are reachable per architecture, not 64: `has_alibi` is hard-coded
 false at every call site, and `mha_fwd` has no `_logits` arm. One `.so` serves
