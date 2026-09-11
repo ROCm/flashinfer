@@ -649,7 +649,7 @@ class TestLegend:
         assert "**not available**" in self._render_only(archs=archs)
 
 
-class TestAiterSoftcapFloor:
+class TestAiterSoftcapDefectArchs:
     """AITER's causal soft-cap defect is per-arch, not per-kv_len.
 
     On amd-aiter 0.1.20 gfx950 is wrong at every shape and gfx942 at none, so

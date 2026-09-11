@@ -266,16 +266,10 @@ _MEASURED_950_MLA = (
 )
 
 
-# AITER's soft-cap defect is parameter-dependent, so it is not a KnownBad row:
-# those gate a whole (op, backend, arch) on toolchain version and would also
-# disable the logits_soft_cap=0 path, which measures clean. What differs by
-# architecture is *whether* the kernel is affected, not at which length.
-#
-# Measured on amd-aiter 0.1.20 against an fp32 reference, causal head_dim=128,
-# swept over qo_len x kv_len rather than a single square size:
-#   gfx942  clean at every cell and every cap
-#   gfx950  wrong at every cell, 0.04-2.8 abs err with NaNs, where cap=0 is
-#           clean to 0.008 -- no safe length to narrow the gate to
+# Not a KnownBad row: those gate a whole (op, backend, arch) on toolchain
+# version and would also disable the clean logits_soft_cap=0 path. What varies
+# by architecture is whether the kernel is affected, not at which length.
+# Measured on amd-aiter 0.1.20 over qo_len x kv_len x cap, vs an fp32 reference.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
 
@@ -285,7 +279,7 @@ def aiter_softcap_defect_arch(arch: str) -> bool:
     An unrecognised architecture answers ``False``, disarming the guard rather
     than refusing to route on a machine that is probably fine.
     """
-    return _AITER_SOFTCAP_DEFECT_ARCHS.get(normalize_arch(arch), False)
+    return bool(_AITER_SOFTCAP_DEFECT_ARCHS.get(normalize_arch(arch), False))
 
 
 def _archs(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport]:

@@ -430,6 +430,8 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
         (False, True, 8.0, 128, 1024, False),  # unaffected arch: never gated
         (True, False, 8.0, 128, 1024, False),  # non-causal is exact
         (True, True, 0.0, 128, 1024, False),  # no cap: asm path
+        # None is what single prefill actually passes on the uncapped path.
+        (True, True, None, 128, 1024, False),
         (True, True, 8.0, 64, 1024, False),  # other head dims unaffected
         (True, True, 8.0, 128, None, False),  # kv_len=None disarms (paged route)
     ],
@@ -453,44 +455,120 @@ def test_softcap_predicate_covers_every_branch(
     assert got is expected
 
 
-@pytest.mark.parametrize("qo_len", [17, 512, 2048])
-@pytest.mark.parametrize("kv_len", [512, 2048, 4096])
-def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len):
-    """AITER must be right on every shape the table declines to gate.
+@pytest.mark.parametrize("affected", [True, False])
+def test_auto_declines_softcap_only_on_an_affected_arch(monkeypatch, affected):
+    """The router must consume the flag, and name it when it declines.
 
-    The routing test and the numeric skip both read the table, so on their own
-    they stay green however it is edited; this checks the numbers. Swept over
-    qo_len as well as kv_len -- a square sweep cannot separate the two.
+    Arch-independent on purpose: on an unaffected GPU every table-driven row of
+    _SOFTCAP_ROUTING resolves to 'aiter', so the decline branch -- and the
+    reason string callers grep for -- is otherwise only reached on gfx950.
     """
-    from flashinfer.rocm import arch_caps
+    from flashinfer.rocm.prefill import _auto_select_prefill_backend
 
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    if qo_len > kv_len:
-        pytest.skip("causal attention requires kv_len >= qo_len")
-    arch = arch_caps.normalize_arch(arch_caps._device_arch(device))
-    # _device_arch answers "unknown" on any read failure, and the table makes no
-    # claim there -- skip rather than assert numerics it does not cover.
-    if arch not in arch_caps._AITER_SOFTCAP_DEFECT_ARCHS:
-        pytest.skip(f"no soft-cap measurement declared for arch {arch!r}")
-    if arch_caps.aiter_softcap_defect_arch(arch):
-        pytest.skip("this architecture gates soft-capped causal prefill entirely")
+    monkeypatch.setattr(
+        "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: affected
+    )
+    chosen, reason = _auto_select_prefill_backend(
+        device,
+        dtype_q=torch.float16,
+        dtype_kv=torch.float16,
+        kv_layout="NHD",
+        has_custom_mask=False,
+        head_dim_qk=128,
+        head_dim_vo=128,
+        op="single_prefill",
+        causal=True,
+        logits_soft_cap=8.0,
+        kv_len=1024,
+    )
+    if affected:
+        assert chosen == "fa2"
+        assert reason is not None and "logits_soft_cap" in reason
+    else:
+        assert chosen == "aiter", reason
 
-    num_heads, head_dim, cap = 4, 128, 8.0
+
+def _softcap_vs_reference(device, qo_len, kv_len, cap, num_heads=4, head_dim=128):
+    """max|AITER - fp32 reference| for one causal soft-capped prefill."""
     torch.manual_seed(0)
     q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
     k = torch.randn(kv_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
     v = torch.randn_like(k)
 
     s = torch.einsum("qhd,khd->hqk", q.float(), k.float()) / math.sqrt(head_dim)
-    s = cap * torch.tanh(s / cap)
+    if cap > 0:
+        s = cap * torch.tanh(s / cap)
     i = torch.arange(qo_len, device=device)[:, None]
     j = torch.arange(kv_len, device=device)[None, :]
     s = s.masked_fill((j > i + (kv_len - qo_len))[None], float("-inf"))
     ref = torch.einsum("hqk,khd->qhd", s.softmax(-1), v.float())
 
     got = flashinfer.single_prefill_with_kv_cache(
-        q, k, v, causal=True, logits_soft_cap=cap, backend="aiter"
+        q,
+        k,
+        v,
+        causal=True,
+        backend="aiter",
+        logits_soft_cap=(cap if cap > 0 else None),
     )
-    torch.testing.assert_close(got.float(), ref, rtol=2e-2, atol=2e-2)
+    return float((got.float() - ref).abs().max())
+
+
+def _softcap_arch_or_skip(device):
+    """The declared soft-cap status of this GPU, skipping if there is none."""
+    from flashinfer.rocm import arch_caps
+
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    # _device_arch answers "unknown" on any read failure, and the table makes no
+    # claim there -- skip rather than assert numerics it does not cover.
+    arch = arch_caps._device_arch(device)
+    if arch not in arch_caps._AITER_SOFTCAP_DEFECT_ARCHS:
+        pytest.skip(f"no soft-cap measurement declared for arch {arch!r}")
+    return arch_caps.aiter_softcap_defect_arch(arch)
+
+
+@pytest.mark.parametrize("qo_len,kv_len", [(17, 2048), (512, 512), (2048, 2048)])
+@pytest.mark.parametrize("cap", [1.0, 8.0, 30.0, 100.0])
+def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len, cap):
+    """On an ungated arch the cap must not make AITER worse than no cap at all.
+
+    Calibrated against the uncapped error on the same inputs rather than a fixed
+    constant: baseline bf16 error at the square shapes (~0.025) already exceeds
+    any tolerance tight enough to catch the defect, which starts around 0.04.
+    Swept over qo_len and cap as well as kv_len -- a square, single-cap sweep
+    cannot separate those variables, and an earlier revision was wrong for
+    exactly that reason.
+    """
+    device = torch.device("cuda:0")
+    if _softcap_arch_or_skip(device):
+        pytest.skip("this architecture gates soft-capped causal prefill entirely")
+
+    uncapped = _softcap_vs_reference(device, qo_len, kv_len, 0.0)
+    capped = _softcap_vs_reference(device, qo_len, kv_len, cap)
+    assert capped <= max(2 * uncapped, 2e-2), (
+        f"cap={cap} err {capped:.4f} vs uncapped {uncapped:.4f}"
+    )
+
+
+@pytest.mark.parametrize("qo_len,kv_len", [(17, 2048), (512, 512)])
+def test_gated_architecture_really_is_defective(qo_len, kv_len):
+    """The gate must stay justified: on a gated arch the cap must still be wrong.
+
+    Without this nothing re-checks the gate, and a stale one costs 2-5x -- which
+    is exactly what this suite failed to catch on gfx942. A failure here means
+    re-measure and consider removing the entry, not that the kernel regressed.
+    """
+    device = torch.device("cuda:0")
+    if not _softcap_arch_or_skip(device):
+        pytest.skip("this architecture is not gated")
+
+    uncapped = _softcap_vs_reference(device, qo_len, kv_len, 0.0)
+    capped = _softcap_vs_reference(device, qo_len, kv_len, 8.0)
+    assert math.isnan(capped) or capped > max(10 * uncapped, 2e-2), (
+        f"soft cap looks correct here (err {capped:.4f} vs uncapped "
+        f"{uncapped:.4f}); re-measure and consider ungating this architecture"
+    )
