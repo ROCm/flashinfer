@@ -30,6 +30,18 @@ _CALL = re.compile(
 )
 
 
+def _isolate_variant_env(monkeypatch):
+    """Make FLASHINFER_AITER_VARIANT_DIR restorable even when it starts unset.
+
+    monkeypatch.delenv(raising=False) records nothing to undo for an absent
+    variable, so a test that then *creates* it leaks a now-deleted tmp path into
+    every later test in the worker -- which find_variant searches and the C++
+    loader would add as a candidate directory.
+    """
+    monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", "")
+    monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR")
+
+
 @pytest.fixture(scope="module")
 def loader_src() -> str:
     assert _LOADER.is_file(), f"{_LOADER} is missing"
@@ -205,7 +217,7 @@ class TestStoreLookup:
 
     def _store(self, tmp_path, monkeypatch):
         monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path)
-        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        _isolate_variant_env(monkeypatch)
         return tmp_path
 
     def test_a_missing_variant_is_not_found(self, tmp_path, monkeypatch):
@@ -261,7 +273,7 @@ class TestStoreLookup:
         monkeypatch.setattr(
             av, "variant_store_dir", lambda arch=None: tmp_path / "nope"
         )
-        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        _isolate_variant_env(monkeypatch)
         assert av.export_variant_store() is None
         import os
 
@@ -279,9 +291,22 @@ def test_the_cpp_tries_the_variant_dir_and_keeps_aiter_jit_dir_first(loader_src)
     """Order is load-bearing: an operator-set AITER_JIT_DIR must still win,
     because that is what the loader's own failure message tells them to set."""
     assert "FLASHINFER_AITER_VARIANT_DIR" in loader_src
-    aiter_at = loader_src.index('getenv("AITER_JIT_DIR")')
-    variant_at = loader_src.index('getenv("FLASHINFER_AITER_VARIANT_DIR")')
+    aiter_at = loader_src.index('env_dir("AITER_JIT_DIR")')
+    variant_at = loader_src.index('env_dir("FLASHINFER_AITER_VARIANT_DIR")')
     assert aiter_at < variant_at
+
+
+def test_an_operator_aiter_jit_dir_replaces_the_baked_default(loader_src):
+    """Appending the baked path as a fallback would let a custom AITER build
+    silently fall through to the pinned install -- the mangled symbol still
+    resolves, so the kernel would come from a different build with no error."""
+    assert "if (!aiter_dir) {" in loader_src
+
+
+def test_an_empty_env_var_is_not_a_directory(loader_src):
+    """`export FLASHINFER_AITER_VARIANT_DIR=` is a common way to clear one;
+    taking it would dlopen "/<name>.so" and bury the real diagnostic."""
+    assert "(value && *value) ? value : nullptr" in loader_src
 
 
 class TestPrune:
@@ -383,7 +408,7 @@ class TestReviewRegressions:
             raise ValueError("refusing to build a cache directory name")
 
         monkeypatch.setattr(av, "variant_store_dir", boom)
-        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        _isolate_variant_env(monkeypatch)
         assert av.find_variant(av.reachable_variants()[0]) is None
 
     def test_a_mismatched_arch_is_refused(self, monkeypatch):
@@ -449,7 +474,7 @@ class TestWheelStore:
         if accessor:
             mod.get_aiter_variant_dir = lambda: str(root)
         monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", mod)
-        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        _isolate_variant_env(monkeypatch)
         return root / tag
 
     def test_the_matching_tag_is_used(self, tmp_path, monkeypatch):
@@ -486,7 +511,7 @@ class TestWheelStore:
         import sys
 
         monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", None)
-        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        _isolate_variant_env(monkeypatch)
         monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / "x")
         assert av.store_override() is None
 
@@ -567,3 +592,105 @@ class TestPackagingTheStore:
         out.mkdir()
         aot_hip._copy_aiter_variant_store(out)
         assert not (out / "aiter_variants").exists()
+
+
+class TestDriverStoreBypass:
+    """The driver must build even when a *foreign* store would satisfy the
+    bootstraps -- a jit-cache wheel or an operator FLASHINFER_AITER_VARIANT_DIR.
+    Without the bypass every build returns immediately and then fails
+    "AITER produced 0 of N"."""
+
+    def test_lookup_is_disabled_while_the_driver_builds(self, tmp_path, monkeypatch):
+        shipped = tmp_path / "shipped"
+        shipped.mkdir()
+        key = av.reachable_variants()[0]
+        (shipped / av.so_name(key)).write_bytes(b"\x7fELF")
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(shipped))
+
+        assert av.find_variant(key) is not None
+        monkeypatch.setattr(av, "_SKIP_STORE_LOOKUP", True)
+        assert av.find_variant(key) is None
+
+    def test_the_flag_is_cleared_even_when_a_build_raises(self, tmp_path, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: tmp_path)
+        monkeypatch.setattr(
+            drv,
+            "_prebuild_specs",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(
+            "flashinfer.rocm.prefill._aiter_ops_importable", lambda: True
+        )
+        with pytest.raises(RuntimeError, match="boom"):
+            drv.prebuild([])
+        assert av._SKIP_STORE_LOOKUP is False
+
+
+class TestLookupAndExportAgree:
+    """find_variant deciding the bootstrap is unnecessary while the C++ is told
+    to look somewhere else is a skip-then-fail-to-load."""
+
+    def test_both_resolve_the_same_directory(self, tmp_path, monkeypatch):
+        import os
+
+        _isolate_variant_env(monkeypatch)
+        store = tmp_path / "cache"
+        store.mkdir()
+        key = av.reachable_variants()[0]
+        (store / av.so_name(key)).write_bytes(b"\x7fELF")
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: store)
+        monkeypatch.setattr(av, "_wheel_store", lambda: None)
+
+        found = av.find_variant(key)
+        exported = av.export_variant_store()
+        assert found is not None
+        assert found.parent == exported
+        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == str(exported)
+
+
+class TestDriverExitCode:
+    def test_all_failures_exit_non_zero(self, tmp_path, monkeypatch):
+        """An image build that produced an empty store must not look like a
+        success, or every consumer silently pays the per-shape compile."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: tmp_path)
+        monkeypatch.setattr(drv, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(
+            drv, "prebuild", lambda *a, **k: (0, 0, ["everything: RuntimeError: boom"])
+        )
+        assert drv.main([]) == 1
+
+    def test_a_clean_run_exits_zero(self, tmp_path, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: tmp_path)
+        monkeypatch.setattr(drv, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(drv, "prebuild", lambda *a, **k: (32, 0, []))
+        assert drv.main([]) == 0
+
+
+class TestPruneHonoursArch:
+    def test_a_mismatched_arch_is_refused_before_pruning(self, tmp_path, monkeypatch):
+        """--arch gfx950 --prune --yes from a gfx942 box would otherwise delete
+        a colleague's store."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(drv, "resolve_aiter_build_arch", lambda: "gfx942")
+        called = []
+        monkeypatch.setattr(drv, "prune", lambda **kw: called.append(kw))
+        with pytest.raises(SystemExit, match="does not match the resolved build arch"):
+            drv.main(["--arch", "gfx950", "--prune", "--yes"])
+        assert not called
+
+    def test_an_unusable_tag_is_a_message_not_a_traceback(self, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        def boom(arch=None):
+            raise ValueError("refusing to build a cache directory name")
+
+        monkeypatch.setattr(drv, "variant_store_dir", boom)
+        with pytest.raises(SystemExit, match="refusing to build a cache directory"):
+            drv.main(["--prune"])

@@ -262,14 +262,34 @@ def _wheel_store() -> Optional[Path]:
     return candidate if candidate.is_dir() else None
 
 
-def find_variant(key: VariantKey) -> Optional[Path]:
-    """The prebuilt ``.so`` for ``key``, or None if this install has none.
+# Set by flashinfer.rocm.prebuild_aiter_variants while it builds.
+_SKIP_STORE_LOOKUP = False
 
-    The override is searched first so an image-supplied store wins over a
-    half-populated cache dir from an earlier run.
+
+def active_store() -> Optional[Path]:
+    """The one store this process uses, for both lookup and export.
+
+    Deliberately a single directory rather than a search path. find_variant
+    decides whether the Python bootstrap is skipped while export_variant_store
+    tells the C++ loader where to look; if those disagreed, a variant found in a
+    root that was not exported would skip the build and then fail the dlopen.
     """
+    override = store_override()
+    if override is not None:
+        return override
+    store = variant_store_dir()
+    return store if store.is_dir() else None
+
+
+def find_variant(key: VariantKey) -> Optional[Path]:
+    """The prebuilt ``.so`` for ``key``, or None if this install has none."""
+    if _SKIP_STORE_LOOKUP:
+        # The prebuild driver sets this: its whole job is to run the bootstraps,
+        # and a store hit -- including one from a jit-cache wheel it is not
+        # writing to -- would make every build a silent no-op.
+        return None
     try:
-        roots = (store_override(), variant_store_dir())
+        roots = (active_store(),)
     except Exception:
         # variant_store_dir raises on an unusable arch tag. This is now reached
         # from all four bootstraps, and the two probe wrappers would turn that
@@ -336,16 +356,11 @@ def export_variant_store() -> Optional[Path]:
     raw = os.environ.get("FLASHINFER_AITER_VARIANT_DIR")
     if raw:
         return Path(raw)
-
-    store = _wheel_store()
-    if store is None:
-        try:
-            candidate = variant_store_dir()
-        except Exception:
-            return None
-        store = candidate if candidate.is_dir() else None
+    try:
+        store = active_store()
+    except Exception:
+        return None
     if store is None:
         return None
-
     os.environ["FLASHINFER_AITER_VARIANT_DIR"] = str(store)
     return store

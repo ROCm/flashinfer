@@ -37,6 +37,7 @@ from ..jit.rocm.aiter_source import (
     _BUILD_LOCK,
     resolve_aiter_build_arch,
 )
+from ..jit.rocm import aiter_variants as _variants
 from ..jit.rocm.aiter_variants import (
     MANIFEST_NAME,
     BuildSpec,
@@ -161,8 +162,8 @@ def prebuild(
     device_idx: int = 0,
     head_dim: int = 128,
     force: bool = False,
-) -> Tuple[int, int]:
-    """Build ``specs`` into the variant store. Returns (built, skipped).
+) -> Tuple[int, int, List[str]]:
+    """Build ``specs`` into the variant store. Returns (built, skipped, failures).
 
     A spec whose every output is already in the store is skipped, so a rerun
     after a partial failure resumes rather than restarting.
@@ -182,6 +183,18 @@ def prebuild(
     store = variant_store_dir(arch)
     store.mkdir(parents=True, exist_ok=True)
 
+    # The bootstraps skip themselves on a store hit, and the store they consult
+    # may not be the one being written -- a jit-cache wheel or an operator
+    # FLASHINFER_AITER_VARIANT_DIR both satisfy it. Without this every build
+    # would return immediately and then fail "AITER produced 0 of N".
+    _variants._SKIP_STORE_LOOKUP = True
+    try:
+        return _prebuild_specs(specs, store, arch, device_idx, head_dim, force)
+    finally:
+        _variants._SKIP_STORE_LOOKUP = False
+
+
+def _prebuild_specs(specs, store, arch, device_idx, head_dim, force):
     built = skipped = 0
     failures: List[str] = []
     for index, spec in enumerate(specs, start=1):
@@ -239,7 +252,7 @@ def prebuild(
         print(f"\n{len(failures)} spec(s) failed:", flush=True)
         for line in failures:
             print(f"  {line}", flush=True)
-    return built, skipped
+    return built, skipped, failures
 
 
 def _write_manifest(store: Path, arch: Optional[str]) -> None:
@@ -270,7 +283,7 @@ def _write_manifest(store: Path, arch: Optional[str]) -> None:
     )
 
 
-def prune(*, apply: bool = False) -> List[Path]:
+def prune(*, arch: Optional[str] = None, apply: bool = False) -> List[Path]:
     """Stores whose tag does not match this install. Deletes only when ``apply``.
 
     Each (arch, aiter, rocm) tuple gets its own directory and nothing removes
@@ -282,7 +295,7 @@ def prune(*, apply: bool = False) -> List[Path]:
     store are expected to exist, so "every directory except the current one"
     would have a gfx942 session delete a colleague's gfx950 build.
     """
-    current_dir = variant_store_dir()
+    current_dir = variant_store_dir(arch)
     root = current_dir.parent
     arch = current_dir.name.split("__", 1)[0]
     stale = (
@@ -340,10 +353,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--yes", action="store_true", help="with --prune, delete them")
     args = parser.parse_args(argv)
 
-    if args.prune:
-        prune(apply=args.yes)
-        return 0
-
     if args.arch:
         resolved = resolve_aiter_build_arch()
         if args.arch != resolved:
@@ -356,6 +365,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"{resolved}; this would mislabel the artifacts. Set "
                 "FLASHINFER_ROCM_ARCH_LIST and run on that device instead."
             )
+
+    if args.prune:
+        try:
+            prune(arch=args.arch, apply=args.yes)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        return 0
 
     specs = _select(args.only)
     store = variant_store_dir(args.arch)
@@ -372,15 +388,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  {state:8s} {', '.join(so_name(k) for k in spec.produces)}")
         return 0
 
-    built, skipped = prebuild(
+    built, skipped, failures = prebuild(
         specs,
         arch=args.arch,
         device_idx=args.device,
         head_dim=args.head_dim,
         force=args.force,
     )
-    print(f"built {built}, skipped {skipped} already present -> {store}", flush=True)
-    return 0
+    print(
+        f"built {built}, skipped {skipped} already present, {len(failures)} failed "
+        f"-> {store}",
+        flush=True,
+    )
+    # Non-zero on any failure: an image build that produced an empty store must
+    # not look like a success, or every consumer silently pays the per-shape
+    # compile this exists to remove.
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

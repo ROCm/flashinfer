@@ -264,9 +264,10 @@ an image that ships one. `AITER_JIT_DIR` still takes precedence over both, so an
 operator pointing at a custom AITER build is unaffected.
 
 The `amd-flashinfer-jit-cache` wheel carries a store when one was built before
-the wheel was, under `aiter_variants/<tag>/` — one subdirectory per tag, so a
-wheel for several architectures can hold several and each consumer picks its
-own. The tag is the whole compatibility check, which is why this is not recorded
+the wheel was, under `aiter_variants/<tag>/`. The layout allows one subdirectory
+per tag so a consumer can pick its own, but a single wheel build packages only
+the architecture it ran on — a variant can only be produced on the device it
+targets, so a two-architecture wheel is assembled from two builds. The tag is the whole compatibility check, which is why this is not recorded
 in the AOT manifest: that names a comma-joined list of architectures, and a
 store is always single-arch. A wheel built without running the prebuild simply
 carries none, and variants are built on demand exactly as before.

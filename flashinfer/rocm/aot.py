@@ -230,9 +230,15 @@ def _copy_aiter_variant_store(out_dir: Path) -> None:
     a comma-joined multi-arch list while a store is always single-arch, so the
     two cannot agree; instead each store keeps its own
     ``<arch>__aiter-<ver>__rocm-<ver>`` directory name and the consumer looks up
-    its own tag. A wheel for two architectures therefore carries two
-    subdirectories, and one built without running the prebuild carries none --
-    in which case FlashInfer builds variants on demand exactly as before.
+    its own tag.
+
+    One build packages **one** architecture: the store is keyed on
+    ``resolve_aiter_build_arch()``, which is single-arch by construction, and a
+    variant can only be produced on the device it targets. A wheel carrying two
+    has to be assembled from two builds -- ``copy_built_kernels`` opens with an
+    ``rmtree``, so a second run in the same tree replaces rather than adds. A
+    build that ran no prebuild packages none, and variants are then built on
+    demand exactly as before.
     """
     from ..jit.rocm.aiter_variants import variant_store_dir
 

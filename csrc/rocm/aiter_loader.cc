@@ -37,12 +37,27 @@ constexpr const char* kAbiPinNote =
 // on the consumer's. It is second so an operator-set AITER_JIT_DIR still wins,
 // which is what the failure message below has always told them to set.
 std::vector<std::string> jit_dir_candidates() {
+  // Empty is not unset: `export AITER_JIT_DIR=` is a common way to clear a
+  // variable in an entrypoint, and taking it would dlopen "/<name>.so" and
+  // bury the diagnostic below.
+  auto env_dir = [](const char* name) -> const char* {
+    const char* value = std::getenv(name);
+    return (value && *value) ? value : nullptr;
+  };
+
   std::vector<std::string> dirs;
-  if (const char* env = std::getenv("AITER_JIT_DIR")) dirs.emplace_back(env);
-  if (const char* env = std::getenv("FLASHINFER_AITER_VARIANT_DIR")) dirs.emplace_back(env);
+  // An operator-set AITER_JIT_DIR *replaces* the baked default rather than
+  // preceding it. It selects which AITER build to use, so falling through to
+  // the pinned install would load a kernel from a different build than the one
+  // they chose -- silently, since the mangled symbol still resolves.
+  const char* aiter_dir = env_dir("AITER_JIT_DIR");
+  if (aiter_dir) dirs.emplace_back(aiter_dir);
+  if (const char* env = env_dir("FLASHINFER_AITER_VARIANT_DIR")) dirs.emplace_back(env);
+  if (!aiter_dir) {
 #ifdef FLASHINFER_AITER_JIT_DIR
-  dirs.emplace_back(FLASHINFER_AITER_JIT_DIR);
+    dirs.emplace_back(FLASHINFER_AITER_JIT_DIR);
 #endif
+  }
   if (dirs.empty()) {
     throw std::runtime_error(
         "AITER_JIT_DIR env var not set and FLASHINFER_AITER_JIT_DIR not compiled in. "
