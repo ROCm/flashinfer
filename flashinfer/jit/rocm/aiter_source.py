@@ -23,6 +23,7 @@ and a CK GEMM module), and a module may be built in a *specialized* form -- see
 :class:`AiterModule`.
 """
 
+import contextlib
 import functools
 import inspect
 import os
@@ -31,7 +32,7 @@ import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 from filelock import FileLock
 
@@ -332,6 +333,52 @@ def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
         return _build_aiter_lib(module_name, md_name, module.blob_gen_cmd, lib_path)
 
 
+@contextlib.contextmanager
+def _aiter_env_scope(build_dir: Path, *, symbol_visible: bool) -> Iterator[None]:
+    """Point AITER's process-global build knobs at ``build_dir``, then restore.
+
+    ``symbol_visible`` is False for artifacts that are ``dlopen``ed and resolved
+    by mangled name rather than linked; those need AITER's own default
+    visibility, not the linkable rebuild.
+
+    Callers must hold :data:`_BUILD_LOCK` -- this mutates process-global state,
+    so two scopes open at once have the first to exit restore the environment
+    under the second.
+    """
+    prev = {
+        "AITER_SYMBOL_VISIBLE": os.environ.get("AITER_SYMBOL_VISIBLE"),
+        "AITER_JIT_DIR": os.environ.get("AITER_JIT_DIR"),
+        "GPU_ARCHS": os.environ.get("GPU_ARCHS"),
+        "ROCM_HOME": os.environ.get("ROCM_HOME"),
+    }
+    try:
+        # Inside the try so a failure here still restores the environment: a
+        # leaked AITER_JIT_DIR sends the *next* module's .so hunt to the wrong
+        # directory.
+        from ...rocm.hip_utils import get_rocm_home
+
+        if symbol_visible:
+            os.environ["AITER_SYMBOL_VISIBLE"] = "1"
+        os.environ["AITER_JIT_DIR"] = str(build_dir)
+        # AITER splits GPU_ARCHS on ';' and validates each entry, so a
+        # comma-joined list reaches it as one unparseable token. A single
+        # architecture sidesteps the separator entirely -- and is required
+        # regardless; see resolve_aiter_build_arch.
+        os.environ["GPU_ARCHS"] = resolve_aiter_build_arch()
+        os.environ["ROCM_HOME"] = get_rocm_home()
+        yield
+    finally:
+        for key, value in prev.items():
+            if value is None:
+                # GPU_ARCHS is the exception: AITER's own Python ops build
+                # outside this scope and assert on an unset value, and this is
+                # the arch _ensure_aiter_gpu_archs would resolve anyway.
+                if key != "GPU_ARCHS":
+                    os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _build_aiter_lib(
     module_name: str,
     md_name: str,
@@ -348,29 +395,8 @@ def _build_aiter_lib(
     aiter_build_dir = libs_dir / "build"
     aiter_build_dir.mkdir(parents=True, exist_ok=True)
 
-    prev = {
-        "AITER_SYMBOL_VISIBLE": os.environ.get("AITER_SYMBOL_VISIBLE"),
-        "AITER_JIT_DIR": os.environ.get("AITER_JIT_DIR"),
-        "GPU_ARCHS": os.environ.get("GPU_ARCHS"),
-        "ROCM_HOME": os.environ.get("ROCM_HOME"),
-    }
-
     built: Optional[Path] = None
-    try:
-        # Inside the try so a failure here still restores the environment: a
-        # leaked AITER_JIT_DIR sends the *next* module's .so hunt to the wrong
-        # directory.
-        from ...rocm.hip_utils import get_rocm_home
-
-        os.environ["AITER_SYMBOL_VISIBLE"] = "1"
-        os.environ["AITER_JIT_DIR"] = str(aiter_build_dir)
-        # AITER splits GPU_ARCHS on ';' and validates each entry, so a
-        # comma-joined list reaches it as one unparseable token. A single
-        # architecture sidesteps the separator entirely -- and is required
-        # regardless; see resolve_aiter_build_arch.
-        os.environ["GPU_ARCHS"] = resolve_aiter_build_arch()
-        os.environ["ROCM_HOME"] = get_rocm_home()
-
+    with _aiter_env_scope(aiter_build_dir, symbol_visible=True):
         from aiter.jit import core as aiter_core
         from aiter.jit.core import build_module, get_args_of_build
 
@@ -429,16 +455,6 @@ def _build_aiter_lib(
         built = _find_built_so(
             md_name, aiter_build_dir, Path(aiter_core.get_user_jit_dir())
         )
-    finally:
-        for k, v in prev.items():
-            if v is None:
-                # GPU_ARCHS is the exception: AITER's own Python ops build
-                # outside this scope and assert on an unset value, and this is
-                # the arch _ensure_aiter_gpu_archs would resolve anyway.
-                if k != "GPU_ARCHS":
-                    os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
 
     if built is None:
         raise RuntimeError(

@@ -606,8 +606,11 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
 
     Unlike mha_varlen_fwd, mha_fwd ships no prebuilt .so files in the aiter
     package; every (dtype, needs_mask, has_lse) combination is JIT-built on first
-    use, which takes 20+ minutes per variant. Bootstrapping here surfaces the
-    build at plan time rather than as a dlopen failure inside the C++ path.
+    use -- 280-360s on gfx942 at MAX_JOBS=32, and the costliest of the three mha
+    families. Bootstrapping here surfaces the build at plan time rather than as a
+    dlopen failure inside the C++ path.
+
+    head_dim is a cache key but not a build axis: one .so serves every head dim.
     """
     from aiter.ops.mha import mha_fwd
 
