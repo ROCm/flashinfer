@@ -196,3 +196,87 @@ class TestPrebuildDriver:
         assert tag.startswith("gfx942__")
         assert "__aiter-" in tag
         assert "__rocm-" in tag
+
+
+class TestStoreLookup:
+    """find_variant / prebuilt / export_variant_store, and the C++ candidate order."""
+
+    def _store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path)
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        return tmp_path
+
+    def test_a_missing_variant_is_not_found(self, tmp_path, monkeypatch):
+        self._store(tmp_path, monkeypatch)
+        key = av.reachable_variants()[0]
+        assert av.find_variant(key) is None
+
+    def test_a_present_variant_is_found(self, tmp_path, monkeypatch):
+        store = self._store(tmp_path, monkeypatch)
+        key = av.reachable_variants()[0]
+        (store / av.so_name(key)).write_bytes(b"\x7fELF")
+        assert av.find_variant(key) == store / av.so_name(key)
+
+    def test_the_override_is_searched_first(self, tmp_path, monkeypatch):
+        """An image- or wheel-supplied store must win over a half-populated
+        cache dir left by an earlier run."""
+        cache, shipped = tmp_path / "cache", tmp_path / "shipped"
+        cache.mkdir()
+        shipped.mkdir()
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: cache)
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(shipped))
+        key = av.reachable_variants()[0]
+        (cache / av.so_name(key)).write_bytes(b"\x7fELF")
+        (shipped / av.so_name(key)).write_bytes(b"\x7fELF")
+        assert av.find_variant(key) == shipped / av.so_name(key)
+
+    def test_prebuilt_needs_both_lse_arms_for_varlen(self, tmp_path, monkeypatch):
+        """The varlen bootstrap emits both arms, so one present file does not
+        make the call a no-op."""
+        torch = pytest.importorskip("torch")
+        store = self._store(tmp_path, monkeypatch)
+        kw = dict(has_logits_cap=True, needs_mask=True)
+        one = av.VariantKey(av.Family.MHA_VARLEN_FWD, "bf16", True, True, False)
+        (store / av.so_name(one)).write_bytes(b"\x7fELF")
+        assert not av.prebuilt(
+            av.Family.MHA_VARLEN_FWD, torch.bfloat16, has_lse=None, **kw
+        )
+
+        other = av.VariantKey(av.Family.MHA_VARLEN_FWD, "bf16", True, True, True)
+        (store / av.so_name(other)).write_bytes(b"\x7fELF")
+        assert av.prebuilt(av.Family.MHA_VARLEN_FWD, torch.bfloat16, has_lse=None, **kw)
+
+    def test_prebuilt_is_false_for_an_unsupported_dtype(self, tmp_path, monkeypatch):
+        torch = pytest.importorskip("torch")
+        self._store(tmp_path, monkeypatch)
+        assert not av.prebuilt(
+            av.Family.MHA_FWD, torch.float32, needs_mask=True, has_lse=False
+        )
+
+    def test_export_skips_a_store_that_does_not_exist(self, tmp_path, monkeypatch):
+        """Exporting a nonexistent directory would only lengthen the loader's
+        candidate list and its failure message."""
+        monkeypatch.setattr(
+            av, "variant_store_dir", lambda arch=None: tmp_path / "nope"
+        )
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        assert av.export_variant_store() is None
+        import os
+
+        assert "FLASHINFER_AITER_VARIANT_DIR" not in os.environ
+
+    def test_export_publishes_an_existing_store(self, tmp_path, monkeypatch):
+        import os
+
+        self._store(tmp_path, monkeypatch)
+        assert av.export_variant_store() == tmp_path
+        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == str(tmp_path)
+
+
+def test_the_cpp_tries_the_variant_dir_and_keeps_aiter_jit_dir_first(loader_src):
+    """Order is load-bearing: an operator-set AITER_JIT_DIR must still win,
+    because that is what the loader's own failure message tells them to set."""
+    assert "FLASHINFER_AITER_VARIANT_DIR" in loader_src
+    aiter_at = loader_src.index('getenv("AITER_JIT_DIR")')
+    variant_at = loader_src.index('getenv("FLASHINFER_AITER_VARIANT_DIR")')
+    assert aiter_at < variant_at

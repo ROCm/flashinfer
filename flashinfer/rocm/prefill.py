@@ -29,6 +29,7 @@ from .aiter_utils import handle_aiter_probe_failure
 from .api_compat import reject_cuda_only
 from .arch_caps import capability_reason, require_capability
 from ..jit.core import logger
+from ..jit.rocm import aiter_variants as _variants
 from ..jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
@@ -567,6 +568,18 @@ def _aiter_bootstrap_single_prefill_varlen(
     varlen .so because mha_fwd has no _logits arm). The .so is split on whether
     anything is masked (mask vs nmask), so pass needs_mask, not causal.
     """
+    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
+    # exists, so there is nothing to force. Skipping here is what turns the
+    # store into a latency win: otherwise AITER rebuilds it regardless.
+    if _variants.prebuilt(
+        _variants.Family.MHA_VARLEN_FWD,
+        dtype,
+        has_logits_cap=True,
+        needs_mask=needs_mask,
+        has_lse=None,
+    ):
+        return
+
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
     k = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
@@ -612,6 +625,17 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
 
     head_dim is a cache key but not a build axis: one .so serves every head dim.
     """
+    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
+    # exists, so there is nothing to force. Skipping here is what turns the
+    # store into a latency win: otherwise AITER rebuilds it regardless.
+    if _variants.prebuilt(
+        _variants.Family.MHA_FWD,
+        dtype,
+        needs_mask=needs_mask,
+        has_lse=has_lse,
+    ):
+        return
+
     from aiter.ops.mha import mha_fwd
 
     device = torch.device("cuda", device_idx)
@@ -657,6 +681,18 @@ def _aiter_bootstrap_batch_ragged_prefill(
     ``_aiter_native_page_sizes()``). Both loop over return_lse here because the .so is
     also split on lse, and plan() cannot know which run() will request.
     """
+    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
+    # exists, so there is nothing to force. Skipping here is what turns the
+    # store into a latency win: otherwise AITER rebuilds it regardless.
+    if _variants.prebuilt(
+        _variants.Family.MHA_VARLEN_FWD,
+        dtype,
+        has_logits_cap=has_logits_cap,
+        needs_mask=needs_mask,
+        has_lse=None,
+    ):
+        return
+
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
     k = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
@@ -695,6 +731,18 @@ def _aiter_bootstrap_batch_prefill(
     device_idx: int,
 ) -> None:
     """Force AITER's lazy JIT to compile mha_batch_prefill_*.so for this variant."""
+    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
+    # exists, so there is nothing to force. Skipping here is what turns the
+    # store into a latency win: otherwise AITER rebuilds it regardless.
+    if _variants.prebuilt(
+        _variants.Family.MHA_BATCH_PREFILL,
+        dtype,
+        has_logits_cap=has_logits_cap,
+        needs_mask=needs_mask,
+        has_lse=has_lse,
+    ):
+        return
+
     from aiter.ops.mha import mha_batch_prefill_func
 
     device = torch.device("cuda", device_idx)

@@ -249,6 +249,66 @@ def find_variant(key: VariantKey) -> Optional[Path]:
     return None
 
 
+def dtype_tag(dtype) -> Optional[str]:
+    """``torch.bfloat16`` -> ``"bf16"``. None for a dtype with no variant."""
+    import torch
+
+    return {torch.bfloat16: "bf16", torch.float16: "fp16"}.get(dtype)
+
+
+def prebuilt(
+    family: Family,
+    dtype,
+    *,
+    has_logits_cap: bool = False,
+    needs_mask: bool,
+    has_lse: Optional[bool] = None,
+) -> bool:
+    """Is every ``.so`` this bootstrap would produce already in the store?
+
+    ``has_lse=None`` asks about a varlen bootstrap, which emits both arms from
+    one call -- so both must be present, or the call still has work to do.
+
+    Only the store is consulted, not AITER's own JIT directory: a variant
+    already there makes the bootstrap a no-op anyway (measured at 0.0s), so
+    checking it would buy nothing and would couple this to AITER's layout.
+    """
+    tag = dtype_tag(dtype)
+    if tag is None:
+        return False
+    lse_values = (False, True) if has_lse is None else (has_lse,)
+    return all(
+        find_variant(VariantKey(family, tag, has_logits_cap, needs_mask, lse))
+        is not None
+        for lse in lse_values
+    )
+
+
+def export_variant_store() -> Optional[Path]:
+    """Publish the store to ``FLASHINFER_AITER_VARIANT_DIR`` for the C++ loader.
+
+    Resolved here and passed through the environment rather than baked in as a
+    ``-D``: an AOT-packaged module carries whatever path its *build* machine
+    had, which does not exist on the consumer's. ``aiter_loader.cc`` reads this
+    at call time.
+
+    An operator-set value wins -- that is how a store shipped in an image or a
+    jit-cache wheel is pointed at. A store that does not exist is not exported,
+    so the loader's candidate list stays as short as the install warrants.
+    """
+    existing = store_override()
+    if existing is not None:
+        return existing
+    try:
+        store = variant_store_dir()
+    except Exception:
+        return None
+    if not store.is_dir():
+        return None
+    os.environ["FLASHINFER_AITER_VARIANT_DIR"] = str(store)
+    return store
+
+
 def read_manifest(root: Path) -> Optional[dict]:
     """The store's manifest, or None when it is absent or unreadable.
 
