@@ -334,8 +334,18 @@ def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
 
 
 @contextlib.contextmanager
-def _aiter_env_scope(build_dir: Path, *, symbol_visible: bool) -> Iterator[None]:
+def _aiter_env_scope(
+    build_dir: Optional[Path], *, symbol_visible: bool
+) -> Iterator[None]:
     """Point AITER's process-global build knobs at ``build_dir``, then restore.
+
+    ``build_dir=None`` leaves ``AITER_JIT_DIR`` alone, which is required for any
+    build whose artifact AITER then *imports*: it adds that directory to
+    ``sys.path`` when it is first imported, so a value set later produces a
+    module it cannot find (``ModuleNotFoundError: mha_varlen_fwd_...``). That is
+    the same frozen-at-import hazard as the ``bd_dir`` global behind
+    :func:`_find_built_so`. A linked artifact is unaffected, since nothing
+    imports it.
 
     ``symbol_visible`` is False for artifacts that are ``dlopen``ed and resolved
     by mangled name rather than linked; those need AITER's own default
@@ -359,7 +369,8 @@ def _aiter_env_scope(build_dir: Path, *, symbol_visible: bool) -> Iterator[None]
 
         if symbol_visible:
             os.environ["AITER_SYMBOL_VISIBLE"] = "1"
-        os.environ["AITER_JIT_DIR"] = str(build_dir)
+        if build_dir is not None:
+            os.environ["AITER_JIT_DIR"] = str(build_dir)
         # AITER splits GPU_ARCHS on ';' and validates each entry, so a
         # comma-joined list reaches it as one unparseable token. A single
         # architecture sidesteps the separator entirely -- and is required

@@ -149,3 +149,50 @@ def test_only_varlen_emits_both_lse_arms():
     both = {b.family for b in av.builds() if b.emits_both_lse}
     assert both == {av.Family.MHA_VARLEN_FWD}
     assert len(av.builds()) == 32
+
+
+class TestPrebuildDriver:
+    """The driver maps a BuildSpec to one of prefill.py's bootstraps.
+
+    No GPU and no build: what is worth guarding is the mapping being total and
+    the family filter rejecting typos, not AITER's compiler.
+    """
+
+    def test_every_family_has_a_bootstrap(self):
+        """_run_build dispatches on Family and asserts on anything unhandled.
+        A new family must fail loudly rather than silently build nothing."""
+        import inspect
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        source = inspect.getsource(drv._run_build)
+        for family in av.Family:
+            assert f"Family.{family.name}" in source, (
+                f"{family.name} has no arm in _run_build"
+            )
+
+    def test_the_family_filter_rejects_a_typo(self):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        with pytest.raises(SystemExit, match="unknown family"):
+            drv._select("mha_fwdd")
+
+    def test_the_family_filter_selects_one_family(self):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        selected = drv._select("mha_fwd")
+        assert selected
+        assert {s.family for s in selected} == {av.Family.MHA_FWD}
+
+    def test_no_filter_selects_everything(self):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        assert len(drv._select(None)) == len(av.builds())
+
+    def test_the_store_tag_carries_arch_aiter_and_rocm(self):
+        """All three are in the directory name, so a bump makes the lookup miss
+        into a rebuild rather than load a mismatched artifact."""
+        tag = av.variant_store_dir("gfx942").name
+        assert tag.startswith("gfx942__")
+        assert "__aiter-" in tag
+        assert "__rocm-" in tag
