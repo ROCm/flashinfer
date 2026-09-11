@@ -650,14 +650,14 @@ class TestLegend:
 
 
 class TestAiterSoftcapFloor:
-    """The kv_len where AITER's causal soft-cap defect starts is per-arch.
+    """AITER's causal soft-cap defect is per-arch, not per-kv_len.
 
-    gfx950 is wrong at every length on amd-aiter 0.1.20 while gfx942 is only
-    wrong from 512 up, so a single literal cannot express both.
+    On amd-aiter 0.1.20 gfx950 is wrong at every length while gfx942 is clean
+    at every length, so a single literal cannot express both.
     """
 
-    def test_gfx942_keeps_the_512_floor(self):
-        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx942") == 512
+    def test_gfx942_has_no_defective_range(self):
+        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx942") is None
 
     def test_gfx950_has_no_safe_kv_len(self):
         assert arch_caps.aiter_softcap_defect_min_kv_len("gfx950") == 0

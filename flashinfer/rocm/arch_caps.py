@@ -271,19 +271,21 @@ _MEASURED_950_MLA = (
 # disable the logits_soft_cap=0 path, which measures clean. Only the kv_len
 # threshold differs by architecture, so that is what lives here.
 #
-# Measured on amd-aiter 0.1.20 against an fp32 reference, causal head_dim=128:
-#   gfx942  clean below 512 (full suite passes), wrong at/above it
-#   gfx950  wrong at every length tried -- 37..511 gave 0.53-3.38 abs err, NaN
-#           at 256, where logits_soft_cap=0 stays at ~0.001
-_AITER_SOFTCAP_DEFECT_MIN_KV_LEN = {"gfx942": 512, "gfx950": 0}
+# Measured on amd-aiter 0.1.20 against an fp32 reference, causal head_dim=128,
+# swept over qo_len x kv_len rather than a single square size:
+#   gfx942  clean at every cell and every cap -- no defective range
+#   gfx950  wrong at every cell, 0.04-2.8 abs err with NaNs, where cap=0 is
+#           clean to 0.008. No safe kv_len, so the gate cannot be narrowed.
+_AITER_SOFTCAP_DEFECT_MIN_KV_LEN = {"gfx942": None, "gfx950": 0}
 
 
 def aiter_softcap_defect_min_kv_len(arch: str) -> Optional[int]:
     """Smallest kv_len at which AITER miscomputes a causal soft cap on ``arch``.
 
     ``0`` means no length is safe, so compare with ``is not None`` rather than
-    truthiness. ``None`` means the architecture is unknown, which disarms the
-    guard rather than refusing to route on a machine that is probably fine.
+    truthiness. ``None`` means nothing is gated -- the architecture has no
+    defective range, or it is unrecognised and the guard disarms rather than
+    refusing to route on a machine that is probably fine.
     """
     return _AITER_SOFTCAP_DEFECT_MIN_KV_LEN.get(normalize_arch(arch))
 

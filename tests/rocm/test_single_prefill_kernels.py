@@ -342,15 +342,15 @@ def test_auto_backend_selects_aiter(head_dim, return_lse):
 
 # (causal, logits_soft_cap, head_dim, kv_len, expect_aiter)
 _SOFTCAP_ROUTING = [
-    (True, 8.0, 128, 512, False),  # the defect region
-    (True, 8.0, 128, 2048, False),
     (True, 0.0, 128, 512, True),  # no cap: asm path, exact
     (False, 8.0, 128, 512, True),  # non-causal: exact
     (True, 8.0, 64, 512, True),  # other head dims unaffected
     (True, 8.0, 256, 512, True),
-    # Short kv is arch-dependent: below gfx942's floor of 512 but inside the
-    # defect on gfx950, where no kv_len is safe. None = derive from the floor.
+    # The capped causal head_dim=128 cases are arch-dependent: gfx950 is wrong
+    # at every length, gfx942 at none. None = derive from the table.
     (True, 8.0, 128, 128, None),
+    (True, 8.0, 128, 512, None),
+    (True, 8.0, 128, 2048, None),
 ]
 
 
@@ -408,9 +408,13 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     'auto' silently falls back; asking for AITER by name is a deliberate choice,
     so the defect region has to raise rather than degrade.
     """
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if aiter_softcap_defect_min_kv_len(_device_arch(device)) is None:
+        pytest.skip("no defective kv_len range on this architecture")
 
     kv_len, qo_len, num_heads, head_dim = 512, 37, 4, 128
     q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
@@ -427,23 +431,28 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
 
 
-def test_aiter_is_correct_just_below_the_softcap_floor():
-    """AITER must actually be right at the largest kv_len the table calls safe.
+@pytest.mark.parametrize("qo_len", [17, 512, 2048])
+@pytest.mark.parametrize("kv_len", [512, 2048, 4096])
+def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len):
+    """Every shape the table leaves ungated must hold up against fp32.
 
-    The routing test and the numeric skip both read the floor from arch_caps, so
-    on their own they stay green if the floor is edited to the wrong value. This
-    asserts the boundary against an fp32 reference instead.
+    The routing test and the numeric skip both read the bound from arch_caps, so
+    on their own they stay green however it is edited -- a wrongly widened range
+    would simply be believed. Swept over qo_len *and* kv_len because a single
+    square size cannot tell the two apart, and the defect does not track kv_len.
     """
     from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
 
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if qo_len > kv_len:
+        pytest.skip("causal attention requires kv_len >= qo_len")
     floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
-    if floor is None or floor == 0:
-        pytest.skip("no kv_len is declared safe on this architecture")
+    if floor is not None and kv_len >= floor:
+        pytest.skip("kv_len is inside this architecture's gated range")
 
-    kv_len, qo_len, num_heads, head_dim, cap = floor - 1, 17, 4, 128, 8.0
+    num_heads, head_dim, cap = 4, 128, 8.0
     torch.manual_seed(0)
     q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
     k = torch.randn(kv_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
