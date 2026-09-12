@@ -159,7 +159,7 @@ library's actual routing. Do not edit it by hand; run
 | Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
-| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
+| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel; everything else is CK Tile. |
 | `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather. |
 | `mla` | `aiter` -- only backend | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` -- opt-in | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
