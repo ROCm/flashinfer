@@ -59,7 +59,7 @@ from ..utils import (
 
 
 # Two independent versions — do not merge them. The first is the release that
-# widened native paged-prefill to {128, 256, 1024}; changing it changes which page
+# widened native paged-prefill beyond {16, 1024}; changing it changes which page
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
@@ -75,6 +75,19 @@ FP8_PREFILL_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
 
 # fp8 prefill writes bf16: AITER ships no fp8-output prefill kernel.
 FP8_PREFILL_OUT_DTYPE = torch.bfloat16
+
+
+def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
+    """Page sizes we will *route* through the native paged kernel.
+
+    Narrower than capability on purpose. fp8 must take it -- the flat-gather
+    route runs mha_varlen_fwd, which has no fp8 kernel -- while fp16/bf16 keep
+    the gather everywhere it already served them, because it measured equal or
+    faster than native at every batch size (docs/rocm/backends.md). Widening
+    this for fp16/bf16 is a benchmark, not a one-line edit.
+    """
+    native = _aiter_native_page_sizes()
+    return native if dtype in FP8_PREFILL_DTYPES else native & {1024}
 
 
 @functools.cache
@@ -100,7 +113,7 @@ def _aiter_native_page_sizes() -> frozenset:
                 _AITER_LAST_VALIDATED,
             )
         if installed >= Version(_AITER_NATIVE_PAGING_SINCE):
-            return frozenset({128, 256, 1024})
+            return frozenset({1, 16, 1024})
         return frozenset({16, 1024})
     except (PackageNotFoundError, ValueError):
         return frozenset({16, 1024})
@@ -795,7 +808,10 @@ def _aiter_native_paging_available(
     # not mistaken for an AITER capability failure and cached as "unsupported".
     torch.cuda.synchronize(device_idx)
     try:
-        for has_lse in (True, False):
+        # fp8 has no LSE instance at any page size, so probing one would report
+        # the whole config unsupported. run() rejects fp8 + return_lse instead.
+        lse_variants = (False,) if dtype in FP8_PREFILL_DTYPES else (True, False)
+        for has_lse in lse_variants:
             _aiter_bootstrap_batch_prefill(
                 dtype,
                 has_logits_cap,
@@ -2566,7 +2582,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
             # use_native_paging. Shared by the auto route and the explicit-aiter
             # guard below so the two cannot disagree about the same call.
             softcap_kv_len = (
-                None if page_size in _aiter_native_page_sizes() else self._max_kv_len
+                None
+                if page_size in _aiter_paged_route_page_sizes(q_data_type)
+                else self._max_kv_len
             )
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
@@ -2630,7 +2648,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             needs_mask = _aiter_needs_mask(causal, window_left, kv_len=None)
             reason = None
             with _aiter_bootstrap_lock:
-                if page_size in _aiter_native_page_sizes():
+                if page_size in _aiter_paged_route_page_sizes(q_data_type):
                     use_native_paging = _aiter_native_paging_available(
                         q_data_type,
                         has_logits,
@@ -2991,6 +3009,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 check_shape_dtype_device(
                     lse, (q.size(0), q.size(1)), torch.float32, q.device, "lse"
                 )
+
+        if q.dtype in FP8_PREFILL_DTYPES and (return_lse or lse is not None):
+            raise NotImplementedError(
+                "fp8 prefill cannot return LSE: AITER builds no LSE instance of "
+                "the fp8 kernel at any page size. Use bf16/fp16 for LSE."
+            )
 
         out_dtype = self._cached_o_data_type or q.dtype
         if out is None:
