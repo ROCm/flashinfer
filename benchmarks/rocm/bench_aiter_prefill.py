@@ -152,12 +152,13 @@ def _build_paged_kv(batch, kv_len, page_size, num_kv_heads, head_dim, dtype, dev
 
 @torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
-    from flashinfer.rocm.prefill import _aiter_native_page_sizes
+    from flashinfer.rocm.prefill import _aiter_paged_route_page_sizes
 
-    native_pages = _aiter_native_page_sizes()
-    # Pick the largest available native page size ≤ 256 (prefer 256 for the sweep)
-    native_page = max(p for p in native_pages if p <= 256) if native_pages else 128
-    flat_gather_page = 16  # deliberately not in native_pages
+    # Route, not capability: bf16 is routed natively only at 1024, so picking
+    # from the capability set would label two flat-gather rows as "native".
+    routed = _aiter_paged_route_page_sizes(torch.bfloat16)
+    native_page = max(routed) if routed else 1024
+    flat_gather_page = 16  # deliberately not routed for bf16
 
     configs: list[KernelConfig] = []
 

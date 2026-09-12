@@ -60,7 +60,7 @@ from ..utils import (
 
 
 # Two independent versions — do not merge them. The first is the release that
-# widened native paged-prefill to {128, 256, 1024}; changing it changes which page
+# widened native paged-prefill beyond {16, 1024}; changing it changes which page
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
@@ -68,6 +68,28 @@ _AITER_LAST_VALIDATED = "0.1.20+rocm10.1.0a20260819.3135022"
 # Newest AITER carrying the mha_varlen_fwd soft-cap defect. Bump only after
 # re-measuring against an fp32 reference; the wrong answer is silent.
 _AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21"
+
+# fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
+# E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is
+# accepted and returns NaN -- so membership here is the "is this fp8" test and
+# `_require_native_fp8_dtype` is the one that admits it.
+FP8_PREFILL_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
+
+# fp8 prefill writes bf16: AITER ships no fp8-output prefill kernel.
+FP8_PREFILL_OUT_DTYPE = torch.bfloat16
+
+
+def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
+    """Page sizes we will *route* through the native paged kernel.
+
+    Narrower than capability on purpose. fp8 must take it -- the flat-gather
+    route runs mha_varlen_fwd, which has no fp8 kernel -- while fp16/bf16 keep
+    the gather everywhere it already served them, because it measured equal or
+    faster than native at every batch size (docs/rocm/backends.md). Widening
+    this for fp16/bf16 is a benchmark, not a one-line edit.
+    """
+    native = _aiter_native_page_sizes()
+    return native if dtype in FP8_PREFILL_DTYPES else native & {1024}
 
 
 @functools.cache
@@ -93,7 +115,7 @@ def _aiter_native_page_sizes() -> frozenset:
                 _AITER_LAST_VALIDATED,
             )
         if installed >= Version(_AITER_NATIVE_PAGING_SINCE):
-            return frozenset({128, 256, 1024})
+            return frozenset({1, 16, 1024})
         return frozenset({16, 1024})
     except (PackageNotFoundError, ValueError):
         return frozenset({16, 1024})
@@ -454,6 +476,52 @@ def _aiter_softcap_defect(
     return aiter_softcap_defect_arch(_device_arch(device))
 
 
+def _native_fp8_dtype() -> Optional[torch.dtype]:
+    """The fp8 encoding this GPU's AITER kernels actually read.
+
+    Taken from ``aiter.dtypes.fp8`` rather than an arch table of our own: AITER
+    picks it per architecture and the kernels are compiled against that choice.
+    """
+    try:
+        import aiter
+
+        return aiter.dtypes.fp8
+    except Exception:  # noqa: BLE001 - absence is handled by the aiter gate
+        return None
+
+
+def _require_native_fp8_dtype(dtype_q: torch.dtype) -> None:
+    """Reject the fp8 encoding this architecture does not use.
+
+    Both encodings are 8-bit and neither AITER nor the .so name distinguishes
+    them, so the wrong one is read under the wrong exponent bias. Measured on
+    gfx942: e4m3fn returns NaN where e4m3fnuz is exact.
+    """
+    native = _native_fp8_dtype()
+    if dtype_q in FP8_PREFILL_DTYPES and native is not None and dtype_q != native:
+        raise NotImplementedError(
+            f"fp8 prefill needs this GPU's encoding, {native}; got {dtype_q}, "
+            "which the kernel reads under the wrong exponent bias and returns "
+            "NaN for. Re-quantize with aiter.dtypes.fp8."
+        )
+
+
+def _reject_fp8_on_fa2(dtype_q: torch.dtype, backend: str) -> None:
+    """Raise if an fp8 prefill resolved to fa2, which has no fp8 kernel.
+
+    Without this the refusal surfaces from ninja: the in-tree kernel rejects
+    8-bit types with a static_assert, so the caller gets a compiler log.
+    """
+    if backend == "fa2" and dtype_q in FP8_PREFILL_DTYPES:
+        raise NotImplementedError(
+            f"fp8 prefill (dtype={dtype_q}) has no in-tree fa2 kernel on ROCm -- "
+            "include/flashinfer/rocm/attention/prefill.cuh rejects 8-bit types at "
+            "compile time. AITER serves fp8 only on paged batch prefill, via "
+            "BatchPrefillWithPagedKVCacheWrapper with per-tensor scale_q/scale_k/"
+            "scale_v. Otherwise cast q/k/v to bf16 or fp16."
+        )
+
+
 def _auto_select_prefill_backend(
     device: torch.device,
     *,
@@ -468,6 +536,7 @@ def _auto_select_prefill_backend(
     causal: bool = False,
     logits_soft_cap: Optional[float] = None,
     kv_len: Optional[int] = None,
+    allow_fp8: bool = False,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -495,8 +564,13 @@ def _auto_select_prefill_backend(
             reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
         elif has_custom_mask:
             reason = "custom mask (not supported by AITER)"
-        elif dtype_q not in (torch.float16, torch.bfloat16):
-            reason = f"dtype={dtype_q} (AITER requires fp16/bf16)"
+        elif dtype_q not in (torch.float16, torch.bfloat16) and not (
+            allow_fp8 and dtype_q in FP8_PREFILL_DTYPES
+        ):
+            reason = (
+                f"dtype={dtype_q} (AITER requires fp16/bf16"
+                f"{'/fp8' if allow_fp8 else ''})"
+            )
         elif dtype_q != dtype_kv:
             reason = f"dtype_q={dtype_q} != dtype_kv={dtype_kv} (AITER requires equal dtypes)"
         elif head_dim_qk != head_dim_vo:
@@ -749,6 +823,12 @@ def _aiter_bootstrap_batch_prefill(
     kv_page_indices = torch.tensor([0], dtype=torch.int32, device=device)
     kv_last_page_lens = torch.tensor([seq_k], dtype=torch.int32, device=device)
     softmax_scale = head_dim**-0.5
+    # fp8 has no no-scale kernel instance, so the probe has to carry descales or
+    # it proves the wrong thing: the build succeeds and dispatch finds nothing.
+    descales = {}
+    if dtype in FP8_PREFILL_DTYPES:
+        one = torch.ones(1, dtype=torch.float32, device=device)
+        descales = dict(q_descale=one, k_descale=one.clone(), v_descale=one.clone())
     mha_batch_prefill_func(
         q=q,
         k=k,
@@ -763,6 +843,7 @@ def _aiter_bootstrap_batch_prefill(
         causal=needs_mask,
         return_lse=has_lse,
         kv_last_page_lens=kv_last_page_lens,
+        **descales,
     )
 
 
@@ -803,7 +884,10 @@ def _aiter_native_paging_available(
     # not mistaken for an AITER capability failure and cached as "unsupported".
     torch.cuda.synchronize(device_idx)
     try:
-        for has_lse in (True, False):
+        # fp8 has no LSE instance at any page size, so probing one would report
+        # the whole config unsupported. run() rejects fp8 + return_lse instead.
+        lse_variants = (False,) if dtype in FP8_PREFILL_DTYPES else (True, False)
+        for has_lse in lse_variants:
             _aiter_bootstrap_batch_prefill(
                 dtype,
                 has_logits_cap,
@@ -953,6 +1037,9 @@ def get_batch_prefill_module(backend, *args):
             sinks: Optional[torch.Tensor] = None,
             aiter_flat_gather_idx: Optional[torch.Tensor] = None,
             aiter_flat_kv_indptr: Optional[torch.Tensor] = None,
+            q_descale: Optional[torch.Tensor] = None,
+            k_descale: Optional[torch.Tensor] = None,
+            v_descale: Optional[torch.Tensor] = None,
         ) -> None:
             _c_paged_run(
                 q,
@@ -973,6 +1060,9 @@ def get_batch_prefill_module(backend, *args):
                 max_kv_len,
                 aiter_flat_gather_idx,
                 aiter_flat_kv_indptr,
+                q_descale,
+                k_descale,
+                v_descale,
             )
 
         def aiter_ragged_run(
@@ -1740,6 +1830,8 @@ def single_prefill_with_kv_cache(
             kv_len=kv_len,
         )
 
+    _reject_fp8_on_fa2(q.dtype, backend)
+
     if backend == "aiter":
         # Outside the probe on purpose: this raises ArchCapabilityError, which
         # gates known-bad toolchains and must never be demoted to a silent fa2.
@@ -2392,16 +2484,19 @@ class BatchPrefillWithPagedKVCacheWrapper:
         if kv_data_type is None:
             kv_data_type = q_data_type
         kv_data_type = canonicalize_torch_dtype(kv_data_type)
-        # ROCm prefill writes the output in the query dtype, so this is the
-        # only o_data_type it can satisfy.
-        o_data_type = canonicalize_torch_dtype(
-            q_data_type if o_data_type is None else o_data_type
+        # ROCm prefill writes the output in the query dtype, except for fp8,
+        # where AITER has no fp8-output kernel and bf16 is the only choice.
+        native_o_data_type = (
+            FP8_PREFILL_OUT_DTYPE if q_data_type in FP8_PREFILL_DTYPES else q_data_type
         )
-        if o_data_type != q_data_type:
+        o_data_type = canonicalize_torch_dtype(
+            native_o_data_type if o_data_type is None else o_data_type
+        )
+        if o_data_type != native_o_data_type:
             raise NotImplementedError(
-                f"o_data_type={o_data_type} differs from q_data_type="
-                f"{q_data_type}; ROCm prefill writes the output in the query "
-                "dtype and cannot convert."
+                f"o_data_type={o_data_type} differs from {native_o_data_type}, the "
+                f"only output dtype ROCm prefill can write for q_data_type="
+                f"{q_data_type}."
             )
         self._cached_o_data_type = o_data_type
 
@@ -2540,7 +2635,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
         get_module_args = (
             q_data_type,
             kv_data_type,
-            q_data_type,
+            # Output dtype, which only differs from the query dtype for fp8.
+            o_data_type,
             paged_kv_indptr.dtype,
             head_dim_qk,
             head_dim_vo,
@@ -2562,7 +2658,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
             # use_native_paging. Shared by the auto route and the explicit-aiter
             # guard below so the two cannot disagree about the same call.
             softcap_kv_len = (
-                None if page_size in _aiter_native_page_sizes() else self._max_kv_len
+                None
+                if page_size in _aiter_paged_route_page_sizes(q_data_type)
+                else self._max_kv_len
             )
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
@@ -2579,8 +2677,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         causal=causal,
                         logits_soft_cap=logits_soft_cap,
                         kv_len=softcap_kv_len,
+                        # Paged is the only route with an fp8 kernel wired up;
+                        # single and ragged still take mha_fwd/mha_varlen_fwd.
+                        allow_fp8=True,
                     )
                 )
+            if self._backend == "aiter":
+                _require_native_fp8_dtype(q_data_type)
+            _reject_fp8_on_fa2(q_data_type, self._backend)
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, softcap_kv_len, self.device
             ):
@@ -2622,7 +2726,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             needs_mask = _aiter_needs_mask(causal, window_left, kv_len=None)
             reason = None
             with _aiter_bootstrap_lock:
-                if page_size in _aiter_native_page_sizes():
+                if page_size in _aiter_paged_route_page_sizes(q_data_type):
                     use_native_paging = _aiter_native_paging_available(
                         q_data_type,
                         has_logits,
@@ -2684,6 +2788,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             dev_idx,
                         )
             if reason is not None:
+                # Re-guard: the check above ran before the probe, and fa2 still
+                # has no fp8 kernel. Without this the demotion reaches the
+                # static_assert and the caller gets a ninja log.
+                _reject_fp8_on_fa2(q_data_type, "fa2")
                 self._backend = "fa2"
                 self._backend_fallback_reason = reason
                 self._cached_module = get_batch_prefill_module("fa2", *get_module_args)
@@ -2875,6 +2983,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
         skip_softmax_threshold_scale_factor: Optional[float] = None,
         use_fp16_softmax: Optional[bool] = None,
         uses_spcompress: Optional[bool] = None,
+        scale_q: Optional[torch.Tensor] = None,
+        scale_k: Optional[torch.Tensor] = None,
+        scale_v: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Compute batch prefill/append attention between query and paged kv-cache.
 
@@ -2981,13 +3092,23 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     lse, (q.size(0), q.size(1)), torch.float32, q.device, "lse"
                 )
 
+        if q.dtype in FP8_PREFILL_DTYPES and (
+            return_lse or lse is not None or partial_state is not None
+        ):
+            raise NotImplementedError(
+                "fp8 prefill cannot produce LSE: AITER builds no LSE instance of "
+                "the fp8 kernel at any page size, and partial_state needs one. "
+                "Use bf16/fp16 for LSE."
+            )
+
+        out_dtype = getattr(self, "_cached_o_data_type", None) or q.dtype
         if out is None:
             out = torch.empty(
-                q.shape[:-1] + v_cache.shape[-1:], dtype=q.dtype, device=q.device
+                q.shape[:-1] + v_cache.shape[-1:], dtype=out_dtype, device=q.device
             )
         else:
             check_shape_dtype_device(
-                out, q.shape[:-1] + v_cache.shape[-1:], q.dtype, q.device, "out"
+                out, q.shape[:-1] + v_cache.shape[-1:], out_dtype, q.device, "out"
             )
 
         if self._custom_mask_buf is not None:
@@ -3082,8 +3203,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 run_args += [
                     self._aiter_flat_gather_idx,
                     self._aiter_flat_kv_indptr,
+                    scale_q,
+                    scale_k,
+                    scale_v,
                 ]
             else:
+                if scale_q is not None or scale_k is not None or scale_v is not None:
+                    raise NotImplementedError(
+                        "scale_q/scale_k/scale_v are fp8 descales honoured only by "
+                        "the AITER paged route; this call resolved to fa2, which "
+                        f"would ignore them ({self._backend_fallback_reason})."
+                    )
                 po, plse = partial_state if partial_state is not None else (None, None)
                 run_args += [po, plse]
 
@@ -3549,16 +3679,19 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if kv_data_type is None:
             kv_data_type = q_data_type
         kv_data_type = canonicalize_torch_dtype(kv_data_type)
-        # ROCm prefill writes the output in the query dtype, so this is the
-        # only o_data_type it can satisfy.
-        o_data_type = canonicalize_torch_dtype(
-            q_data_type if o_data_type is None else o_data_type
+        # ROCm prefill writes the output in the query dtype, except for fp8,
+        # where AITER has no fp8-output kernel and bf16 is the only choice.
+        native_o_data_type = (
+            FP8_PREFILL_OUT_DTYPE if q_data_type in FP8_PREFILL_DTYPES else q_data_type
         )
-        if o_data_type != q_data_type:
+        o_data_type = canonicalize_torch_dtype(
+            native_o_data_type if o_data_type is None else o_data_type
+        )
+        if o_data_type != native_o_data_type:
             raise NotImplementedError(
-                f"o_data_type={o_data_type} differs from q_data_type="
-                f"{q_data_type}; ROCm prefill writes the output in the query "
-                "dtype and cannot convert."
+                f"o_data_type={o_data_type} differs from {native_o_data_type}, the "
+                f"only output dtype ROCm prefill can write for q_data_type="
+                f"{q_data_type}."
             )
         self._cached_o_data_type = o_data_type
         if head_dim_vo is None:
@@ -3680,6 +3813,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         kv_len=self._max_kv_len,
                     )
                 )
+            _reject_fp8_on_fa2(q_data_type, self._backend)
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, self._max_kv_len, self.device
             ):
@@ -3730,6 +3864,10 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         dev_idx,
                     )
             if reason is not None:
+                # Re-guard: the check above ran before the probe, and fa2 still
+                # has no fp8 kernel. Without this the demotion reaches the
+                # static_assert and the caller gets a ninja log.
+                _reject_fp8_on_fa2(q_data_type, "fa2")
                 self._backend = "fa2"
                 self._backend_fallback_reason = reason
                 self._cached_module = get_batch_prefill_module("fa2", *get_module_args)
