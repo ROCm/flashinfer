@@ -68,7 +68,8 @@ inline int getMaxSharedMemPerMultiprocessor(int dev_id) {
 /// from a `-DPy_LIMITED_API` translation unit.
 ///
 /// @param dev_id Device ID
-/// @return NUL-terminated arch name, or "" if the query failed
+/// @return NUL-terminated arch name; "" only for a device id outside the cache
+///         range. A failed query throws via FI_HIP_CALL, as the accessors above do.
 inline const char* getGcnArchName(int dev_id) {
   static thread_local char cache[64][32] = {};
   if (dev_id < 0 || dev_id >= 64) return "";  // out of cache range; "" reads as unknown

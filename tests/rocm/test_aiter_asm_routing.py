@@ -16,6 +16,7 @@ LSE silently rather than failing loudly.
 
 import logging
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -39,8 +40,10 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _CUH = _REPO_ROOT / "include/flashinfer/rocm/attention/aiter/single_prefill.cuh"
 
 HEAD_DIM = 128
-NUM_QO_HEADS = 32
-NUM_KV_HEADS = 8
+# 8/2 keeps GQA=4 while holding the fp32 reference at 4096 to ~1.6 GB;
+# 32 heads would be ~6.3 GB live on a card several xdist workers share.
+NUM_QO_HEADS = 8
+NUM_KV_HEADS = 2
 
 
 def _skip_unless_aiter(device: torch.device) -> None:
@@ -60,19 +63,19 @@ def _skip_unless_aiter(device: torch.device) -> None:
 def test_cuh_mirrors_arch_caps():
     """The C++ gate carries its own copy of the table; drift would be silent.
 
-    A substring check rather than a parse of the C++ literal, matching
-    test_aiter_version_gate.py's header check -- parsing would fail on
-    reformatting rather than on a real divergence.
+    Reads the macros AiterAsmPrefillMinQoLen actually returns. An earlier version
+    of this test grepped a marker comment, which would have passed while the
+    returned value said something else -- the one failure it existed to catch.
     """
-    expected = " ".join(
-        f"{arch}={'None' if v is None else v}"
-        for arch, v in sorted(_AITER_ASM_PREFILL_MIN_QO_LEN.items())
-    )
     text = _CUH.read_text()
-    assert f"arch_caps: {expected}" in text, (
-        f"single_prefill.cuh does not record 'arch_caps: {expected}'. "
-        "Update the marker comment and AiterAsmPrefillMinQoLen together."
-    )
+    for arch, value in _AITER_ASM_PREFILL_MIN_QO_LEN.items():
+        macro = f"FLASHINFER_AITER_ASM_MIN_QO_LEN_{arch.upper()}"
+        expected = 0 if value is None else value
+        assert re.search(rf"^#define {macro} {expected}\b", text, re.M), (
+            f"{macro} in single_prefill.cuh does not equal {expected}; "
+            "arch_caps.py and the C++ gate have drifted."
+        )
+        assert f"return {macro};" in text, f"{macro} is defined but not returned"
 
 
 @pytest.mark.parametrize(
@@ -136,53 +139,84 @@ def test_asm_gate_numerics(qo_len, kv_len, causal, return_lse):
         torch.testing.assert_close(lse.float(), ref_lse.float(), rtol=5e-2, atol=5e-2)
 
 
-_KILL_SWITCH_PROBE = """
+_PROBE = """
 import torch, flashinfer
 d = torch.device("cuda:0")
 torch.manual_seed(7)
-q = torch.randn(2048, 32, 128, dtype=torch.bfloat16, device=d)
-k = torch.randn(2048, 8, 128, dtype=torch.bfloat16, device=d)
-v = torch.randn(2048, 8, 128, dtype=torch.bfloat16, device=d)
+qo = int(__import__("os").environ["PROBE_QO_LEN"])
+q = torch.randn(qo, 8, 128, dtype=torch.bfloat16, device=d)
+k = torch.randn(qo, 2, 128, dtype=torch.bfloat16, device=d)
+v = torch.randn(qo, 2, 128, dtype=torch.bfloat16, device=d)
 o = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
-print(float(o.float().sum()))
+torch.save(o.float().cpu(), __import__("os").environ["PROBE_OUT"])
 """
 
 
-def test_kill_switch_pins_ck_tile():
-    """FLASHINFER_AITER_ASM_PREFILL=0 has to actually change which kernel runs.
+def _run_probe(tmp_path, qo_len: int, **env_overrides):
+    """Run one prefill in a fresh process; return (output tensor, stderr)."""
+    import os
 
-    Needs subprocesses: the switch is read once into a function-local static on
-    the C++ side, so it cannot be toggled within a process. On gfx942 the gate
-    never fires and both runs are the same kernel, which is itself the assertion
-    that the switch is safe to leave set.
+    out_path = tmp_path / f"o{qo_len}{''.join(env_overrides)}.pt"
+    env = dict(os.environ)
+    env["PROBE_QO_LEN"] = str(qo_len)
+    env["PROBE_OUT"] = str(out_path)
+    env["FLASHINFER_AITER_ASM_VERBOSE"] = "1"
+    for key, value in env_overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    proc = subprocess.run(
+        [sys.executable, "-c", _PROBE],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=3600,
+    )
+    assert proc.returncode == 0, f"probe failed: {proc.stderr[-2000:]}"
+    return torch.load(out_path), proc.stderr
+
+
+def test_asm_arm_is_actually_reached(tmp_path):
+    """Which arm ran has to be observable, or every test here passes vacuously.
+
+    If the asm .so is missing or AITER_ASM_DIR is unset, the C++ swallows the
+    failure and CK Tile serves the call with identical numerics -- so without this
+    assertion a regression that re-breaks reachability is undetectable.
     """
     device = torch.device("cuda:0")
     _skip_unless_aiter(device)
+    threshold = aiter_asm_prefill_min_qo_len(_device_arch(device))
+    if not threshold:
+        pytest.skip(f"{_device_arch(device)} never routes to asm")
 
-    def run(env_value):
-        import os
-
-        env = dict(os.environ)
-        if env_value is None:
-            env.pop("FLASHINFER_AITER_ASM_PREFILL", None)
-        else:
-            env["FLASHINFER_AITER_ASM_PREFILL"] = env_value
-        proc = subprocess.run(
-            [sys.executable, "-c", _KILL_SWITCH_PROBE],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=1800,
-        )
-        assert proc.returncode == 0, f"probe failed: {proc.stderr[-2000:]}"
-        return float(proc.stdout.strip().splitlines()[-1])
-
-    on, off = run(None), run("0")
-    # bf16 accumulation order differs between the two kernels, so this is a
-    # "same answer", not a "same bits", comparison.
-    assert abs(on - off) <= 1e-2 * max(1.0, abs(off)), (
-        f"asm and CK Tile disagree beyond tolerance: {on} vs {off}"
+    _, above = _run_probe(tmp_path, threshold)
+    _, below = _run_probe(tmp_path, 512)
+    assert "aiter asm prefill: launched" in above, (
+        f"qo_len={threshold} did not reach the asm arm. stderr:\n{above[-2000:]}"
+    )
+    assert "aiter asm prefill: launched" not in below, (
+        f"qo_len=512 is below the threshold but took the asm arm. stderr:\n{below[-2000:]}"
     )
 
-    if _device_arch(device) == "gfx942":
-        assert on == off, "gfx942 must never route to asm, so both runs are one kernel"
+
+def test_kill_switch_pins_ck_tile(tmp_path):
+    """FLASHINFER_AITER_ASM_PREFILL=0 must change which kernel runs, and not the answer.
+
+    Needs subprocesses: the switch is read once into a function-local static on the
+    C++ side, so it cannot be toggled in-process.
+    """
+    device = torch.device("cuda:0")
+    _skip_unless_aiter(device)
+    threshold = aiter_asm_prefill_min_qo_len(_device_arch(device))
+    if not threshold:
+        pytest.skip(f"{_device_arch(device)} never routes to asm")
+
+    on_out, on_err = _run_probe(tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL=None)
+    off_out, off_err = _run_probe(tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL="0")
+
+    assert "aiter asm prefill: launched" in on_err
+    assert "aiter asm prefill" not in off_err, "the kill switch did not disable the arm"
+    # Elementwise, not a sum: ~8M near-zero-mean terms cancel, so a sum would pass
+    # even with a whole block of the output wrong.
+    assert (on_out - off_out).abs().max().item() < 2e-2, "asm and CK Tile disagree"

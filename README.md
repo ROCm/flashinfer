@@ -283,6 +283,8 @@ Read at runtime or import time:
 | :--- | :--- | :--- |
 | `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. See above. |
 | `FLASHINFER_AITER_STRICT` | `0` | Raise instead of degrading when AITER cannot serve a page size natively. Set in CI to catch coverage regressions rather than absorb them as a slowdown. |
+| `FLASHINFER_AITER_ASM_PREFILL` | `1` | Set to `0` to keep single prefill on AITER's CK Tile kernel. AITER aborts the process on several asm failure modes rather than returning an error, so this is the supported way out. |
+| `FLASHINFER_AITER_ASM_VERBOSE` | `0` | Log to stderr which prefill arm ran. The two arms agree numerically, so this is the only way to tell asm from CK Tile. |
 | `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | Run an (op, backend, arch) combination the capability table marks known-broken on your toolchain. Only if you have validated it yourself. |
 | `FLASHINFER_HIP_FUSED_CASCADE` | `0` | In `MultiLevelCascadeAttentionWrapper` only, pass each level's partial state into the next prefill call instead of merging afterwards; AITER levels and the shared-prefix wrappers ignore it. Both paths tested. Read once at import, so set it first. |
 | `FLASHINFER_WORKSPACE_BASE` | `$HOME` | Parent of the JIT cache (`.cache/flashinfer/`); point at fast local disk when `$HOME` is on NFS. Prefer an absolute path: the value is wrapped in `pathlib.Path` unvalidated, so a relative one resolves against the working directory and `~` becomes a literal `./~` directory. |

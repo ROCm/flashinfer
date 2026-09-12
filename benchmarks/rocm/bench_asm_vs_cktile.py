@@ -64,7 +64,9 @@ _GQA_RATIO = 4
 _SEQLENS = [256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144]
 _BATCHES = [1, 4]
 _QO_HEADS = [16, 32, 64]
-_MAX_ELEMS = 128 * 1024 * 1024
+# Large enough to keep b4/hq64/s6144 in: pruning it would make this script
+# sweep 59 cells while the recorded evidence cites 60.
+_MAX_ELEMS = 256 * 1024 * 1024
 
 
 def _assert_import_provenance() -> Path:
@@ -164,6 +166,14 @@ def _accuracy(causal: bool) -> None:
     """
     print(f"{'shape':<22}{'ck err':>12}{'asm err':>12}")
     for batch, seqlen, hq in _shapes():
+        # The reference materializes [batch, hq, seqlen, seqlen] fp32 three times
+        # over; _MAX_ELEMS bounds q, not this, so cap it separately.
+        if batch * hq * seqlen * seqlen > 2 * 1024**3 // 4:
+            print(
+                f"b{batch} hq{hq} s{seqlen}".ljust(22)
+                + f"{'skipped: ref too large':>24}"
+            )
+            continue
         hk = max(1, hq // _GQA_RATIO)
         g = torch.Generator(device="cuda").manual_seed(7)
         shape_q = (batch, seqlen, hq, _HEAD_DIM)

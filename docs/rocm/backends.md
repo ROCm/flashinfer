@@ -362,6 +362,12 @@ Re-run with `python benchmarks/rocm/bench_asm_vs_cktile.py --aa` for the noise
 floor and then without `--aa`; read the A/A first, since a margin inside it is
 not a result. `FLASHINFER_AITER_ASM_PREFILL=0` pins CK Tile.
 
+The sweep is square (`qo_len == kv_len`) apart from one point, so a long cached
+context with `qo_len >= 2048` — chunked prefill — takes the asm arm on evidence
+from square shapes only. Correctness is covered either way; if that shape matters
+to you, measure it before relying on the speedup, and use
+`FLASHINFER_AITER_ASM_VERBOSE=1` to confirm which arm ran.
+
 ### Soft-capped causal prefill avoids one AITER kernel
 
 AITER's
