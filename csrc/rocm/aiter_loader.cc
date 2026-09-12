@@ -50,20 +50,21 @@ std::string get_jit_dir() {
 //                    infix="_ndropout_", suffix="_nsink.so"
 // The qscale token sits mid-name, so it is a builder segment rather than part
 // of a fixed suffix: fp8 spells it "pertensor" where bf16/fp16 spell "nqscale".
+const char* dtype_token(VariantKey const& key) {
+  switch (key.dtype) {
+    case VariantKey::Dtype::kFp16:
+      return "fp16";
+    case VariantKey::Dtype::kFp8Bf16:
+      return "fp8bf16";
+    default:
+      return "bf16";
+  }
+}
+
 std::string build_so_name(VariantKey const& key, std::string_view prefix, std::string_view infix,
                           std::string_view suffix, bool include_logits) {
   std::string name(prefix);
-  switch (key.dtype) {
-    case VariantKey::Dtype::kFp16:
-      name += "fp16";
-      break;
-    case VariantKey::Dtype::kFp8Bf16:
-      name += "fp8bf16";
-      break;
-    default:
-      name += "bf16";
-      break;
-  }
+  name += dtype_token(key);
   if (include_logits) {
     name += key.has_logits_cap ? "_logits" : "_nlogits";
   }
@@ -193,8 +194,7 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
   return load_and_cache_sym(s_mf_mu, s_mf_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
            "calling mha_fwd with matching (q dtype: " +
-           std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-           ", is_causal=" + (key.needs_mask ? "true" : "false") +
+           std::string(dtype_token(key)) + ", is_causal=" + (key.needs_mask ? "true" : "false") +
            " (window_size_left>=0 selects the same variant)" +
            ", return_softmax_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
@@ -205,8 +205,7 @@ void* get_aiter_mha_varlen_fwd_handle(VariantKey const& key) {
   return load_and_cache_sym(s_vl_mu, s_vl_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
            "calling mha_varlen_fwd with matching (q dtype: " +
-           std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-           ", is_causal=" + (key.needs_mask ? "true" : "false") +
+           std::string(dtype_token(key)) + ", is_causal=" + (key.needs_mask ? "true" : "false") +
            " (window_size_left>=0 selects the same variant)" +
            ", return_softmax_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
@@ -218,7 +217,7 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
       s_bp_mu, s_bp_cache, key, so_path, kMhaBatchPrefillSymbol, [&key, &so_path]() {
         return "  Hint: trigger AITER's lazy JIT build by calling "
                "aiter.ops.mha.mha_batch_prefill_func() once with matching (q dtype: " +
-               std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
+               std::string(dtype_token(key)) +
                // mha_batch_prefill_func takes `causal`; mha_fwd/mha_varlen_fwd
                // take `is_causal`.
                ", causal=" + (key.needs_mask ? "true" : "false") +

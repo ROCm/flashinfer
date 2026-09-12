@@ -41,6 +41,7 @@ using flashinfer::QKVLayout;
 //   max_kv_len           int64  (max per-sequence kv length in this batch)
 //   aiter_flat_gather_idx  [total_kv_tokens] int64 (non-native page sizes only; nullopt otherwise)
 //   aiter_flat_kv_indptr   [batch+1] int32 (non-native page sizes; cumsum of gathered tokens)
+//   maybe_q/k/v_descale    [1] float32 per-tensor fp8 descales; required for fp8, else unset
 void batch_prefill_with_paged_kv_cache_aiter(
     at::Tensor q, at::Tensor paged_k_cache, at::Tensor paged_v_cache, at::Tensor qo_indptr,
     at::Tensor paged_kv_indptr, at::Tensor paged_kv_indices, at::Tensor paged_kv_last_page_len,
@@ -76,10 +77,12 @@ void batch_prefill_with_paged_kv_cache_aiter(
                 "instance, so an unscaled call resolves to no kernel at all.");
     // Per-tensor only. AITER reads element 0 and ignores the rest, so a per-head
     // descale would silently apply head 0's scale to every head.
-    auto check_descale = [](const at::Tensor& t, const char* name) {
+    auto check_descale = [&device](const at::Tensor& t, const char* name) {
       TORCH_CHECK(t.scalar_type() == at::kFloat && t.numel() == 1, "fp8 ", name,
                   "_descale must be a single float32 (per-tensor); got dtype=", t.scalar_type(),
                   " numel=", t.numel());
+      TORCH_CHECK(t.device() == device, "fp8 ", name, "_descale must be on ", device,
+                  " (the kernel dereferences it device-side); got ", t.device());
     };
     check_descale(*maybe_q_descale, "q");
     check_descale(*maybe_k_descale, "k");
@@ -125,6 +128,11 @@ void batch_prefill_with_paged_kv_cache_aiter(
 
   if (aiter_flat_gather_idx.has_value()) {
     // Flat-gather path: gather pages into contiguous k/v then call mha_fwd group-mode.
+    // It dispatches mha_varlen_fwd, which has no fp8 kernel and would ignore the
+    // descales checked above, so refuse rather than return unscaled numbers.
+    TORCH_CHECK(!is_fp8,
+                "fp8 paged prefill requires AITER native paging; this plan resolved to the "
+                "flat-gather route, which has no fp8 kernel. Use a natively paged page size.");
     TORCH_CHECK(aiter_flat_kv_indptr.has_value(),
                 "aiter_flat_kv_indptr must be provided together with aiter_flat_gather_idx");
 
@@ -155,7 +163,7 @@ void batch_prefill_with_paged_kv_cache_aiter(
         static_cast<float>(sm_scale), static_cast<float>(logits_soft_cap),
         static_cast<int32_t>(window_left), causal, dtype_str, dtype_enum, stream);
   } else {
-    // Native-paged path: paged KV cache with page_size in {128, 256, 1024}.
+    // Native-paged path: paged KV cache with page_size in {1, 16, 1024}.
     // paged_k_cache layout: [max_pages, page_size, nhead_k, head_dim] (NHD linear).
     const int32_t num_total_pages = static_cast<int32_t>(paged_k_cache.size(0));
 

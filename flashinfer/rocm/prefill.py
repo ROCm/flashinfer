@@ -68,9 +68,10 @@ _AITER_LAST_VALIDATED = "0.1.20+rocm10.1.0a20260819.3135022"
 # re-measuring against an fp32 reference; the wrong answer is silent.
 _AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21"
 
-# fp8 query dtypes AITER's prefill kernels accept. E4M3FNUZ on gfx942, OCP
-# E4M3FN on gfx950; `aiter.dtypes.fp8` picks per arch, so accept both here and
-# let the kernel reject a mismatch.
+# fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
+# E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is
+# accepted and returns NaN -- so membership here is the "is this fp8" test and
+# `_require_native_fp8_dtype` is the one that admits it.
 FP8_PREFILL_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
 
 # fp8 prefill writes bf16: AITER ships no fp8-output prefill kernel.
@@ -472,6 +473,36 @@ def _aiter_softcap_defect(
     from .arch_caps import _device_arch, aiter_softcap_defect_arch
 
     return aiter_softcap_defect_arch(_device_arch(device))
+
+
+def _native_fp8_dtype() -> Optional[torch.dtype]:
+    """The fp8 encoding this GPU's AITER kernels actually read.
+
+    Taken from ``aiter.dtypes.fp8`` rather than an arch table of our own: AITER
+    picks it per architecture and the kernels are compiled against that choice.
+    """
+    try:
+        import aiter
+
+        return aiter.dtypes.fp8
+    except Exception:  # noqa: BLE001 - absence is handled by the aiter gate
+        return None
+
+
+def _require_native_fp8_dtype(dtype_q: torch.dtype) -> None:
+    """Reject the fp8 encoding this architecture does not use.
+
+    Both encodings are 8-bit and neither AITER nor the .so name distinguishes
+    them, so the wrong one is read under the wrong exponent bias. Measured on
+    gfx942: e4m3fn returns NaN where e4m3fnuz is exact.
+    """
+    native = _native_fp8_dtype()
+    if dtype_q in FP8_PREFILL_DTYPES and native is not None and dtype_q != native:
+        raise NotImplementedError(
+            f"fp8 prefill needs this GPU's encoding, {native}; got {dtype_q}, "
+            "which the kernel reads under the wrong exponent bias and returns "
+            "NaN for. Re-quantize with aiter.dtypes.fp8."
+        )
 
 
 def _reject_fp8_on_fa2(dtype_q: torch.dtype, backend: str) -> None:
@@ -2606,6 +2637,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         allow_fp8=True,
                     )
                 )
+            if self._backend == "aiter":
+                _require_native_fp8_dtype(q_data_type)
             _reject_fp8_on_fa2(q_data_type, self._backend)
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, softcap_kv_len, self.device
@@ -2710,6 +2743,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             dev_idx,
                         )
             if reason is not None:
+                # Re-guard: the check above ran before the probe, and fa2 still
+                # has no fp8 kernel. Without this the demotion reaches the
+                # static_assert and the caller gets a ninja log.
+                _reject_fp8_on_fa2(q_data_type, "fa2")
                 self._backend = "fa2"
                 self._backend_fallback_reason = reason
                 self._cached_module = get_batch_prefill_module("fa2", *get_module_args)
@@ -3010,13 +3047,16 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     lse, (q.size(0), q.size(1)), torch.float32, q.device, "lse"
                 )
 
-        if q.dtype in FP8_PREFILL_DTYPES and (return_lse or lse is not None):
+        if q.dtype in FP8_PREFILL_DTYPES and (
+            return_lse or lse is not None or partial_state is not None
+        ):
             raise NotImplementedError(
-                "fp8 prefill cannot return LSE: AITER builds no LSE instance of "
-                "the fp8 kernel at any page size. Use bf16/fp16 for LSE."
+                "fp8 prefill cannot produce LSE: AITER builds no LSE instance of "
+                "the fp8 kernel at any page size, and partial_state needs one. "
+                "Use bf16/fp16 for LSE."
             )
 
-        out_dtype = self._cached_o_data_type or q.dtype
+        out_dtype = getattr(self, "_cached_o_data_type", None) or q.dtype
         if out is None:
             out = torch.empty(
                 q.shape[:-1] + v_cache.shape[-1:], dtype=out_dtype, device=q.device
@@ -3123,6 +3163,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     scale_v,
                 ]
             else:
+                if scale_q is not None or scale_k is not None or scale_v is not None:
+                    raise NotImplementedError(
+                        "scale_q/scale_k/scale_v are fp8 descales honoured only by "
+                        "the AITER paged route; this call resolved to fa2, which "
+                        f"would ignore them ({self._backend_fallback_reason})."
+                    )
                 po, plse = partial_state if partial_state is not None else (None, None)
                 run_args += [po, plse]
 
@@ -3773,6 +3819,10 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         dev_idx,
                     )
             if reason is not None:
+                # Re-guard: the check above ran before the probe, and fa2 still
+                # has no fp8 kernel. Without this the demotion reaches the
+                # static_assert and the caller gets a ninja log.
+                _reject_fp8_on_fa2(q_data_type, "fa2")
                 self._backend = "fa2"
                 self._backend_fallback_reason = reason
                 self._cached_module = get_batch_prefill_module("fa2", *get_module_args)

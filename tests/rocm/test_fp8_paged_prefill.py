@@ -153,19 +153,24 @@ def test_fp8_rejects_return_lse():
         _plan_and_run(device, 512, 512, fp8, fp8, return_lse=True)
 
 
-def test_fp8_on_a_non_native_page_size_is_not_silently_wrong():
+def test_fp8_on_a_non_routed_page_size_raises_rather_than_running():
     """fp8 has no flat-gather kernel, so a non-routed page size must not run.
 
-    It may fall back or raise, but it must never return a result computed by a
-    path that cannot honour the descales.
+    Exercises plan() rather than asserting set membership: the demotion to fa2
+    happens after the first fp8 check, so only a real call proves it is caught
+    before the kernel's static_assert reaches the user as a compiler log.
     """
     device = torch.device("cuda:0")
     _require_aiter(device)
     fp8 = fp8_dtype()
-    assert PAGE in _aiter_paged_route_page_sizes(fp8), (
-        "test premise: page 16 is the fp8 route"
-    )
-    assert 32 not in _aiter_paged_route_page_sizes(fp8)
+    assert 32 not in _aiter_paged_route_page_sizes(fp8), "test premise"
+    global PAGE
+    original, PAGE = PAGE, 32
+    try:
+        with pytest.raises((NotImplementedError, RuntimeError, ValueError)):
+            _plan_and_run(device, 512, 512, fp8, fp8)
+    finally:
+        PAGE = original
 
 
 def test_single_prefill_fp8_raises_instead_of_a_ninja_log():
@@ -181,8 +186,25 @@ def test_single_prefill_fp8_raises_instead_of_a_ninja_log():
 
 
 def test_routing_keeps_fp16_and_bf16_on_their_existing_route():
-    """Correcting the capability set must not re-route the dtypes it measured."""
-    fp8 = fp8_dtype()
+    """Correcting the capability set must not re-route the dtypes it measured.
+
+    No GPU or aiter import needed: this is a property of the routing table.
+    """
     for dtype in (torch.float16, torch.bfloat16):
         assert 16 not in _aiter_paged_route_page_sizes(dtype)
-    assert 16 in _aiter_paged_route_page_sizes(fp8)
+    assert 16 in _aiter_paged_route_page_sizes(FP8_PREFILL_DTYPES[0])
+
+
+def test_non_native_fp8_encoding_is_rejected():
+    """The other 8-bit encoding is read under the wrong bias and returns NaN."""
+    from flashinfer.rocm.prefill import _native_fp8_dtype, _require_native_fp8_dtype
+
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    native = _native_fp8_dtype()
+    if native is None:
+        pytest.skip("aiter not importable")
+    other = next(d for d in FP8_PREFILL_DTYPES if d != native)
+    _require_native_fp8_dtype(native)  # must not raise
+    with pytest.raises(NotImplementedError, match="exponent bias"):
+        _require_native_fp8_dtype(other)
