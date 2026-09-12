@@ -127,7 +127,11 @@ def test_asm_gate_numerics(qo_len, kv_len, causal, return_lse):
     k = torch.randn(kv_len, NUM_KV_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device)
     v = torch.randn(kv_len, NUM_KV_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device)
 
-    ref_o, ref_lse = naive_attention(q, k, v, causal=causal, return_lse=return_lse)
+    # .float() matters: naive_attention does not upcast, so passing bf16 would
+    # compute the reference in the dtype under test and hide the kernel's error.
+    ref_o, ref_lse = naive_attention(
+        q.float(), k.float(), v.float(), causal=causal, return_lse=return_lse
+    )
     res = flashinfer.single_prefill_with_kv_cache(
         q, k, v, causal=causal, backend="aiter", return_lse=return_lse
     )
@@ -140,27 +144,68 @@ def test_asm_gate_numerics(qo_len, kv_len, causal, return_lse):
 
 
 _PROBE = """
-import torch, flashinfer
+import os, torch, flashinfer
+
 d = torch.device("cuda:0")
 torch.manual_seed(7)
-qo = int(__import__("os").environ["PROBE_QO_LEN"])
+qo = int(os.environ["PROBE_QO_LEN"])
+causal = os.environ["PROBE_CAUSAL"] == "1"
+return_lse = os.environ["PROBE_LSE"] == "1"
 q = torch.randn(qo, 8, 128, dtype=torch.bfloat16, device=d)
 k = torch.randn(qo, 2, 128, dtype=torch.bfloat16, device=d)
 v = torch.randn(qo, 2, 128, dtype=torch.bfloat16, device=d)
-o = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
-torch.save(o.float().cpu(), __import__("os").environ["PROBE_OUT"])
+
+
+def call():
+    return flashinfer.single_prefill_with_kv_cache(
+        q, k, v, causal=causal, backend="aiter", return_lse=return_lse
+    )
+
+
+if os.environ.get("PROBE_CAPTURE") == "1":
+    # Cold on purpose: the guard exists because AITER loads its .co on the first
+    # asm call, and a module load inside capture aborts the process.
+    g = torch.cuda.CUDAGraph()
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        with torch.cuda.graph(g):
+            call()
+    torch.cuda.current_stream().wait_stream(s)
+    g.replay()
+    torch.cuda.synchronize()
+    print("CAPTURE_OK")
+else:
+    res = call()
+    out = res[0] if return_lse else res
+    torch.save(out.float().cpu(), os.environ["PROBE_OUT"])
 """
 
 
-def _run_probe(tmp_path, qo_len: int, **env_overrides):
-    """Run one prefill in a fresh process; return (output tensor, stderr)."""
+def _run_probe(
+    tmp_path, qo_len, causal=True, return_lse=False, capture=False, **env_overrides
+):
+    """Run one prefill in a fresh process; return (output tensor or None, stderr).
+
+    A fresh process per case is not fastidiousness: the kill switch and the verbose
+    flag are both read once into C++ statics, and a broken capture guard aborts
+    rather than raising, which only a subprocess can survive.
+    """
     import os
 
-    out_path = tmp_path / f"o{qo_len}{''.join(env_overrides)}.pt"
+    tag = (
+        f"{qo_len}-{int(causal)}{int(return_lse)}{int(capture)}{''.join(env_overrides)}"
+    )
+    out_path = tmp_path / f"o{tag}.pt"
     env = dict(os.environ)
-    env["PROBE_QO_LEN"] = str(qo_len)
-    env["PROBE_OUT"] = str(out_path)
-    env["FLASHINFER_AITER_ASM_VERBOSE"] = "1"
+    env.update(
+        PROBE_QO_LEN=str(qo_len),
+        PROBE_CAUSAL="1" if causal else "0",
+        PROBE_LSE="1" if return_lse else "0",
+        PROBE_CAPTURE="1" if capture else "0",
+        PROBE_OUT=str(out_path),
+        FLASHINFER_AITER_ASM_VERBOSE="1",
+    )
     for key, value in env_overrides.items():
         if value is None:
             env.pop(key, None)
@@ -173,16 +218,19 @@ def _run_probe(tmp_path, qo_len: int, **env_overrides):
         env=env,
         timeout=3600,
     )
-    assert proc.returncode == 0, f"probe failed: {proc.stderr[-2000:]}"
-    return torch.load(out_path), proc.stderr
+    assert proc.returncode == 0, f"probe failed ({tag}): {proc.stderr[-2000:]}"
+    out = torch.load(out_path) if out_path.exists() else None
+    return out, proc.stderr
 
 
-def test_asm_arm_is_actually_reached(tmp_path):
-    """Which arm ran has to be observable, or every test here passes vacuously.
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_asm_arm_is_actually_reached(tmp_path, causal, return_lse):
+    """Which arm ran has to be observable for every trait the gate admits.
 
     If the asm .so is missing or AITER_ASM_DIR is unset, the C++ swallows the
-    failure and CK Tile serves the call with identical numerics -- so without this
-    assertion a regression that re-breaks reachability is undetectable.
+    failure and CK Tile serves the call with identical numerics -- so without this,
+    test_asm_gate_numerics would pass whether or not the arm was ever reached.
     """
     device = torch.device("cuda:0")
     _skip_unless_aiter(device)
@@ -190,8 +238,8 @@ def test_asm_arm_is_actually_reached(tmp_path):
     if not threshold:
         pytest.skip(f"{_device_arch(device)} never routes to asm")
 
-    _, above = _run_probe(tmp_path, threshold)
-    _, below = _run_probe(tmp_path, 512)
+    _, above = _run_probe(tmp_path, threshold, causal=causal, return_lse=return_lse)
+    _, below = _run_probe(tmp_path, 512, causal=causal, return_lse=return_lse)
     assert "aiter asm prefill: launched" in above, (
         f"qo_len={threshold} did not reach the asm arm. stderr:\n{above[-2000:]}"
     )
@@ -200,12 +248,28 @@ def test_asm_arm_is_actually_reached(tmp_path):
     )
 
 
-def test_kill_switch_pins_ck_tile(tmp_path):
-    """FLASHINFER_AITER_ASM_PREFILL=0 must change which kernel runs, and not the answer.
+def test_graph_capture_stays_on_ck_tile(tmp_path):
+    """A cold above-threshold call captured into a graph must not reach the asm arm.
 
-    Needs subprocesses: the switch is read once into a function-local static on the
-    C++ side, so it cannot be toggled in-process.
+    AITER loads its .co lazily on first use and turns HIP's rejection of a module
+    load during capture into std::abort(), so a broken guard kills the process --
+    which is why this runs in a subprocess and asserts on the exit code at all.
     """
+    device = torch.device("cuda:0")
+    _skip_unless_aiter(device)
+    threshold = aiter_asm_prefill_min_qo_len(_device_arch(device))
+    if not threshold:
+        pytest.skip(f"{_device_arch(device)} never routes to asm")
+
+    _, err = _run_probe(tmp_path, threshold, capture=True)
+    assert "CAPTURE_OK" not in err  # stdout, not stderr
+    assert "aiter asm prefill: launched" not in err, (
+        f"asm arm was entered during graph capture. stderr:\n{err[-2000:]}"
+    )
+
+
+def test_kill_switch_pins_ck_tile(tmp_path):
+    """FLASHINFER_AITER_ASM_PREFILL=0 must change which kernel runs, not the answer."""
     device = torch.device("cuda:0")
     _skip_unless_aiter(device)
     threshold = aiter_asm_prefill_min_qo_len(_device_arch(device))
