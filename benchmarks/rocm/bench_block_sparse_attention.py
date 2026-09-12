@@ -59,8 +59,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEQ_LENS = [2048, 4096, 8192]
 _DENSITIES = [0.1, 0.25, 0.5, 1.0]
 _HEAD_DIM = 128
-# MHA and GQA. The variable-block wrapper requires equal head counts, so the
-# GQA row exercises the fixed-block wrapper only.
+# MHA and GQA. Both wrappers serve both: the variable one takes its mask on
+# num_kv_heads, so a group of qo heads shares one kv head's pattern.
 _HEAD_PAIRS = [(32, 32), (32, 8)]
 _DTYPE = torch.float16
 _WORKSPACE_BYTES = 128 * 1024 * 1024
@@ -92,11 +92,19 @@ def _git_describe() -> str:
 
 def _provenance() -> dict:
     props = torch.cuda.get_device_properties(0)
+    try:
+        import importlib.metadata as md
+
+        aiter_ver = md.version("amd-aiter")
+    except Exception:  # noqa: BLE001 - absent or unreadable is a valid answer
+        aiter_ver = "absent"
     return {
         "flashinfer": str(_assert_import_provenance()),
         "git": _git_describe(),
         "arch": props.gcnArchName,
+        "rocm": torch.version.hip,
         "torch": torch.__version__,
+        "aiter": aiter_ver,
     }
 
 
@@ -114,12 +122,19 @@ def _block_mask(num_heads: int, nb_row: int, nb_col: int, density: float, seed: 
 
     An all-dead row makes the kernel skip the row entirely, so a naive Bernoulli
     draw at low density measures a shrinking problem rather than a sparse one.
+    Forcing the diagonal costs (1-density)/nb of extra density, so callers report
+    ``_realized_density`` rather than the requested probability.
     """
     gen = torch.Generator(device="cuda").manual_seed(seed)
     mask = torch.rand(num_heads, nb_row, nb_col, device="cuda", generator=gen) < density
     diag = torch.arange(min(nb_row, nb_col), device="cuda")
     mask[:, diag, diag] = True
     return mask
+
+
+def _realized_density(mask: torch.Tensor) -> float:
+    """Fraction of live blocks actually in ``mask``."""
+    return round(mask.float().mean().item(), 4)
 
 
 def _to_csr(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -162,6 +177,7 @@ def _variable_case(
     # measure the permute.
     qd, kd, vd = (t.transpose(0, 1).contiguous() for t in (q, k, v))
     return {
+        "realized_density": _realized_density(mask),
         "sparse": lambda: wrapper.run(q, k, v),
         "dense": lambda: flashinfer.single_prefill_with_kv_cache(
             qd, kd, vd, causal=False, backend="fa2"
@@ -174,7 +190,8 @@ def _fixed_case(
 ):
     """Zero-arg closures for the fixed-block wrapper and its dense baseline."""
     block = seq_len // nb
-    indptr, indices = _to_csr(_block_mask(1, nb, nb, density, seed))
+    mask = _block_mask(1, nb, nb, density, seed)
+    indptr, indices = _to_csr(mask)
     q = torch.randn(seq_len, num_qo, _HEAD_DIM, dtype=_DTYPE, device="cuda")
     k = torch.randn(seq_len, num_kv, _HEAD_DIM, dtype=_DTYPE, device="cuda")
     v = torch.randn(seq_len, num_kv, _HEAD_DIM, dtype=_DTYPE, device="cuda")
@@ -194,6 +211,7 @@ def _fixed_case(
         q_data_type=_DTYPE,
     )
     return {
+        "realized_density": _realized_density(mask),
         "sparse": lambda: wrapper.run(q, k, v),
         "dense": lambda: flashinfer.single_prefill_with_kv_cache(
             q, k, v, causal=False, backend="fa2"
@@ -224,6 +242,7 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                             fns = _fixed_case(
                                 seq_len, num_qo, num_kv, density, nb, seed
                             )
+                        rec["realized_density"] = fns["realized_density"]
                         for arm in ("sparse", "dense"):
                             med, spread = _time_us(
                                 fns[arm], dry_run_iters, repeat_iters
@@ -246,47 +265,103 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                     note = f"  !! {rec['err']}" if "err" in rec else ""
                     print(
                         f"{kind:9s} s={seq_len:<6d} h={num_qo}/{num_kv:<3d} "
-                        f"density={density:<5.2f} sparse={s} dense={d} "
+                        f"density={density:<5.2f} "
+                        f"actual={rec.get('realized_density')} "
+                        f"sparse={s} dense={d} "
                         f"speedup={rec['speedup']}{note}",
                         flush=True,
                     )
     return rows
 
 
-def _accuracy(nb: int, seed: int) -> None:
-    """Fixed-block output against a masked float32 reference, per density."""
-    seq_len, num_heads = 2048, 8
+def _masked_reference(q, k, v, elem_mask):
+    """float32 attention under a per-qo-head boolean mask, in [seq, head, dim]."""
+    scores = torch.einsum("qhd,khd->hqk", q.float(), k.float()) / _HEAD_DIM**0.5
+    scores = scores.masked_fill(~elem_mask, float("-inf"))
+    return torch.einsum("hqk,khd->qhd", scores.softmax(-1), v.float())
+
+
+def _accuracy_fixed(seq_len: int, num_heads: int, nb: int, seed: int) -> None:
     block = seq_len // nb
     for density in _DENSITIES:
         mask = _block_mask(1, nb, nb, density, seed)
         indptr, indices = _to_csr(mask)
-        q = torch.randn(seq_len, num_heads, _HEAD_DIM, dtype=_DTYPE, device="cuda")
-        k = torch.randn(seq_len, num_heads, _HEAD_DIM, dtype=_DTYPE, device="cuda")
-        v = torch.randn(seq_len, num_heads, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+        q, k, v = (
+            torch.randn(seq_len, num_heads, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+            for _ in range(3)
+        )
         ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device="cuda")
         wrapper = flashinfer.BlockSparseAttentionWrapper(ws, backend="fa2")
         wrapper.plan(
-            indptr,
-            indices,
-            seq_len,
-            seq_len,
-            block,
-            block,
-            num_heads,
-            num_heads,
-            _HEAD_DIM,
+            indptr, indices, seq_len, seq_len, block, block,
+            num_heads, num_heads, _HEAD_DIM, q_data_type=_DTYPE,
+        )  # fmt: skip
+        got = wrapper.run(q, k, v)
+        elem = mask[0].repeat_interleave(block, 0).repeat_interleave(block, 1)
+        ref = _masked_reference(q, k, v, elem.unsqueeze(0))
+        err = (got.float() - ref).abs().max().item()
+        print(
+            f"fixed    h={num_heads}/{num_heads:<3d} density={density:<5.2f} "
+            f"actual={_realized_density(mask)} max_abs_err={err:.5f}"
+        )
+        torch.cuda.empty_cache()
+
+
+def _accuracy_variable(
+    seq_len: int, num_qo: int, num_kv: int, nb: int, seed: int
+) -> None:
+    """The variable wrapper against the same reference, including its GQA case.
+
+    Its mask is per kv head, so the reference broadcasts each kv head's pattern
+    across its group of qo heads -- which is the part a wrong setup gets wrong.
+    """
+    block = seq_len // nb
+    group = num_qo // num_kv
+    for density in _DENSITIES:
+        mask = _block_mask(num_kv, nb, nb, density, seed)
+        block_sz = torch.full((num_kv, nb), block, dtype=torch.int32, device="cuda")
+        q = torch.randn(num_qo, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+        k = torch.randn(num_kv, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+        v = torch.randn(num_kv, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+        ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device="cuda")
+        wrapper = flashinfer.sparse.VariableBlockSparseAttentionWrapper(
+            ws, backend="fa2"
+        )
+        wrapper.plan(
+            block_mask_map=mask,
+            block_row_sz=block_sz,
+            block_col_sz=block_sz,
+            num_qo_heads=num_qo,
+            num_kv_heads=num_kv,
+            head_dim=_HEAD_DIM,
             q_data_type=_DTYPE,
         )
-        got = wrapper.run(q, k, v)
+        got = wrapper.run(q, k, v)  # [num_qo, seq, dim]
 
-        elem = mask[0].repeat_interleave(block, 0).repeat_interleave(block, 1)
-        scores = torch.einsum("qhd,khd->hqk", q.float(), k.float())
-        scores /= _HEAD_DIM**0.5
-        scores = scores.masked_fill(~elem.unsqueeze(0), float("-inf"))
-        ref = torch.einsum("hqk,khd->qhd", scores.softmax(-1), v.float())
-        err = (got.float() - ref).abs().max().item()
-        print(f"fixed    density={density:<5.2f} max_abs_err={err:.5f}")
+        elem = mask.repeat_interleave(block, 1).repeat_interleave(block, 2)
+        elem = elem.repeat_interleave(group, 0)  # kv head pattern -> its qo group
+        ref = _masked_reference(
+            q.transpose(0, 1),
+            k.transpose(0, 1).repeat_interleave(group, 1),
+            v.transpose(0, 1).repeat_interleave(group, 1),
+            elem,
+        )
+        err = (got.float() - ref.transpose(0, 1)).abs().max().item()
+        print(
+            f"variable h={num_qo}/{num_kv:<3d} density={density:<5.2f} "
+            f"actual={_realized_density(mask)} max_abs_err={err:.5f}"
+        )
         torch.cuda.empty_cache()
+
+
+def _accuracy(kinds, nb: int, seed: int) -> None:
+    """Reference check for whichever arms --kinds selected, not just fixed."""
+    seq_len = 2048
+    if "fixed" in kinds:
+        _accuracy_fixed(seq_len, 8, nb, seed)
+    if "variable" in kinds:
+        for num_qo, num_kv in _HEAD_PAIRS:
+            _accuracy_variable(seq_len, num_qo, num_kv, nb, seed)
 
 
 def main() -> None:
@@ -305,6 +380,8 @@ def main() -> None:
     ap.add_argument("--csv", type=str, default="")
     args = ap.parse_args()
 
+    if args.num_blocks < 1:
+        raise SystemExit(f"--num-blocks must be >= 1, got {args.num_blocks}")
     bad = [n for n in _SEQ_LENS if n % args.num_blocks]
     if bad:
         raise SystemExit(
@@ -316,7 +393,7 @@ def main() -> None:
         print(f"# {key}: {value}")
 
     if args.accuracy:
-        _accuracy(args.num_blocks, args.seed)
+        _accuracy(args.kinds, args.num_blocks, args.seed)
         return
 
     rows = _sweep(

@@ -87,11 +87,21 @@ def _git_describe() -> str:
 
 def _provenance() -> dict:
     props = torch.cuda.get_device_properties(0)
+    try:
+        import importlib.metadata as md
+
+        aiter_ver = md.version("amd-aiter")
+    except Exception:  # noqa: BLE001 - absent or unreadable is a valid answer
+        aiter_ver = "absent"
     return {
         "flashinfer": str(_assert_import_provenance()),
         "git": _git_describe(),
         "arch": props.gcnArchName,
+        "rocm": torch.version.hip,
         "torch": torch.__version__,
+        # --decode-backend auto can route the split arm to AITER, so its version
+        # is part of what makes a number reproducible.
+        "aiter": aiter_ver,
     }
 
 
