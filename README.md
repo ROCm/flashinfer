@@ -230,6 +230,11 @@ numbers. Paged prefill at a native page size is exempt — it dispatches
 See
 [per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
 
+**Long single prefill uses AITER's asm kernel on MI350X/MI355X.** An unwindowed
+bf16 `head_dim=128` call at `qo_len >= 2048` is about 1.21× faster there; the
+same kernel is non-monotonic on MI300X/MI325X, so CDNA3 stays on CK Tile — see
+[per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
+
 ## `torch.compile`
 
 Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer` to
