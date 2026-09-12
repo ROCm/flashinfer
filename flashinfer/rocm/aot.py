@@ -240,7 +240,11 @@ def _copy_aiter_variant_store(out_dir: Path) -> None:
     build that ran no prebuild packages none, and variants are then built on
     demand exactly as before.
     """
-    from ..jit.rocm.aiter_variants import variant_store_dir
+    from ..jit.rocm.aiter_variants import (
+        reachable_variants,
+        so_name,
+        variant_store_dir,
+    )
 
     try:
         store = variant_store_dir()
@@ -255,8 +259,23 @@ def _copy_aiter_variant_store(out_dir: Path) -> None:
     dst = out_dir / "aiter_variants" / store.name
     dst.mkdir(parents=True, exist_ok=True)
     for src in artifacts:
-        shutil.copy2(src, dst / src.name)
+        # Same tmp+replace as the prebuild driver's _publish: an interrupted
+        # wheel build would otherwise leave a truncated .so that still satisfies
+        # a filename lookup on the consumer.
+        tmp = dst / f".{src.name}.{os.getpid()}.tmp"
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst / src.name)
     print(f"  packaged {len(artifacts)} AITER variant(s) from {store}")
+
+    missing = {so_name(k) for k in reachable_variants()} - {p.name for p in artifacts}
+    if missing:
+        # A partial store is legitimate (--only, or a family that failed), but it
+        # ships silently otherwise and every gap rebuilds at plan() forever.
+        print(
+            f"  WARNING: store is missing {len(missing)} of "
+            f"{len(missing) + len(artifacts)} reachable variants; "
+            f"consumers will build those on demand"
+        )
 
 
 @contextlib.contextmanager

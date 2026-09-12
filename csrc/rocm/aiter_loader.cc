@@ -52,7 +52,20 @@ std::vector<std::string> jit_dir_candidates() {
   // they chose -- silently, since the mangled symbol still resolves.
   const char* aiter_dir = env_dir("AITER_JIT_DIR");
   if (aiter_dir) dirs.emplace_back(aiter_dir);
-  if (const char* env = env_dir("FLASHINFER_AITER_VARIANT_DIR")) dirs.emplace_back(env);
+  // A ':'-separated list, not one path: several stores can be readable at once
+  // (the cache the prebuild driver writes, plus one shipped in the jit-cache
+  // wheel), and taking only the first lets a partial store shadow a complete
+  // one. Python exports exactly the list it searched.
+  if (const char* env = env_dir("FLASHINFER_AITER_VARIANT_DIR")) {
+    std::string_view rest(env);
+    while (!rest.empty()) {
+      const auto sep = rest.find(':');
+      const auto part = rest.substr(0, sep);
+      if (!part.empty()) dirs.emplace_back(part);
+      if (sep == std::string_view::npos) break;
+      rest.remove_prefix(sep + 1);
+    }
+  }
   if (!aiter_dir) {
 #ifdef FLASHINFER_AITER_JIT_DIR
     dirs.emplace_back(FLASHINFER_AITER_JIT_DIR);

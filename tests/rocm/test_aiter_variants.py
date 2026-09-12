@@ -13,6 +13,7 @@ introspecting a built module, so they catch drift without a GPU. They do
 still import torch, transitively through ``flashinfer.jit``.
 """
 
+import os
 import re
 from pathlib import Path
 
@@ -40,6 +41,10 @@ def _isolate_variant_env(monkeypatch):
     """
     monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", "")
     monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR")
+    # active_stores() suppresses auto-discovery under AITER_JIT_DIR, so an
+    # ambient value would silently empty the store list for every test here.
+    monkeypatch.setenv("AITER_JIT_DIR", "")
+    monkeypatch.delenv("AITER_JIT_DIR")
 
 
 @pytest.fixture(scope="module")
@@ -274,7 +279,8 @@ class TestStoreLookup:
             av, "variant_store_dir", lambda arch=None: tmp_path / "nope"
         )
         _isolate_variant_env(monkeypatch)
-        assert av.export_variant_store() is None
+        monkeypatch.setattr(av, "_wheel_store", lambda: None)
+        assert av.export_variant_store() == []
         import os
 
         assert "FLASHINFER_AITER_VARIANT_DIR" not in os.environ
@@ -283,7 +289,8 @@ class TestStoreLookup:
         import os
 
         self._store(tmp_path, monkeypatch)
-        assert av.export_variant_store() == tmp_path
+        monkeypatch.setattr(av, "_wheel_store", lambda: None)
+        assert av.export_variant_store() == [tmp_path]
         assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == str(tmp_path)
 
 
@@ -481,7 +488,23 @@ class TestWheelStore:
         tag = "gfx942__aiter-1__rocm-2"
         shipped = self._fake_wheel(tmp_path, monkeypatch, tag=tag)
         monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / tag)
-        assert av.store_override() == shipped
+        assert av._wheel_store() == shipped
+        assert av.active_stores() == [shipped]
+
+    def test_a_wheel_store_does_not_shadow_the_cache_store(self, tmp_path, monkeypatch):
+        """A partial wheel store used to be the *only* store consulted, so a
+        locally prebuilt variant was never found and never loaded."""
+        tag = "gfx942__aiter-1__rocm-2"
+        shipped = self._fake_wheel(tmp_path, monkeypatch, tag=tag)
+        cache = tmp_path / "cache" / tag
+        cache.mkdir(parents=True)
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: cache)
+
+        key = av.VariantKey(av.Family.MHA_FWD, "bf16", False, True, False)
+        (cache / av.so_name(key)).write_bytes(b"\x7fELF")
+
+        assert av.active_stores() == [cache, shipped]
+        assert av.find_variant(key) == cache / av.so_name(key)
 
     def test_a_wheel_for_another_tag_is_ignored(self, tmp_path, monkeypatch):
         """A multi-arch wheel carries several tags; one that is not ours must
@@ -492,7 +515,8 @@ class TestWheelStore:
             "variant_store_dir",
             lambda arch=None: tmp_path / "gfx942__aiter-1__rocm-2",
         )
-        assert av.store_override() is None
+        assert av._wheel_store() is None
+        assert av.active_stores() == []
 
     def test_an_older_wheel_without_the_accessor_degrades(self, tmp_path, monkeypatch):
         """FLASHINFER_DISABLE_VERSION_CHECK can get an older wheel past the
@@ -505,7 +529,8 @@ class TestWheelStore:
             "variant_store_dir",
             lambda arch=None: tmp_path / "gfx942__aiter-1__rocm-2",
         )
-        assert av.store_override() is None
+        assert av._wheel_store() is None
+        assert av.active_stores() == []
 
     def test_no_wheel_at_all_is_fine(self, tmp_path, monkeypatch):
         import sys
@@ -513,14 +538,17 @@ class TestWheelStore:
         monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", None)
         _isolate_variant_env(monkeypatch)
         monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / "x")
-        assert av.store_override() is None
+        assert av._wheel_store() is None
+        assert av.active_stores() == []
 
     def test_the_env_var_still_wins(self, tmp_path, monkeypatch):
         tag = "gfx942__aiter-1__rocm-2"
         self._fake_wheel(tmp_path, monkeypatch, tag=tag)
         monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / tag)
-        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", "/operator/choice")
-        assert av.store_override() == Path("/operator/choice")
+        chosen = tmp_path / "operator"
+        chosen.mkdir()
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(chosen))
+        assert av.active_stores() == [chosen]
 
     def test_a_wheel_store_is_exported_to_the_cpp(self, tmp_path, monkeypatch):
         """The C++ reads only the env var, so a wheel-shipped store that is
@@ -531,15 +559,17 @@ class TestWheelStore:
         tag = "gfx942__aiter-1__rocm-2"
         shipped = self._fake_wheel(tmp_path, monkeypatch, tag=tag)
         monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: tmp_path / tag)
-        assert av.export_variant_store() == shipped
+        assert av.export_variant_store() == [shipped]
         assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == str(shipped)
 
     def test_an_operator_value_needs_no_export(self, tmp_path, monkeypatch):
         import os
 
-        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", "/operator/choice")
-        assert av.export_variant_store() == Path("/operator/choice")
-        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == "/operator/choice"
+        chosen = tmp_path / "operator"
+        chosen.mkdir()
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(chosen))
+        assert av.export_variant_store() == [chosen]
+        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == str(chosen)
 
 
 class TestPackagingTheStore:
@@ -646,8 +676,10 @@ class TestLookupAndExportAgree:
         found = av.find_variant(key)
         exported = av.export_variant_store()
         assert found is not None
-        assert found.parent == exported
-        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == str(exported)
+        assert found.parent in exported
+        assert os.environ["FLASHINFER_AITER_VARIANT_DIR"] == os.pathsep.join(
+            str(p) for p in exported
+        )
 
 
 class TestDriverExitCode:
@@ -694,3 +726,95 @@ class TestPruneHonoursArch:
         monkeypatch.setattr(drv, "variant_store_dir", boom)
         with pytest.raises(SystemExit, match="refusing to build a cache directory"):
             drv.main(["--prune"])
+
+
+class TestStoreIsolationAndIntegrity:
+    """Regressions for the third review of the variant store."""
+
+    def test_aiter_jit_dir_suppresses_the_auto_discovered_stores(
+        self, tmp_path, monkeypatch
+    ):
+        """AITER_JIT_DIR selects which AITER build to use. A store built against
+        the pinned install would load a kernel from a different build, silently,
+        because the mangled symbol still resolves."""
+        _isolate_variant_env(monkeypatch)
+        cache = tmp_path / "gfx942__aiter-1__rocm-2"
+        cache.mkdir()
+        monkeypatch.setattr(av, "variant_store_dir", lambda arch=None: cache)
+        assert av.active_stores() == [cache]
+
+        monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "custom-aiter"))
+        assert av.active_stores() == []
+
+    def test_an_explicit_variant_dir_survives_aiter_jit_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """Suppression is about the store *we* discovered, not one the operator
+        named themselves."""
+        _isolate_variant_env(monkeypatch)
+        chosen = tmp_path / "chosen"
+        chosen.mkdir()
+        monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "custom-aiter"))
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(chosen))
+        assert av.active_stores() == [chosen]
+
+    def test_a_non_existent_exported_entry_is_dropped(self, tmp_path, monkeypatch):
+        _isolate_variant_env(monkeypatch)
+        real = tmp_path / "real"
+        real.mkdir()
+        monkeypatch.setenv(
+            "FLASHINFER_AITER_VARIANT_DIR",
+            os.pathsep.join([str(tmp_path / "gone"), str(real)]),
+        )
+        assert av.active_stores() == [real]
+
+    def test_a_truncated_artifact_is_not_a_hit(self, tmp_path, monkeypatch):
+        """find_variant used to accept any is_file(), so a half-copied .so
+        skipped the build and then failed the dlopen with no fallback left."""
+        _isolate_variant_env(monkeypatch)
+        store = tmp_path / "store"
+        store.mkdir()
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(store))
+        key = av.VariantKey(av.Family.MHA_FWD, "bf16", False, True, False)
+        target = store / av.so_name(key)
+
+        target.write_bytes(b"")
+        assert av.find_variant(key) is None
+        target.write_bytes(b"not-an-elf")
+        assert av.find_variant(key) is None
+        target.write_bytes(b"\x7fELF" + b"\0" * 64)
+        assert av.find_variant(key) == target
+
+    def test_the_cpp_splits_the_variant_dir_list(self, loader_src):
+        """Python exports every store it searched, ':'-joined. A loader that took
+        the whole string as one path would find none of them."""
+        start = loader_src.index("jit_dir_candidates")
+        body = loader_src[start : loader_src.index("build_so_name", start)]
+        assert "FLASHINFER_AITER_VARIANT_DIR" in body
+        assert "find(':')" in body, "the variant dir is no longer parsed as a list"
+
+    def test_prune_leaves_another_users_store_alone(self, tmp_path, monkeypatch):
+        """FLASHINFER_CACHE_DIR is shared, so same-arch is not proof of ownership:
+        a colleague on a different AITER pin has a same-arch store."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        root = tmp_path / "aiter_variants"
+        current = root / "gfx942__aiter-2__rocm-2"
+        mine = root / "gfx942__aiter-1__rocm-2"
+        theirs = root / "gfx942__aiter-0__rocm-2"
+        for d in (current, mine, theirs):
+            d.mkdir(parents=True)
+
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: current)
+        real_stat = Path.stat
+
+        def fake_stat(self, *a, **kw):
+            st = real_stat(self, *a, **kw)
+            if self != theirs:
+                return st
+            fields = list(st[:10])
+            fields[4] = os.getuid() + 1  # st_uid, keeping st_mode intact
+            return os.stat_result(tuple(fields))
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+        assert drv.prune(apply=False) == [mine]

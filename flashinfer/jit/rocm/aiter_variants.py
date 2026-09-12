@@ -2,21 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The AITER attention variants FlashInfer ``dlopen``s, and where they live.
 
-``csrc/rocm/aiter_loader.cc`` composes a ``.so`` filename from a variant key and
-loads it out of AITER's JIT directory. The amd-aiter wheel prebuilds almost none
-of them -- measured on 0.1.20: zero ``mha_fwd_*``, zero ``mha_batch_prefill_*``,
-and of five shipped ``mha_varlen_fwd_*`` only two carry the ``_nskip_`` spelling
-the loader asks for. Everything else is built by AITER's lazy JIT at ``plan()``
-time, which costs 74-360s per file depending on the family.
+The amd-aiter wheel prebuilds almost none of them, so AITER's lazy JIT builds
+them at ``plan()`` time. This module enumerates the set so it can be built ahead
+of time instead.
 
-This module enumerates that set so it can be built ahead of time instead.
-
-**Variants and builds are not one-to-one.** Two of the bootstraps in
-``flashinfer/rocm/prefill.py`` loop over ``return_lse`` internally and so emit
-the ``_lse`` and ``_nlse`` files from a single call, while the other two take
-``has_lse`` as a parameter and emit one. Driving this table by filename would
-run those builds twice, concurrently, into one output directory -- hence
-:func:`builds` alongside :func:`reachable_variants`.
+**Variants and builds are not one-to-one**: two bootstraps loop over
+``return_lse`` internally and emit two files per call, so driving this table by
+filename would run those builds twice into one directory -- hence :func:`builds`
+alongside :func:`reachable_variants`.
 """
 
 from __future__ import annotations
@@ -25,7 +18,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .. import env as jit_env
 from .aiter_source import resolve_aiter_build_arch
@@ -223,16 +216,14 @@ def variant_store_dir(arch: Optional[str] = None) -> Path:
     return jit_env.FLASHINFER_CACHE_DIR / "aiter_variants" / tag
 
 
-def store_override() -> Optional[Path]:
-    """A store shipped outside the cache: the env var, else the jit-cache wheel.
+def _explicit_stores() -> List[Path]:
+    """Operator-set ``FLASHINFER_AITER_VARIANT_DIR``, as a ``os.pathsep`` list.
 
-    Both place the store somewhere the running user can read but not necessarily
-    write, which is the case the on-demand build cannot serve.
+    Non-existent entries are dropped rather than trusted: an exported path that
+    is not there only lengthens the loader's candidate list.
     """
-    raw = os.environ.get("FLASHINFER_AITER_VARIANT_DIR")
-    if raw:
-        return Path(raw)
-    return _wheel_store()
+    raw = os.environ.get("FLASHINFER_AITER_VARIANT_DIR", "")
+    return [p for p in (Path(x) for x in raw.split(os.pathsep) if x) if p.is_dir()]
 
 
 def _wheel_store() -> Optional[Path]:
@@ -266,19 +257,52 @@ def _wheel_store() -> Optional[Path]:
 _SKIP_STORE_LOOKUP = False
 
 
-def active_store() -> Optional[Path]:
-    """The one store this process uses, for both lookup and export.
+def active_stores() -> List[Path]:
+    """Every store this process may read, in priority order.
 
-    Deliberately a single directory rather than a search path. find_variant
-    decides whether the Python bootstrap is skipped while export_variant_store
-    tells the C++ loader where to look; if those disagreed, a variant found in a
-    root that was not exported would skip the build and then fail the dlopen.
+    A list rather than one directory: a jit-cache wheel can ship a partial
+    store, and returning only that would permanently shadow the cache store the
+    prebuild driver writes. :func:`find_variant` and :func:`export_variant_store`
+    share this list so lookup and dlopen cannot disagree.
+
+    An operator-set ``AITER_JIT_DIR`` suppresses the auto-discovered stores: it
+    selects which AITER build to use, and a store built against the pinned
+    install would load a kernel from a different build, silently, since the
+    mangled symbol still resolves. An explicit variant dir is their own choice
+    and still honoured.
     """
-    override = store_override()
-    if override is not None:
-        return override
-    store = variant_store_dir()
-    return store if store.is_dir() else None
+    explicit = _explicit_stores()
+    if explicit:
+        return explicit
+    if os.environ.get("AITER_JIT_DIR"):
+        return []
+    stores = []
+    try:
+        cache = variant_store_dir()
+    except Exception:
+        # variant_store_dir raises on an unusable arch tag. Reached from all
+        # four bootstraps; "no store" is the honest answer, and the caller then
+        # builds exactly as it did before.
+        cache = None
+    if cache is not None and cache.is_dir():
+        stores.append(cache)
+    wheel = _wheel_store()
+    if wheel is not None and wheel not in stores:
+        stores.append(wheel)
+    return stores
+
+
+def _is_loadable(path: Path) -> bool:
+    """A plausible ELF, not merely a name that exists.
+
+    A truncated or half-copied artifact would otherwise satisfy the lookup, skip
+    the build, and then fail at dlopen with no fallback left to take.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
 
 
 def find_variant(key: VariantKey) -> Optional[Path]:
@@ -288,19 +312,10 @@ def find_variant(key: VariantKey) -> Optional[Path]:
         # and a store hit -- including one from a jit-cache wheel it is not
         # writing to -- would make every build a silent no-op.
         return None
-    try:
-        roots = (active_store(),)
-    except Exception:
-        # variant_store_dir raises on an unusable arch tag. This is now reached
-        # from all four bootstraps, and the two probe wrappers would turn that
-        # into a permanent "AITER unavailable" for the process. No store is the
-        # honest answer: the caller then builds, exactly as it did before.
-        return None
-    for root in roots:
-        if root is None:
-            continue
-        candidate = root / so_name(key)
-        if candidate.is_file():
+    name = so_name(key)
+    for root in active_stores():
+        candidate = root / name
+        if _is_loadable(candidate):
             return candidate
     return None
 
@@ -340,27 +355,20 @@ def prebuilt(
     )
 
 
-def export_variant_store() -> Optional[Path]:
-    """Publish the store to ``FLASHINFER_AITER_VARIANT_DIR`` for the C++ loader.
+def export_variant_store() -> List[Path]:
+    """Publish the stores to ``FLASHINFER_AITER_VARIANT_DIR`` for the C++ loader.
 
     Resolved here and passed through the environment rather than baked in as a
     ``-D``: an AOT-packaged module carries whatever path its *build* machine
-    had, which does not exist on the consumer's. ``aiter_loader.cc`` reads this
-    at call time.
+    had, which does not exist on the consumer's.
 
-    An operator-set value wins and needs no export -- the loader reads the same
-    variable. A wheel-shipped store does need one, since the C++ has no way to
-    find it otherwise. A store that does not exist is not exported, so the
-    loader's candidate list stays as short as the install warrants.
+    Exports the same list :func:`find_variant` searches, so a variant that
+    skipped a build is always one the loader can also find. An empty list leaves
+    the variable alone rather than clearing an operator's value.
     """
-    raw = os.environ.get("FLASHINFER_AITER_VARIANT_DIR")
-    if raw:
-        return Path(raw)
-    try:
-        store = active_store()
-    except Exception:
-        return None
-    if store is None:
-        return None
-    os.environ["FLASHINFER_AITER_VARIANT_DIR"] = str(store)
-    return store
+    stores = active_stores()
+    if stores:
+        os.environ["FLASHINFER_AITER_VARIANT_DIR"] = os.pathsep.join(
+            str(p) for p in stores
+        )
+    return stores

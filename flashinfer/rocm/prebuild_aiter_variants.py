@@ -187,14 +187,17 @@ def prebuild(
     # may not be the one being written -- a jit-cache wheel or an operator
     # FLASHINFER_AITER_VARIANT_DIR both satisfy it. Without this every build
     # would return immediately and then fail "AITER produced 0 of N".
+    previous = _variants._SKIP_STORE_LOOKUP
     _variants._SKIP_STORE_LOOKUP = True
     try:
         return _prebuild_specs(specs, store, arch, device_idx, head_dim, force)
     finally:
-        _variants._SKIP_STORE_LOOKUP = False
+        _variants._SKIP_STORE_LOOKUP = previous
 
 
 def _prebuild_specs(specs, store, arch, device_idx, head_dim, force):
+    import torch
+
     built = skipped = 0
     failures: List[str] = []
     for index, spec in enumerate(specs, start=1):
@@ -221,6 +224,10 @@ def _prebuild_specs(specs, store, arch, device_idx, head_dim, force):
             # Let AITER build where it wants and copy the result into the store.
             with _BUILD_LOCK, _aiter_env_scope(None, symbol_visible=False):
                 _run_build(spec, device_idx, head_dim)
+                # The bootstraps launch kernels asynchronously. Without this a
+                # device-side fault surfaces on the *next* spec's launch, which
+                # is then blamed for it while this artifact is published as good.
+                torch.cuda.synchronize(device_idx)
                 from aiter.jit import core as aiter_core
 
                 search = [Path(aiter_core.get_user_jit_dir())]
@@ -247,7 +254,13 @@ def _prebuild_specs(specs, store, arch, device_idx, head_dim, force):
             failures.append(f"{label}: {type(exc).__name__}: {exc}")
             print(f"    !! FAILED: {type(exc).__name__}: {exc}", flush=True)
 
-    _write_manifest(store, arch)
+    try:
+        _write_manifest(store, arch)
+    except Exception as exc:  # noqa: BLE001 - see the abort note above
+        # Same reason the per-spec failures are collected: losing a multi-hour
+        # run's counts to a manifest write is the outcome that note rejects.
+        failures.append(f"manifest: {type(exc).__name__}: {exc}")
+        print(f"!! manifest write FAILED: {type(exc).__name__}: {exc}", flush=True)
     if failures:
         print(f"\n{len(failures)} spec(s) failed:", flush=True)
         for line in failures:
@@ -290,19 +303,27 @@ def prune(*, arch: Optional[str] = None, apply: bool = False) -> List[Path]:
     the old ones, so every upgrade leaves ~165 MB behind -- on shared nodes,
     indefinitely.
 
-    Scoped to the running architecture on purpose, and dry-run unless ``apply``.
-    FLASHINFER_CACHE_DIR is shared on these nodes and both a gfx942 and a gfx950
-    store are expected to exist, so "every directory except the current one"
-    would have a gfx942 session delete a colleague's gfx950 build.
+    Dry-run unless ``apply``, scoped to the running architecture, and limited to
+    directories this uid owns. FLASHINFER_CACHE_DIR is shared on these nodes, so
+    arch alone is not enough: a colleague on the same card with a different AITER
+    pin has a same-arch store, and deleting it mid-run breaks their dlopens.
     """
     current_dir = variant_store_dir(arch)
     root = current_dir.parent
     arch = current_dir.name.split("__", 1)[0]
+    uid = os.getuid()
+
+    def mine(path: Path) -> bool:
+        try:
+            return path.stat().st_uid == uid
+        except OSError:
+            return False
+
     stale = (
         sorted(
             d
             for d in root.glob(f"{arch}__*")
-            if d.is_dir() and d.name != current_dir.name
+            if d.is_dir() and d.name != current_dir.name and mine(d)
         )
         if root.is_dir()
         else []
