@@ -24,6 +24,7 @@ from .support import (
     fa2_backed_backends,
     filter_backends_by_arch,
     get_device_arch,
+    hip_dtype_override,
     rocm_supported_backends,
 )
 
@@ -37,6 +38,7 @@ __all__ = [
     "fa2_backed_backends",
     "filter_backends_by_arch",
     "get_device_arch",
+    "hip_dtype_override",
     "l2_flush_size_mb",
     "load_routine_group",
     "record_backend_resolution",

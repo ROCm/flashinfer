@@ -21,6 +21,34 @@ ATTENTION_ROUTINES = [
     "BatchPrefillWithRaggedKVCacheWrapper",
 ]
 
+# The non-attention routines the ROCm filter registers. Spelled out rather than
+# read back from the registry, so a routine dropped from it fails here.
+ROCM_NATIVE_ROUTINES = [
+    "rmsnorm",
+    "fused_add_rmsnorm",
+    "gemma_rmsnorm",
+    "gemma_fused_add_rmsnorm",
+    "apply_rope",
+    "apply_rope_pos_ids",
+    "apply_llama31_rope",
+    "apply_llama31_rope_pos_ids",
+    "rope_quantize_fp8",
+    "mla_rope_quantize_fp8",
+    "rope_quantize_fp8_append_paged_kv_cache",
+    "softmax",
+    "sampling_from_probs",
+    "sampling_from_logits",
+    "top_k_sampling_from_probs",
+    "top_p_sampling_from_probs",
+    "top_k_top_p_sampling_from_probs",
+    "top_k_top_p_sampling_from_logits",
+    "min_p_sampling_from_probs",
+    "top_k_renorm_probs",
+    "top_p_renorm_probs",
+    "top_k_mask_logits",
+    "chain_speculative_sampling",
+]
+
 
 def _utils():
     from routines import flashinfer_benchmark_utils as u
@@ -217,28 +245,43 @@ def test_hip_gqa_group_sizes_match_the_kernel_dispatch():
     assert 128 // 8 not in from_kernel
 
 
-def _backend_choices():
-    """The values attention.py's `--backends` will accept."""
+def _backend_choices(routine):
+    """The values `--backends` will accept for whichever module owns ``routine``.
+
+    Per-module because the CLIs disagree: attention offers fa2/auto and never
+    "cuda", while norm, rope and sampling offer "cuda" and never fa2.
+    """
     import argparse
     import contextlib
+    import importlib
 
-    import routines.attention as attention
+    u = _utils()
+    for group, parse_name in (
+        ("attention", "parse_attention_args"),
+        ("norm", "parse_norm_args"),
+        ("rope", "parse_rope_args"),
+        ("sampling", "parse_sampling_args"),
+    ):
+        if routine not in u.benchmark_apis[group]:
+            continue
+        module = importlib.import_module(f"routines.{group}")
+        parser = argparse.ArgumentParser()
+        # The real caller hands over a parser already carrying the shared
+        # arguments; parse_sampling_args pre-parses --routine off it.
+        parser.add_argument("--routine")
+        # argparse may reject the stub argv; the action is registered either way.
+        with contextlib.suppress(SystemExit):
+            getattr(module, parse_name)(["--routine", routine], parser)
+        for action in parser._actions:
+            if action.dest == "backends":
+                return set(action.choices)
+        raise AssertionError(f"--backends not registered by routines.{group}")
+    raise AssertionError(f"no routine group owns {routine}")
 
-    parser = argparse.ArgumentParser()
-    # argparse may reject the stub argv; the action is registered either way.
-    with contextlib.suppress(SystemExit):
-        attention.parse_attention_args(
-            ["--routine", "BatchDecodeWithPagedKVCacheWrapper"], parser
-        )
-    for action in parser._actions:
-        if action.dest == "backends":
-            return set(action.choices)
-    raise AssertionError("--backends action not registered")
 
-
-@pytest.mark.parametrize("routine", ATTENTION_ROUTINES)
+@pytest.mark.parametrize("routine", ATTENTION_ROUTINES + ROCM_NATIVE_ROUTINES)
 def test_filter_only_offers_backends_the_cli_accepts(routine):
-    """Whatever survives the filter must be a backend attention.py can dispatch.
+    """Whatever survives the filter must be a backend the routine can dispatch.
 
     Offering one that argparse rejects, or that no wrapper branch constructs,
     turns a supported configuration into a silently missing CSV row.
@@ -246,8 +289,29 @@ def test_filter_only_offers_backends_the_cli_accepts(routine):
     r = _rocm()
     offered = r.rocm_supported_backends(routine, torch.device("cuda"))
     assert offered, f"{routine} offers no backend at all on this device"
-    unknown = set(offered) - _backend_choices()
+    unknown = set(offered) - _backend_choices(routine)
     assert not unknown, f"{unknown} survive the filter but --backends rejects them"
+
+
+@pytest.mark.parametrize("routine", ROCM_NATIVE_ROUTINES)
+def test_registered_routine_is_a_real_routine(routine):
+    """A typo in the registry is silent: the routine just never gets a backend."""
+    u = _utils()
+    known = {r for group in u.benchmark_apis.values() for r in group}
+    assert routine in known
+
+
+def test_fp8_dtype_strings_resolve_to_the_fnuz_encodings():
+    """CDNA implements fnuz fp8; the OCP names reach the kernel as "must be float8".
+
+    Three rope routines take --quant_dtype, and before the override every one of
+    them failed inside the kernel rather than at argument parsing.
+    """
+    u = _utils()
+    assert u.dtype_str_to_torch_dtype("fp8_e4m3") is torch.float8_e4m3fnuz
+    assert u.dtype_str_to_torch_dtype("fp8_e5m2") is torch.float8_e5m2fnuz
+    # Non-fp8 names are untouched by the override.
+    assert u.dtype_str_to_torch_dtype("bfloat16") is torch.bfloat16
 
 
 def test_cuda_path_still_matches_its_table(monkeypatch):

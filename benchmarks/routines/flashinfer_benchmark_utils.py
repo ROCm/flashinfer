@@ -5,7 +5,7 @@ from flashinfer.rocm.device_utils import IS_HIP
 from flashinfer.testing.utils import set_seed
 from flashinfer.utils import get_compute_capability
 
-from .rocm import PERF_COLUMNS, filter_backends_by_arch
+from .rocm import PERF_COLUMNS, filter_backends_by_arch, hip_dtype_override
 
 # Output columns for the test results.
 output_column_dict = {
@@ -357,6 +357,10 @@ def is_close_stats(input, other, rtol=1e-5, atol=1e-8):
 
 
 def dtype_str_to_torch_dtype(dtype_str):
+    if IS_HIP:
+        hip_dtype = hip_dtype_override(dtype_str)
+        if hip_dtype is not None:
+            return hip_dtype
     if dtype_str == "bfloat16":
         return torch.bfloat16
     elif dtype_str == "float16":
