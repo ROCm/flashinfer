@@ -833,3 +833,50 @@ class TestStoreIsolationAndIntegrity:
 
         monkeypatch.setattr(Path, "stat", fake_stat)
         assert drv.prune(apply=False) == [mine]
+
+
+class TestCopilotReviewRegressions:
+    """PR #363 review round one."""
+
+    def test_list_reports_a_truncated_artifact_as_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--list and the rerun-skip used is_file() while find_variant requires
+        ELF, so a truncated artifact read as 'present' and was never rebuilt."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        store = tmp_path / "gfx942__aiter-1__rocm-2"
+        store.mkdir()
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: store)
+        monkeypatch.setattr(drv, "resolve_aiter_build_arch", lambda: "gfx942")
+
+        spec = drv._select("mha_fwd")[0]
+        name = av.so_name(spec.produces[0])
+        (store / name).write_bytes(b"")  # truncated, as an interrupted copy leaves it
+
+        drv.main(["--only", "mha_fwd", "--list"])
+        line = next(l for l in capsys.readouterr().out.splitlines() if name in l)
+        assert line.strip().startswith("missing"), line
+
+    def test_prebuild_selects_the_device_before_resolving_the_arch(
+        self, tmp_path, monkeypatch
+    ):
+        """--device chooses where the kernels launch, but the store tag and
+        _aiter_env_scope read torch.cuda.current_device(); without set_device a
+        mixed-arch host names the store for the wrong card."""
+        import torch
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+        from flashinfer.rocm import prefill as _prefill
+
+        monkeypatch.setattr(_prefill, "_aiter_ops_importable", lambda: True)
+        seen = []
+        monkeypatch.setattr(torch.cuda, "set_device", lambda i: seen.append(i))
+
+        def store_dir(arch=None):
+            raise RuntimeError("stop here: the device must already be selected")
+
+        monkeypatch.setattr(drv, "variant_store_dir", store_dir)
+        with pytest.raises(RuntimeError, match="stop here"):
+            drv.prebuild([], device_idx=3)
+        assert seen == [3]

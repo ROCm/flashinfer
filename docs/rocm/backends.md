@@ -245,11 +245,12 @@ Two consequences worth planning for:
 * A cold variant costs a CK-tile compile. Measured at `MAX_JOBS=32` on
   gfx942 (MI300X, ROCm 10.0), one variant per family: `mha_fwd` 280-360 s,
   `mha_batch_prefill` 119 s, `mha_varlen_fwd` 74 s. A 16-core gfx950 box took
-  roughly 2x each, tracking core count rather than architecture. It is paid per
-  *shape*, and again on any restart that does not persist `site-packages`.
+  roughly 2x each, tracking core count rather than architecture. It is paid once
+  per *variant* -- one `.so` serves every head dimension -- and again on any
+  restart that does not persist `site-packages`.
 * A read-only or foreign-owned `site-packages/aiter/jit/` lets the build
-  succeed but the install step fail. That error currently propagates out of
-  `backend="auto"` instead of falling back to `fa2`.
+  succeed but the install step fail. Under `auto` that demotes to `fa2` with a
+  warning; under `backend="aiter"` it raises.
 
 Both are what the variant store below exists to remove.
 
@@ -275,8 +276,10 @@ that family costs ~32 min on gfx942 for files nothing ever saves time on. Pass
 call the op. So it cannot be a `docker build` step — run it as a GPU-attached
 job and copy the resulting directory into the image.
 
-The store lives at
-`$FLASHINFER_CACHE_DIR/aiter_variants/<arch>__aiter-<version>__rocm-<version>/`.
+The store lives under FlashInfer's cache directory, at
+`aiter_variants/<arch>__aiter-<version>__rocm-<version>/`. That cache is
+`~/.cache/flashinfer` unless `FLASHINFER_WORKSPACE_BASE` moves it; there is no
+`FLASHINFER_CACHE_DIR` environment variable.
 All three components are in the tag on purpose: these are CK-tile objects that
 travel between machines, so bumping AITER or ROCm names a directory that does
 not exist, and the lookup misses into a rebuild rather than loading a

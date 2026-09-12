@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Build the AITER attention variants ahead of time, into FlashInfer's store.
 
-Without this, the first ``plan()`` for each shape pays an AITER CK-tile compile
--- 74-360s on gfx942 depending on the family, per shape, and again after every
-container restart that does not persist site-packages. On a read-only install it
+Without this, the first ``plan()`` needing a missing variant pays an AITER
+CK-tile compile -- 74-360s on gfx942 depending on the family, once per variant
+(one ``.so`` serves every head dimension), and again after every container
+restart that does not persist site-packages. On a read-only install it
 does not stall, it fails, and ``backend="auto"`` silently drops to fa2.
 
     python -m flashinfer.rocm.prebuild_aiter_variants --list
@@ -180,6 +181,13 @@ def prebuild(
             "floor; nothing can be prebuilt."
         )
 
+    # Before anything resolves the architecture: both the store tag and
+    # _aiter_env_scope read the *current* device, so without this --device 1
+    # would build on device 1 while naming the store for device 0.
+    import torch
+
+    torch.cuda.set_device(device_idx)
+
     store = variant_store_dir(arch)
     store.mkdir(parents=True, exist_ok=True)
 
@@ -210,7 +218,7 @@ def _prebuild_specs(specs, store, arch, device_idx, head_dim, force):
             # should mean.
             for name in wanted:
                 (store / name).unlink(missing_ok=True)
-        elif all((store / name).is_file() for name in wanted):
+        elif all(_variants._is_loadable(store / name) for name in wanted):
             skipped += 1
             continue
 
@@ -374,10 +382,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="a cache key only; one .so serves every head dim",
     )
     parser.add_argument("--only", help="comma-separated families, e.g. mha_fwd")
-    parser.add_argument("--force", action="store_true", help="rebuild present variants")
+    parser.add_argument(
+        "--force", action="store_true", help="re-publish present variants"
+    )
     parser.add_argument("--list", action="store_true", help="print the plan and exit")
     parser.add_argument(
-        "--prune", action="store_true", help="report stores from other arch/aiter/rocm"
+        "--prune",
+        action="store_true",
+        help="report this arch's stores from another aiter/rocm pin",
     )
     parser.add_argument("--yes", action="store_true", help="with --prune, delete them")
     args = parser.parse_args(argv)
@@ -411,7 +423,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for spec in specs:
             state = (
                 "present"
-                if all((store / so_name(k)).is_file() for k in spec.produces)
+                if all(
+                    _variants._is_loadable(store / so_name(k)) for k in spec.produces
+                )
                 else "missing"
             )
             print(f"  {state:8s} {', '.join(so_name(k) for k in spec.produces)}")
