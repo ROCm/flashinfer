@@ -48,7 +48,9 @@ def _plan_and_run(device, s_qo, s_kv, dtype, fp8, backend="auto", **run_kwargs):
     npages = s_kv // PAGE
     torch.manual_seed(0)
     q = torch.randn(s_qo, NHQ, HEAD_DIM, dtype=torch.bfloat16, device=device)
-    kv = torch.randn(npages, 2, PAGE, NHKV, HEAD_DIM, dtype=torch.bfloat16, device=device)
+    kv = torch.randn(
+        npages, 2, PAGE, NHKV, HEAD_DIM, dtype=torch.bfloat16, device=device
+    )
     ref_k = kv[:, 0].reshape(-1, NHKV, HEAD_DIM)[:s_kv]
     ref_v = kv[:, 1].reshape(-1, NHKV, HEAD_DIM)[:s_kv]
 
@@ -68,8 +70,13 @@ def _plan_and_run(device, s_qo, s_kv, dtype, fp8, backend="auto", **run_kwargs):
         torch.tensor([0, npages], dtype=torch.int32, device=device),
         torch.arange(npages, dtype=torch.int32, device=device),
         torch.tensor([PAGE], dtype=torch.int32, device=device),
-        NHQ, NHKV, HEAD_DIM, PAGE, causal=True,
-        q_data_type=dtype, kv_data_type=dtype,
+        NHQ,
+        NHKV,
+        HEAD_DIM,
+        PAGE,
+        causal=True,
+        q_data_type=dtype,
+        kv_data_type=dtype,
     )
     return w, w.run(q_in, kv_in, **run_kwargs), (q, ref_k, ref_v)
 
