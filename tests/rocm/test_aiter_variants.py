@@ -911,3 +911,48 @@ class TestCopilotReviewRegressions:
         with pytest.raises(SystemExit):
             drv.main(["--arch", "gfx950", "--device", "2", "--list"])
         assert order[0] == "set_device(2)", order
+
+
+class TestCopilotReviewThree:
+    def test_a_bad_device_index_fails_instead_of_silently_keeping_the_old_one(
+        self, monkeypatch
+    ):
+        """A swallowed set_device left the previous device current, so --list
+        reported the wrong arch and --prune --yes could target its stores."""
+        import torch
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+        def boom(idx):
+            raise RuntimeError(f"invalid device ordinal {idx}")
+
+        monkeypatch.setattr(torch.cuda, "set_device", boom)
+        with pytest.raises(RuntimeError, match="invalid device ordinal"):
+            drv._select_device(99)
+
+    def test_a_missing_torch_is_still_a_no_op(self, monkeypatch):
+        """--list has to work on a GPU-less build box."""
+        import builtins
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        real_import = builtins.__import__
+
+        def no_torch(name, *a, **kw):
+            if name == "torch":
+                raise ImportError("no torch here")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", no_torch)
+        drv._select_device(0)  # must not raise
+
+    def test_prebuild_refuses_an_ambient_aiter_jit_dir(self, tmp_path, monkeypatch):
+        """The store tag names the *installed* amd-aiter, so publishing another
+        build's artifacts into it would have them auto-loaded under that tag."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "custom-aiter"))
+        with pytest.raises(RuntimeError, match="AITER_JIT_DIR is set"):
+            drv.prebuild([], device_idx=0)

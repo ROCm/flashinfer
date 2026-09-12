@@ -56,15 +56,16 @@ def _select_device(device_idx: int) -> None:
     ``resolve_aiter_build_arch()`` is ``lru_cache``d and reads
     ``torch.cuda.current_device()``, so the first caller decides the store tag
     and ``GPU_ARCHS`` for the whole process. No-op without a GPU, so ``--list``
-    still works on a build box.
+    still works on a build box -- but a bad index raises rather than silently
+    leaving the previous device current under a tag naming the wrong arch.
     """
     try:
         import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.set_device(device_idx)
-    except Exception:
-        pass
+    except ImportError:
+        return
+    if not torch.cuda.is_available():
+        return
+    torch.cuda.set_device(device_idx)
 
 
 def _dtype(name: str):
@@ -187,6 +188,25 @@ def prebuild(
     after a partial failure resumes rather than restarting.
     """
     from . import prefill as _prefill
+
+    # _aiter_env_scope(None, ...) preserves an ambient AITER_JIT_DIR so the
+    # bootstraps can import what they build. That would publish a *different*
+    # AITER build's artifacts into a store tagged with the installed version,
+    # which a later process auto-discovers -- the isolation active_stores()
+    # enforces on the read side, defeated on the write side.
+    # _aiter_env_scope(None, ...) preserves an ambient AITER_JIT_DIR so the
+    # bootstraps can import what they build. That would publish a *different*
+    # AITER build's artifacts into a store tagged with the installed version,
+    # which a later process auto-discovers -- the isolation active_stores()
+    # enforces on the read side, defeated on the write side.
+    if os.environ.get("AITER_JIT_DIR"):
+        raise RuntimeError(
+            "AITER_JIT_DIR is set. The store tag comes from the installed "
+            "amd-aiter version, so publishing artifacts from another AITER "
+            "build would mislabel them and they would be auto-loaded by a "
+            "process without the override. Unset it to prebuild for the "
+            "installed AITER."
+        )
 
     # First, ahead of the probe below: it reaches _ensure_aiter_gpu_archs() and
     # so the cached resolve_aiter_build_arch(), which would freeze the *current*
