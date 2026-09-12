@@ -1270,7 +1270,20 @@ class BatchDecodeWithPagedKVCacheWrapper:
         disable_split_kv : bool
             CUDA-only split-KV scheduler knob; raises when ``True``.
         q_len_per_req : int
-            Multi-token decode. ROCm supports ``1``; more raises.
+            Query tokens per request, for speculative-decode verify. Needs
+            ``use_tensor_cores=True`` and ``kv_len >= q_len_per_req`` on every
+            request; attention is causal within a request. Part of the frozen
+            shape under cudagraph, so use one wrapper per value.
+
+            Cost steps with ``q_len_per_req * (num_qo_heads // num_kv_heads)``,
+            not with ``q_len_per_req`` alone: the tile is 16 at or below 16 and
+            64 above (``rocm/utils.cuh:100``). At GQA 32/8 that makes 4 free and
+            8 a step; at 64/8 the step lands at 2.
+
+            The mask is causal, so the drafts are one linear chain per request.
+            A *tree* draft (EAGLE-2, Medusa) would have siblings attend to each
+            other and return wrong numbers silently -- use ``custom_mask`` on
+            the prefill wrapper for that.
 
         Note
         ----
@@ -1362,11 +1375,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
             )
         reject_cuda_only("fixed_split_size", fixed_split_size, None)
         reject_cuda_only("disable_split_kv", disable_split_kv, False)
-        if q_len_per_req != 1:
-            raise NotImplementedError(
-                "q_len_per_req > 1 (multi-token decode) is not supported on "
-                f"ROCm; got {q_len_per_req}. Use the prefill wrapper for "
-                "multi-token queries."
+        if q_len_per_req < 1:
+            raise ValueError(f"q_len_per_req must be >= 1, got {q_len_per_req}")
+        if q_len_per_req > 1 and not self.use_tensor_cores:
+            # The tensor-core path runs the batch-prefill kernel, which is what
+            # gives a multi-token query its causal mask. AITER decode requires
+            # use_tensor_cores=False and so can never serve this.
+            raise ValueError(
+                f"q_len_per_req={q_len_per_req} requires use_tensor_cores=True; "
+                "the single-token decode kernel takes one query row per request."
             )
 
         self._workspace_size = (
@@ -1381,6 +1398,41 @@ class BatchDecodeWithPagedKVCacheWrapper:
         qo_indptr_host = _get_range_buf(batch_size + 1, "cpu")
         indptr_host = indptr.to("cpu")
         last_page_len_host = last_page_len.to("cpu")
+
+        # Computed here rather than after the buffer writes below so that a
+        # plan rejected on a per-request KV length still leaves the wrapper
+        # replayable, per the contract noted at the top of this method.
+        if seq_lens is None:
+            kv_lens_arr_host = get_seq_lens(indptr_host, last_page_len_host, page_size)
+        else:
+            kv_lens_arr_host = seq_lens.cpu()
+
+        if q_len_per_req > 1:
+            # Under capture q_len_per_req is part of the frozen shape: the
+            # captured graph reads _qo_indptr_buf, so a replan that changed the
+            # stride would silently reinterpret the query rows.
+            frozen_q_len = getattr(self, "_q_len_per_req", None)
+            if (
+                self.is_cuda_graph_enabled
+                and frozen_q_len is not None
+                and frozen_q_len != q_len_per_req
+            ):
+                raise ValueError(
+                    "q_len_per_req is part of the frozen cudagraph shape: this "
+                    f"wrapper was planned with {frozen_q_len}, got {q_len_per_req}. "
+                    "Use a separate wrapper per q_len_per_req."
+                )
+            min_kv_len = int(min(kv_lens_arr_host).item())
+            if min_kv_len < q_len_per_req:
+                raise ValueError(
+                    f"q_len_per_req={q_len_per_req} requires kv_len >= q_len_per_req "
+                    "for every request (the verified tokens must already be appended "
+                    f"to the KV cache), but got a request with kv_len={min_kv_len}: "
+                    "its earlier rows would attend to an empty KV range."
+                )
+            # Out-of-place: _get_range_buf hands back a view into a module-global
+            # cache, so an in-place scale would corrupt it for every other caller.
+            qo_indptr_host = qo_indptr_host * q_len_per_req
 
         # An over-capacity demotion is a property of one batch, not of the device, so
         # unlike the capability-driven resolution it must not stick: re-resolve.
@@ -1431,6 +1483,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._paged_kv_indices_buf[: len(indices)].copy_(
                 indices, non_blocking=(indices.device == self.device) and non_blocking
             )
+            if self.use_tensor_cores:
+                # Baked as arange(batch+1) in __init__ and never rewritten until
+                # now, which is correct only at q_len_per_req=1. Same length for
+                # any q_len, so the captured graph's pointer stays valid.
+                self._qo_indptr_buf.copy_(qo_indptr_host, non_blocking=non_blocking)
         else:
             self._paged_kv_indptr_buf = indptr.to(
                 self.device, non_blocking=non_blocking
@@ -1460,16 +1517,12 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._cached_kv_data_type = kv_data_type
         self._cached_o_data_type = _resolved_o_data_type
         self._batch_size = batch_size
+        self._q_len_per_req = q_len_per_req
         self._num_qo_heads = num_qo_heads
         self._num_kv_heads = num_kv_heads
         self._block_tables: Optional[torch.Tensor] = block_tables
         self._max_kv_len: Optional[int] = None
         self._page_size: int = page_size
-
-        if seq_lens is None:
-            kv_lens_arr_host = get_seq_lens(indptr_host, last_page_len_host, page_size)
-        else:
-            kv_lens_arr_host = seq_lens.cpu()
 
         # Resolve auto → concrete backend. AITER decode requires use_tensor_cores=False
         # (the AITER PA v1 kernel handles its own dispatch internally). Under CUDA-graph
@@ -1670,7 +1723,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 qo_indptr_host,
                 indptr_host,
                 kv_lens_arr_host,
-                batch_size,  # total_num_rows
+                batch_size * q_len_per_req,  # total_num_rows
                 batch_size,
                 num_qo_heads,
                 num_kv_heads,
@@ -1678,7 +1731,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 self.is_cuda_graph_enabled,
                 head_dim,
                 head_dim,
-                False,  # causal
+                # Upstream parity only: the ROCm binding takes this and never
+                # forwards it to PrefillPlan. MaskMode in run() is what actually
+                # makes a multi-token query causal.
+                q_len_per_req > 1,  # causal
             )
             self._plan_info = plan_info_vec_as_tensor(
                 self._plan_info, device=self._float_workspace_buffer.device
@@ -1909,16 +1965,18 @@ class BatchDecodeWithPagedKVCacheWrapper:
             Whether to enable Programmatic Dependent Launch (PDL). See https://docs.nvidia.com/cuda/cuda-c-programming-guide/#programmatic-dependent-launch-and-synchronization
             Only supported for >= sm90, and currently only for FA2 and CUDA core decode.
         q_len_per_req : Optional[int]
-            The number of query tokens per request. ROCm accepts ``None`` and
-            ``1``, both meaning one token; anything larger raises.
+            Query tokens per request. ``None`` infers it from ``q``; a value
+            given here is checked against ``q`` and against the planned value.
+            ``q`` is ``[batch_size * q_len_per_req, num_qo_heads, head_dim]``.
         Returns
         -------
         Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
-            If :attr:`return_lse` is ``False``, the attention output, shape: ``[batch_size, num_qo_heads, head_dim]``.
+            With ``N = batch_size * q_len_per_req``:
+            if :attr:`return_lse` is ``False``, the attention output, shape: ``[N, num_qo_heads, head_dim]``.
             If :attr:`return_lse` is ``True``, a tuple of two tensors:
 
-            * attention output, shape: ``[batch_size, num_qo_heads, head_dim]``
-            * logsumexp of attention scores, shape: ``[batch_size, num_qo_heads]``.
+            * attention output, shape: ``[N, num_qo_heads, head_dim]``
+            * logsumexp of attention scores, shape: ``[N, num_qo_heads]``.
         """
         reject_cuda_only(
             "skip_softmax_threshold_scale_factor",
@@ -1926,10 +1984,31 @@ class BatchDecodeWithPagedKVCacheWrapper:
             None,
         )
         reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
-        if q_len_per_req not in (None, 1):
-            raise NotImplementedError(
-                "q_len_per_req > 1 (multi-token decode) is not supported on "
-                f"ROCm; got {q_len_per_req}."
+
+        # Resolved before the AITER branch below, not just before the tensor-core
+        # one: AITER's PA v1 kernel reads q as [batch, heads, dim], so a query
+        # carrying multiple rows per request has to be rejected before it gets
+        # there rather than being silently misread.
+        planned_q_len = getattr(self, "_q_len_per_req", 1) or 1
+        actual_batch_size = self._paged_kv_last_page_len_buf.size(0)
+        if q_len_per_req is None:
+            q_len_per_req = (
+                q.size(0) // actual_batch_size if actual_batch_size else planned_q_len
+            )
+        elif q.size(0) != actual_batch_size * q_len_per_req:
+            raise ValueError(
+                f"q.shape[0] ({q.size(0)}) does not match batch_size * q_len_per_req "
+                f"({actual_batch_size} * {q_len_per_req} = "
+                f"{actual_batch_size * q_len_per_req})."
+            )
+        if q_len_per_req != planned_q_len:
+            raise ValueError(
+                f"q implies q_len_per_req={q_len_per_req} but plan() used "
+                f"{planned_q_len}; re-plan with the matching q_len_per_req."
+            )
+        if q_len_per_req > 1 and not self.use_tensor_cores:
+            raise ValueError(
+                f"q_len_per_req={q_len_per_req} requires use_tensor_cores=True."
             )
 
         if enable_pdl is None:
@@ -2073,7 +2152,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 self._paged_kv_last_page_len_buf,
                 out,
                 lse,
-                MaskMode.NON_CAUSAL.value,
+                # Multi-token verify is causal within each request. The ROCm
+                # kernel's causal mask is bottom-right aligned, so the last of
+                # the q_len_per_req rows sees the whole KV — which is what makes
+                # this the speculative-decode verify semantics.
+                (
+                    MaskMode.CAUSAL.value
+                    if q_len_per_req > 1
+                    else MaskMode.NON_CAUSAL.value
+                ),
                 TensorLayout[self._kv_layout].value,
                 window_left,
                 enable_pdl,
@@ -2103,7 +2190,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     self._block_tables,
                     self._kv_lens_buffer,
                     page_size,
-                    None,  # max_q_len (decode: single token)
+                    None,  # max_q_len: the fa2 paged_run wrapper drops it
                     self._max_kv_len,
                     None,  # batch_size
                     None,  # cum_seq_lens_q
