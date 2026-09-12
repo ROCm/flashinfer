@@ -226,19 +226,11 @@ def copy_built_kernels(
 def _copy_aiter_variant_store(out_dir: Path) -> None:
     """Package the prebuilt AITER variants, if this box has built any.
 
-    Kept out of the manifest deliberately. The manifest's ``rocm_arch_list`` is
-    a comma-joined multi-arch list while a store is always single-arch, so the
-    two cannot agree; instead each store keeps its own
-    ``<arch>__aiter-<ver>__rocm-<ver>`` directory name and the consumer looks up
-    its own tag.
-
-    One build packages **one** architecture: the store is keyed on
-    ``resolve_aiter_build_arch()``, which is single-arch by construction, and a
-    variant can only be produced on the device it targets. A wheel carrying two
-    has to be assembled from two builds -- ``copy_built_kernels`` opens with an
-    ``rmtree``, so a second run in the same tree replaces rather than adds. A
-    build that ran no prebuild packages none, and variants are then built on
-    demand exactly as before.
+    Kept out of the AOT manifest: that is a comma-joined multi-arch list and a
+    store is always single-arch, so each store carries its own
+    ``<arch>__aiter-<ver>__rocm-<ver>`` name and the consumer matches its tag.
+    One build therefore packages one architecture; a two-arch wheel has to be
+    assembled from two, since ``copy_built_kernels`` opens with an ``rmtree``.
     """
     from ..jit.rocm.aiter_variants import (
         reachable_variants,
@@ -267,14 +259,18 @@ def _copy_aiter_variant_store(out_dir: Path) -> None:
         os.replace(tmp, dst / src.name)
     print(f"  packaged {len(artifacts)} AITER variant(s) from {store}")
 
-    missing = {so_name(k) for k in reachable_variants()} - {p.name for p in artifacts}
+    # Against the driver's default set, not every reachable variant: the paged
+    # family is deliberately not prebuilt, so its absence is not a gap.
+    expected = {
+        so_name(k) for k in reachable_variants() if k.family.servable_from_store
+    }
+    missing = expected - {p.name for p in artifacts}
     if missing:
         # A partial store is legitimate (--only, or a family that failed), but it
-        # ships silently otherwise and every gap rebuilds at plan() forever.
+        # would ship silently otherwise and every gap rebuilds at plan() forever.
         print(
-            f"  WARNING: store is missing {len(missing)} of "
-            f"{len(missing) + len(artifacts)} reachable variants; "
-            f"consumers will build those on demand"
+            f"  WARNING: store is missing {len(missing)} of {len(expected)} "
+            f"prebuildable variants; consumers will build those on demand"
         )
 
 

@@ -568,9 +568,8 @@ def _aiter_bootstrap_single_prefill_varlen(
     varlen .so because mha_fwd has no _logits arm). The .so is split on whether
     anything is masked (mask vs nmask), so pass needs_mask, not causal.
     """
-    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
-    # exists, so there is nothing to force. Skipping here is what turns the
-    # store into a latency win: otherwise AITER rebuilds it regardless.
+    # A store hit means the .so this would force already exists; skipping is
+    # what turns the store into a latency win.
     if _variants.prebuilt(
         _variants.Family.MHA_VARLEN_FWD,
         dtype,
@@ -625,9 +624,8 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
 
     head_dim is a cache key but not a build axis: one .so serves every head dim.
     """
-    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
-    # exists, so there is nothing to force. Skipping here is what turns the
-    # store into a latency win: otherwise AITER rebuilds it regardless.
+    # A store hit means the .so this would force already exists; skipping is
+    # what turns the store into a latency win.
     if _variants.prebuilt(
         _variants.Family.MHA_FWD,
         dtype,
@@ -681,9 +679,8 @@ def _aiter_bootstrap_batch_ragged_prefill(
     ``_aiter_native_page_sizes()``). Both loop over return_lse here because the .so is
     also split on lse, and plan() cannot know which run() will request.
     """
-    # A prebuilt store hit means the .so aiter_loader.cc will dlopen already
-    # exists, so there is nothing to force. Skipping here is what turns the
-    # store into a latency win: otherwise AITER rebuilds it regardless.
+    # A store hit means the .so this would force already exists; skipping is
+    # what turns the store into a latency win.
     if _variants.prebuilt(
         _variants.Family.MHA_VARLEN_FWD,
         dtype,

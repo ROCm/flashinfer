@@ -41,14 +41,27 @@ class Family(Enum):
     spelling against the C++ source rather than trusting this copy.
     """
 
-    MHA_FWD = ("mha_fwd_", "_ndropout_nqscale.so", False)
-    MHA_VARLEN_FWD = ("mha_varlen_fwd_", "_ndropout_nskip_nqscale.so", True)
-    MHA_BATCH_PREFILL = ("mha_batch_prefill_", "_ndropout_nqscale_nsink.so", True)
+    MHA_FWD = ("mha_fwd_", "_ndropout_nqscale.so", False, True)
+    MHA_VARLEN_FWD = ("mha_varlen_fwd_", "_ndropout_nskip_nqscale.so", True, True)
+    MHA_BATCH_PREFILL = (
+        "mha_batch_prefill_",
+        "_ndropout_nqscale_nsink.so",
+        True,
+        False,
+    )
 
-    def __init__(self, prefix: str, suffix: str, include_logits: bool) -> None:
+    def __init__(
+        self, prefix: str, suffix: str, include_logits: bool, servable: bool
+    ) -> None:
         self.prefix = prefix
         self.suffix = suffix
         self.include_logits = include_logits
+        # Can a store hit actually spare the AITER build? Only where the
+        # bootstrap exists to produce the .so. _aiter_bootstrap_batch_prefill is
+        # also the page_size capability probe, and the filename has no page-size
+        # axis, so it must run either way -- prebuilding that family fills the
+        # store with files nothing ever saves time on.
+        self.servable_from_store = servable
 
 
 # Deliberately not order=True: `family` is an Enum, so the generated __lt__

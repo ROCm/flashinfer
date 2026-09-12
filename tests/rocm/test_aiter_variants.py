@@ -203,10 +203,24 @@ class TestPrebuildDriver:
         assert selected
         assert {s.family for s in selected} == {av.Family.MHA_FWD}
 
-    def test_no_filter_selects_everything(self):
+    def test_no_filter_skips_the_family_a_store_cannot_serve(self):
+        """mha_batch_prefill's bootstrap is also the page_size probe, so it runs
+        store hit or not; prebuilding it is ~32 min of artifacts nothing reads."""
         from flashinfer.rocm import prebuild_aiter_variants as drv
 
-        assert len(drv._select(None)) == len(av.builds())
+        default = drv._select(None)
+        assert {s.family for s in default} == {
+            av.Family.MHA_FWD,
+            av.Family.MHA_VARLEN_FWD,
+        }
+        assert len(default) < len(av.builds())
+
+    def test_the_skipped_family_is_still_selectable_by_name(self):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        chosen = drv._select("mha_batch_prefill")
+        assert chosen
+        assert {s.family for s in chosen} == {av.Family.MHA_BATCH_PREFILL}
 
     def test_the_store_tag_carries_arch_aiter_and_rocm(self):
         """All three are in the directory name, so a bump makes the lookup miss
@@ -433,7 +447,8 @@ class TestReviewRegressions:
 
         monkeypatch.setattr(drv, "resolve_aiter_build_arch", lambda: "gfx942")
         assert drv.main(["--arch", "gfx942", "--list"]) == 0
-        assert "40 variants from 32 builds" in capsys.readouterr().out
+        # The default set omits mha_batch_prefill; see _select.
+        assert "24 variants from 16 builds" in capsys.readouterr().out
 
     def test_list_counts_only_the_selected_variants(self, capsys):
         from flashinfer.rocm import prebuild_aiter_variants as drv

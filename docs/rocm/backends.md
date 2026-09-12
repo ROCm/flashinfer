@@ -259,10 +259,17 @@ Both are what the variant store below exists to remove.
 build one, so the whole set can be built once, ahead of time:
 
 ```bash
-python -m flashinfer.rocm.prebuild_aiter_variants --list    # 40 variants, 32 builds
+python -m flashinfer.rocm.prebuild_aiter_variants --list    # what the default set covers
 python -m flashinfer.rocm.prebuild_aiter_variants           # build the missing ones
 python -m flashinfer.rocm.prebuild_aiter_variants --prune   # report stores from an older pin
 ```
+
+The default set is `mha_fwd` and `mha_varlen_fwd` — 24 of the 40 variants, from
+16 builds. `mha_batch_prefill` is excluded because its bootstrap is also the
+`page_size` capability probe: the variant filename has no page-size axis, so the
+probe has to run whether or not the artifact is in the store, and prebuilding
+that family costs ~32 min on gfx942 for files nothing ever saves time on. Pass
+`--only mha_batch_prefill` to build them anyway.
 
 **It needs a GPU**: the only supported way to make AITER emit a variant is to
 call the op. So it cannot be a `docker build` step — run it as a GPU-attached

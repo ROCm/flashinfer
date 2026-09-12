@@ -342,6 +342,14 @@ def prune(*, arch: Optional[str] = None, apply: bool = False) -> List[Path]:
 
 
 def _select(only: Optional[str]) -> List[BuildSpec]:
+    """The specs to build: by default only the families a store hit can serve.
+
+    ``mha_batch_prefill`` is excluded unless asked for by name. Its bootstrap
+    doubles as the page_size capability probe, so it runs whether or not the
+    artifact is in the store -- building those 16 costs ~32 min on gfx942 and
+    ~68 min on gfx950 and saves nothing. ``--only mha_batch_prefill`` still
+    builds them, for when that probe learns to read the store.
+    """
     specs = list(builds())
     if only:
         wanted = {name.strip() for name in only.split(",") if name.strip()}
@@ -351,8 +359,8 @@ def _select(only: Optional[str]) -> List[BuildSpec]:
             raise SystemExit(
                 f"unknown family {sorted(unknown)}; expected {sorted(known)}"
             )
-        specs = [s for s in specs if s.family.name.lower() in wanted]
-    return specs
+        return [s for s in specs if s.family.name.lower() in wanted]
+    return [s for s in specs if s.family.servable_from_store]
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

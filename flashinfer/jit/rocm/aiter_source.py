@@ -339,21 +339,13 @@ def _aiter_env_scope(
 ) -> Iterator[None]:
     """Point AITER's process-global build knobs at ``build_dir``, then restore.
 
-    ``build_dir=None`` leaves ``AITER_JIT_DIR`` alone, which is required for any
-    build whose artifact AITER then *imports*: it adds that directory to
-    ``sys.path`` when it is first imported, so a value set later produces a
-    module it cannot find (``ModuleNotFoundError: mha_varlen_fwd_...``). That is
-    the same frozen-at-import hazard as the ``bd_dir`` global behind
-    :func:`_find_built_so`. A linked artifact is unaffected, since nothing
-    imports it.
+    ``build_dir=None`` leaves ``AITER_JIT_DIR`` alone, which any build whose
+    artifact AITER then *imports* needs: it puts that directory on ``sys.path``
+    at its own import time, so a later value yields ``ModuleNotFoundError``.
+    ``symbol_visible=False`` keeps AITER's default visibility, for artifacts
+    resolved by mangled name rather than linked.
 
-    ``symbol_visible`` is False for artifacts that are ``dlopen``ed and resolved
-    by mangled name rather than linked; those need AITER's own default
-    visibility, not the linkable rebuild.
-
-    Callers must hold :data:`_BUILD_LOCK` -- this mutates process-global state,
-    so two scopes open at once have the first to exit restore the environment
-    under the second.
+    Callers must hold :data:`_BUILD_LOCK`: this is process-global state.
     """
     prev = {
         "AITER_SYMBOL_VISIBLE": os.environ.get("AITER_SYMBOL_VISIBLE"),
