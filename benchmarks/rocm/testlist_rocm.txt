@@ -80,8 +80,9 @@
 
 ## Norm -- bf16 and fp16
 # The backend column reads "cuda": these routines take no backend argument, so
-# each op runs at its own default. For the native-vs-AITER question that default
-# hides, run rocm/bench_norm.py --aa instead.
+# each op runs at its own default, which for norm and rope is native. For the
+# native-vs-AITER comparison run rocm/bench_norm.py with no flag; --aa there is
+# native against itself, i.e. the noise floor a ratio has to clear.
 #
 # hidden_size 111 is in the sweep on purpose: the native kernel's vec_size is
 # gcd(16/sizeof(T), d), so an ill-aligned d goes fully scalar. A powers-of-two

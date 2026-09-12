@@ -293,12 +293,22 @@ def test_filter_only_offers_backends_the_cli_accepts(routine):
     assert not unknown, f"{unknown} survive the filter but --backends rejects them"
 
 
-@pytest.mark.parametrize("routine", ROCM_NATIVE_ROUTINES)
-def test_registered_routine_is_a_real_routine(routine):
-    """A typo in the registry is silent: the routine just never gets a backend."""
+def test_every_registered_routine_is_a_real_routine():
+    """A typo in the registry is silent: the routine just never gets a backend.
+
+    Reads the registry itself rather than ROCM_NATIVE_ROUTINES -- iterating the
+    hardcoded copy cannot see a name that exists only in the registry.
+    """
+    import routines.rocm.support as support
+
     u = _utils()
     known = {r for group in u.benchmark_apis.values() for r in group}
-    assert routine in known
+    registered = set(support._ROCM_ROUTINE_TO_CAP_OP)
+    assert not registered - known, (
+        f"registered but no such routine: {registered - known}"
+    )
+    # And the two lists agree, so a routine added to one is added to both.
+    assert registered - set(ATTENTION_ROUTINES) == set(ROCM_NATIVE_ROUTINES)
 
 
 def test_quantize_dtypes_become_fnuz_without_touching_the_shared_mapping():
@@ -311,10 +321,14 @@ def test_quantize_dtypes_become_fnuz_without_touching_the_shared_mapping():
     not fail, it silently leaves the CSV.
     """
     u, r = _utils(), _rocm()
-    assert r.hip_quant_dtype(torch.float8_e4m3fn) is torch.float8_e4m3fnuz
-    assert r.hip_quant_dtype(torch.float8_e5m2) is torch.float8_e5m2fnuz
-    # Anything else passes through, and the shared mapping keeps the OCP names.
-    assert r.hip_quant_dtype(torch.bfloat16) is torch.bfloat16
+    # to_fnuz is pure, so this half holds on a CUDA box too.
+    assert r.to_fnuz(torch.float8_e4m3fn) is torch.float8_e4m3fnuz
+    assert r.to_fnuz(torch.float8_e5m2) is torch.float8_e5m2fnuz
+    assert r.to_fnuz(torch.bfloat16) is torch.bfloat16
+    # rope.py calls hip_quant_dtype on both platforms; on HIP it is the mapping,
+    # off HIP the identity, and binding it once is what makes that checkable.
+    assert r.hip_quant_dtype is r.to_fnuz
+    # The shared mapping keeps the OCP names, so attention rows still pass.
     assert u.dtype_str_to_torch_dtype("fp8_e4m3") is torch.float8_e4m3fn
 
 

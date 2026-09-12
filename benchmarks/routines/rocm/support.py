@@ -76,16 +76,26 @@ _HIP_QUANT_DTYPES = {
 }
 
 
-def hip_quant_dtype(dtype):
-    """``dtype`` as the ROCm quantize kernels want it; unchanged off HIP.
+def to_fnuz(dtype):
+    """The fnuz counterpart of ``dtype``, or ``dtype`` if it has none.
 
-    Deliberately not folded into ``dtype_str_to_torch_dtype``: that is shared
-    with the attention routines, whose dtype accept-lists name the OCP spellings
-    and would reject an fnuz tensor, dropping the row from the CSV.
+    Pure, so the mapping stays testable on a machine that is not ROCm.
     """
-    if not IS_HIP:
-        return dtype
     return _HIP_QUANT_DTYPES.get(dtype, dtype)
+
+
+def _identity(dtype):
+    return dtype
+
+
+# Bound once rather than branching per call, so a CUDA run provably reaches the
+# identity: rope.py calls this on both platforms, and inverting the mapping
+# would otherwise turn every CUDA fp8 rope row fnuz with nothing to catch it.
+#
+# Deliberately not folded into ``dtype_str_to_torch_dtype``: that is shared with
+# the attention routines, whose dtype accept-lists name the OCP spellings and
+# would reject an fnuz tensor, dropping the row from the CSV.
+hip_quant_dtype = to_fnuz if IS_HIP else _identity
 
 
 def get_device_arch(device):

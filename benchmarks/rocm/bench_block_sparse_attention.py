@@ -91,7 +91,7 @@ def _git_describe() -> str:
 
 
 def _provenance() -> dict:
-    props = torch.cuda.get_device_properties(0)
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
     try:
         import importlib.metadata as md
 
@@ -138,7 +138,11 @@ def _realized_density(mask: torch.Tensor) -> float:
 
 
 def _to_csr(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fixed-block wrapper takes one shared CSR layout, so collapse over heads."""
+    """CSR layout for the fixed-block wrapper, which shares one pattern per call.
+
+    Takes the union over heads so a per-head mask degrades predictably, though
+    every caller here passes a single head.
+    """
     flat = mask.any(dim=0)
     counts = flat.sum(dim=1)
     indptr = torch.zeros(flat.shape[0] + 1, dtype=torch.int32, device="cuda")
@@ -258,6 +262,10 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                             torch.cuda.synchronize()
                         except Exception as exc:  # noqa: BLE001
                             rec.setdefault("err", f"{type(exc).__name__}: {exc}"[:160])
+                        # Drop the closures first: they own this case's q/k/v and
+                        # its workspace, so empty_cache() before this frees none
+                        # of it and the peak holds two cases at once.
+                        fns = None
                         torch.cuda.empty_cache()
                     s, d = rec.get("sparse_us"), rec.get("dense_us")
                     rec["speedup"] = round(d / s, 4) if s and d else None
@@ -281,27 +289,32 @@ def _masked_reference(q, k, v, elem_mask):
     return torch.einsum("hqk,khd->qhd", scores.softmax(-1), v.float())
 
 
-def _accuracy_fixed(seq_len: int, num_heads: int, nb: int, seed: int) -> None:
+def _accuracy_fixed(seq_len: int, num_qo: int, num_kv: int, nb: int, seed: int) -> None:
     block = seq_len // nb
     for density in _DENSITIES:
         mask = _block_mask(1, nb, nb, density, seed)
         indptr, indices = _to_csr(mask)
-        q, k, v = (
-            torch.randn(seq_len, num_heads, _HEAD_DIM, dtype=_DTYPE, device="cuda")
-            for _ in range(3)
-        )
+        q = torch.randn(seq_len, num_qo, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+        k = torch.randn(seq_len, num_kv, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+        v = torch.randn(seq_len, num_kv, _HEAD_DIM, dtype=_DTYPE, device="cuda")
         ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device="cuda")
         wrapper = flashinfer.BlockSparseAttentionWrapper(ws, backend="fa2")
         wrapper.plan(
             indptr, indices, seq_len, seq_len, block, block,
-            num_heads, num_heads, _HEAD_DIM, q_data_type=_DTYPE,
+            num_qo, num_kv, _HEAD_DIM, q_data_type=_DTYPE,
         )  # fmt: skip
         got = wrapper.run(q, k, v)
         elem = mask[0].repeat_interleave(block, 0).repeat_interleave(block, 1)
-        ref = _masked_reference(q, k, v, elem.unsqueeze(0))
+        group = num_qo // num_kv
+        ref = _masked_reference(
+            q,
+            k.repeat_interleave(group, 1),
+            v.repeat_interleave(group, 1),
+            elem.unsqueeze(0),
+        )
         err = (got.float() - ref).abs().max().item()
         print(
-            f"fixed    h={num_heads}/{num_heads:<3d} density={density:<5.2f} "
+            f"fixed    h={num_qo}/{num_kv:<3d} density={density:<5.2f} "
             f"actual={_realized_density(mask)} max_abs_err={err:.5f}"
         )
         torch.cuda.empty_cache()
@@ -357,10 +370,10 @@ def _accuracy_variable(
 def _accuracy(kinds, nb: int, seed: int) -> None:
     """Reference check for whichever arms --kinds selected, not just fixed."""
     seq_len = 2048
-    if "fixed" in kinds:
-        _accuracy_fixed(seq_len, 8, nb, seed)
-    if "variable" in kinds:
-        for num_qo, num_kv in _HEAD_PAIRS:
+    for num_qo, num_kv in _HEAD_PAIRS:
+        if "fixed" in kinds:
+            _accuracy_fixed(seq_len, num_qo, num_kv, nb, seed)
+        if "variable" in kinds:
             _accuracy_variable(seq_len, num_qo, num_kv, nb, seed)
 
 
@@ -416,13 +429,20 @@ def main() -> None:
                 f"# WARNING dense-equivalent row is {row['speedup']}x faster sparse "
                 f"({row['kind']} s={row['seq_len']}): check the dense baseline"
             )
-    wins = [r["speedup"] for r in rows if r.get("speedup") and r["density"] < 1.0]
-    if wins:
-        print(
-            f"# sparse/dense speedup at density<1: n={len(wins)} "
-            f"median={statistics.median(wins):.4f} min={min(wins):.4f} "
-            f"max={max(wins):.4f}"
-        )
+    # Per kind, not pooled: the variable arm's timing carries rearrange copies
+    # the fixed arm does not, so one median over both averages two things.
+    for kind in args.kinds:
+        wins = [
+            r["speedup"]
+            for r in rows
+            if r["kind"] == kind and r.get("speedup") and r["density"] < 1.0
+        ]
+        if wins:
+            print(
+                f"# {kind:9s} sparse/dense speedup at density<1: n={len(wins)} "
+                f"median={statistics.median(wins):.4f} min={min(wins):.4f} "
+                f"max={max(wins):.4f}"
+            )
 
 
 if __name__ == "__main__":

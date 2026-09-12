@@ -1172,7 +1172,7 @@ def testMlaRopeQuantizeFp8(args):
                 cur_res["head_dim"] = head_dim
                 cur_res["no_rope_dim"] = no_rope_dim
                 cur_res["interleave"] = interleave
-                cur_res["quant_dtype"] = args.quant_dtype
+                cur_res["quant_dtype"] = str(quant_dtype).removeprefix("torch.")
                 cur_res["backend"] = backend
                 cur_res["case_tag"] = args.case_tag
                 res.append(cur_res)
@@ -1388,7 +1388,7 @@ def testRopeQuantizeFp8(args):
                 cur_res["rotary_dim"] = rotary_dim
                 cur_res["no_rope_dim"] = no_rope_dim
                 cur_res["interleave"] = interleave
-                cur_res["quant_dtype"] = args.quant_dtype
+                cur_res["quant_dtype"] = str(quant_dtype).removeprefix("torch.")
                 cur_res["backend"] = backend
                 cur_res["case_tag"] = args.case_tag
                 res.append(cur_res)
@@ -1711,7 +1711,7 @@ def testRopeQuantizeFp8AppendPagedKvCache(args):
                 cur_res["rotary_dim"] = rotary_dim
                 cur_res["no_rope_dim"] = no_rope_dim
                 cur_res["interleave"] = interleave
-                cur_res["quant_dtype"] = args.quant_dtype
+                cur_res["quant_dtype"] = str(quant_dtype).removeprefix("torch.")
                 cur_res["page_size"] = page_size
                 cur_res["kv_layout"] = kv_layout
                 cur_res["backend"] = backend

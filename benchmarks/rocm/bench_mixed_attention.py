@@ -86,7 +86,7 @@ def _git_describe() -> str:
 
 
 def _provenance() -> dict:
-    props = torch.cuda.get_device_properties(0)
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
     try:
         import importlib.metadata as md
 
@@ -230,6 +230,10 @@ def _sweep(
                     torch.cuda.synchronize()
                 except Exception as exc:  # noqa: BLE001
                     rec.setdefault("err", f"{type(exc).__name__}: {exc}"[:160])
+                # Drop the closures first: they own this case's KV cache and
+                # three workspaces, so empty_cache() before this frees none of
+                # it and the peak holds two cases at once.
+                fns = None
                 torch.cuda.empty_cache()
             p, s = rec.get("pod_us"), rec.get("split_us")
             rec["speedup"] = round(s / p, 4) if p and s else None

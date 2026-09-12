@@ -288,11 +288,13 @@ requesting any of them reports "not supported" rather than failing at import.
 `--backends aiter` is deliberately not offered. AITER is reached through `auto`,
 which reports what it resolved to, so an explicit name would add no coverage.
 
-Four routines in these groups are deliberately unregistered:
+The table above is the whole registered set; anything else in those groups
+reports "not supported" and writes no row. Most are absent because the op has no
+ROCm kernel — every `*_quant` and `*_fp4quant` norm variant, `fused_rmsnorm_silu`,
+`fused_dit_layernorm`, `fused_qk_rmsnorm_rope`, and the three `top_k*` routines
+that call `flashinfer.topk`. One is absent for a different reason:
 `apply_rope_with_cos_sin_cache` builds its cache in `--input_dtype` while the op
-requires float32 (it fails on CUDA too), and `top_k`,
-`top_k_page_table_transform` and `top_k_ragged_transform` call
-`flashinfer.topk`, which has no ROCm kernel.
+requires float32, so it fails on CUDA too.
 
 ### Running
 
