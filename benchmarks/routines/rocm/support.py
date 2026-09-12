@@ -11,6 +11,7 @@ the branch that calls into here.
 import torch
 
 from flashinfer.rocm.aiter_utils import is_aiter_available
+from flashinfer.rocm.device_utils import IS_HIP
 from flashinfer.rocm.arch_caps import capability_available, normalize_arch
 
 # Benchmark routine -> (CAPABILITIES op key in flashinfer/rocm/arch_caps.py,
@@ -64,18 +65,27 @@ _ROCM_ROUTINE_TO_CAP_OP = {
 HIP_DECODE_GQA_GROUP_SIZES = frozenset({1, 2, 3, 4, 8})
 
 
-# CDNA implements the fnuz fp8 encodings, not the OCP ones the upstream names
-# map to. Without this the fp8 rope routines fail inside the kernel with
-# "Output dtype must be float8" rather than anything naming the dtype.
-_HIP_FP8_DTYPES = {
-    "fp8_e4m3": torch.float8_e4m3fnuz,
-    "fp8_e5m2": torch.float8_e5m2fnuz,
+# is_float8_tensor (csrc/rocm/pytorch_extension_utils.h) accepts only the fnuz
+# encodings, on both architectures -- unrelated to moe_fp8_dtype(), which is
+# arch-dependent because it follows AITER's MFMA instructions. Without this the
+# fp8 rope routines fail inside the kernel with "Output dtype must be float8",
+# which names neither the dtype nor the argument that chose it.
+_HIP_QUANT_DTYPES = {
+    torch.float8_e4m3fn: torch.float8_e4m3fnuz,
+    torch.float8_e5m2: torch.float8_e5m2fnuz,
 }
 
 
-def hip_dtype_override(dtype_str):
-    """The HIP dtype for ``dtype_str``, or None to use the upstream mapping."""
-    return _HIP_FP8_DTYPES.get(dtype_str)
+def hip_quant_dtype(dtype):
+    """``dtype`` as the ROCm quantize kernels want it; unchanged off HIP.
+
+    Deliberately not folded into ``dtype_str_to_torch_dtype``: that is shared
+    with the attention routines, whose dtype accept-lists name the OCP spellings
+    and would reject an fnuz tensor, dropping the row from the CSV.
+    """
+    if not IS_HIP:
+        return dtype
+    return _HIP_QUANT_DTYPES.get(dtype, dtype)
 
 
 def get_device_arch(device):

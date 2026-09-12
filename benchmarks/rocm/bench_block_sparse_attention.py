@@ -22,6 +22,11 @@ block sizes, the shape SGLang's hybrid attention uses) and the fixed-block
 ``determine_attention_backend`` never returns aiter for block_sparse, and fa3
 raises "FA3 backend not currently supported for ROCm" from the JIT generator.
 
+``VariableBlockSparseAttentionWrapper.run`` rearranges q, k and v on every
+call, and there is no way through that API to avoid it, so those copies are
+inside its timed region and its rows read lower than the kernel alone. The
+fixed-block rows carry no such copy; compare across kinds with that in mind.
+
 The sweep is over block *density*, because that is the only axis that decides
 whether sparsity wins: the dense baseline is flat in it and the sparse kernel is
 linear, so the crossover is a property of the pair, not of either one. A
@@ -127,15 +132,19 @@ def _to_csr(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return indptr, indices
 
 
-def _variable_case(seq_len: int, num_heads: int, density: float, nb: int, seed: int):
-    """Zero-arg closures for the variable-block wrapper and its dense baseline."""
-    mask = _block_mask(num_heads, nb, nb, density, seed)
-    block_sz = torch.full(
-        (num_heads, nb), seq_len // nb, dtype=torch.int32, device="cuda"
-    )
-    q = torch.randn(num_heads, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
-    k = torch.randn(num_heads, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
-    v = torch.randn(num_heads, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+def _variable_case(
+    seq_len: int, num_qo: int, num_kv: int, density: float, nb: int, seed: int
+):
+    """Zero-arg closures for the variable-block wrapper and its dense baseline.
+
+    The mask and block sizes are shaped on num_kv_heads -- a group of qo heads
+    shares one kv head's sparsity pattern -- so GQA is served, not skipped.
+    """
+    mask = _block_mask(num_kv, nb, nb, density, seed)
+    block_sz = torch.full((num_kv, nb), seq_len // nb, dtype=torch.int32, device="cuda")
+    q = torch.randn(num_qo, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+    k = torch.randn(num_kv, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
+    v = torch.randn(num_kv, seq_len, _HEAD_DIM, dtype=_DTYPE, device="cuda")
 
     ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device="cuda")
     wrapper = flashinfer.sparse.VariableBlockSparseAttentionWrapper(ws, backend="fa2")
@@ -143,8 +152,8 @@ def _variable_case(seq_len: int, num_heads: int, density: float, nb: int, seed: 
         block_mask_map=mask,
         block_row_sz=block_sz,
         block_col_sz=block_sz,
-        num_qo_heads=num_heads,
-        num_kv_heads=num_heads,
+        num_qo_heads=num_qo,
+        num_kv_heads=num_kv,
         head_dim=_HEAD_DIM,
         q_data_type=_DTYPE,
     )
@@ -154,7 +163,7 @@ def _variable_case(seq_len: int, num_heads: int, density: float, nb: int, seed: 
     qd, kd, vd = (t.transpose(0, 1).contiguous() for t in (q, k, v))
     return {
         "sparse": lambda: wrapper.run(q, k, v),
-        "dense": lambda: flashinfer.single_prefill_with_kv_cache_return_lse(
+        "dense": lambda: flashinfer.single_prefill_with_kv_cache(
             qd, kd, vd, causal=False, backend="fa2"
         ),
     }
@@ -171,7 +180,7 @@ def _fixed_case(
     v = torch.randn(seq_len, num_kv, _HEAD_DIM, dtype=_DTYPE, device="cuda")
 
     ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device="cuda")
-    wrapper = flashinfer.BlockSparseAttentionWrapper(ws)
+    wrapper = flashinfer.BlockSparseAttentionWrapper(ws, backend="fa2")
     wrapper.plan(
         indptr,
         indices,
@@ -186,7 +195,7 @@ def _fixed_case(
     )
     return {
         "sparse": lambda: wrapper.run(q, k, v),
-        "dense": lambda: flashinfer.single_prefill_with_kv_cache_return_lse(
+        "dense": lambda: flashinfer.single_prefill_with_kv_cache(
             q, k, v, causal=False, backend="fa2"
         ),
     }
@@ -197,8 +206,6 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
     for kind in kinds:
         for seq_len in _SEQ_LENS:
             for num_qo, num_kv in _HEAD_PAIRS:
-                if kind == "variable" and num_qo != num_kv:
-                    continue  # the variable-block wrapper requires equal head counts
                 for density in _DENSITIES:
                     rec = {
                         "kind": kind,
@@ -210,7 +217,9 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                     }
                     try:
                         if kind == "variable":
-                            fns = _variable_case(seq_len, num_qo, density, nb, seed)
+                            fns = _variable_case(
+                                seq_len, num_qo, num_kv, density, nb, seed
+                            )
                         else:
                             fns = _fixed_case(
                                 seq_len, num_qo, num_kv, density, nb, seed
@@ -224,7 +233,12 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                     except Exception as exc:  # noqa: BLE001 - a refusal is a result
                         rec["err"] = f"{type(exc).__name__}: {exc}"[:160]
                     finally:
-                        torch.cuda.synchronize()
+                        # A hard fault surfaces here, outside the try above, and
+                        # would otherwise discard every row measured so far.
+                        try:
+                            torch.cuda.synchronize()
+                        except Exception as exc:  # noqa: BLE001
+                            rec.setdefault("err", f"{type(exc).__name__}: {exc}"[:160])
                         torch.cuda.empty_cache()
                     s, d = rec.get("sparse_us"), rec.get("dense_us")
                     rec["speedup"] = round(d / s, 4) if s and d else None
@@ -250,7 +264,7 @@ def _accuracy(nb: int, seed: int) -> None:
         k = torch.randn(seq_len, num_heads, _HEAD_DIM, dtype=_DTYPE, device="cuda")
         v = torch.randn(seq_len, num_heads, _HEAD_DIM, dtype=_DTYPE, device="cuda")
         ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device="cuda")
-        wrapper = flashinfer.BlockSparseAttentionWrapper(ws)
+        wrapper = flashinfer.BlockSparseAttentionWrapper(ws, backend="fa2")
         wrapper.plan(
             indptr,
             indices,
@@ -277,7 +291,12 @@ def _accuracy(nb: int, seed: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--kinds", nargs="+", default=["variable", "fixed"])
+    ap.add_argument(
+        "--kinds",
+        nargs="+",
+        choices=["variable", "fixed"],
+        default=["variable", "fixed"],
+    )
     ap.add_argument("--dry-run-iters", type=int, default=25)
     ap.add_argument("--repeat-iters", type=int, default=100)
     ap.add_argument("--num-blocks", type=int, default=32)
@@ -285,6 +304,13 @@ def main() -> None:
     ap.add_argument("--accuracy", action="store_true")
     ap.add_argument("--csv", type=str, default="")
     args = ap.parse_args()
+
+    bad = [n for n in _SEQ_LENS if n % args.num_blocks]
+    if bad:
+        raise SystemExit(
+            f"--num-blocks {args.num_blocks} does not divide {bad}; the truncated "
+            "block size would shrink the sparse problem below the dense baseline."
+        )
 
     for key, value in _provenance().items():
         print(f"# {key}: {value}")

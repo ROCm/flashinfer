@@ -301,17 +301,21 @@ def test_registered_routine_is_a_real_routine(routine):
     assert routine in known
 
 
-def test_fp8_dtype_strings_resolve_to_the_fnuz_encodings():
-    """CDNA implements fnuz fp8; the OCP names reach the kernel as "must be float8".
+def test_quantize_dtypes_become_fnuz_without_touching_the_shared_mapping():
+    """The ROCm quantize kernels take fnuz only; the attention routines do not.
 
-    Three rope routines take --quant_dtype, and before the override every one of
-    them failed inside the kernel rather than at argument parsing.
+    is_float8_tensor accepts Float8_e4m3fnuz/Float8_e5m2fnuz, so the three fp8
+    rope routines failed inside the kernel with "Output dtype must be float8".
+    Overriding dtype_str_to_torch_dtype instead would fix them and break every
+    fp8 attention row, whose accept-lists name the OCP spellings -- the row does
+    not fail, it silently leaves the CSV.
     """
-    u = _utils()
-    assert u.dtype_str_to_torch_dtype("fp8_e4m3") is torch.float8_e4m3fnuz
-    assert u.dtype_str_to_torch_dtype("fp8_e5m2") is torch.float8_e5m2fnuz
-    # Non-fp8 names are untouched by the override.
-    assert u.dtype_str_to_torch_dtype("bfloat16") is torch.bfloat16
+    u, r = _utils(), _rocm()
+    assert r.hip_quant_dtype(torch.float8_e4m3fn) is torch.float8_e4m3fnuz
+    assert r.hip_quant_dtype(torch.float8_e5m2) is torch.float8_e5m2fnuz
+    # Anything else passes through, and the shared mapping keeps the OCP names.
+    assert r.hip_quant_dtype(torch.bfloat16) is torch.bfloat16
+    assert u.dtype_str_to_torch_dtype("fp8_e4m3") is torch.float8_e4m3fn
 
 
 def test_cuda_path_still_matches_its_table(monkeypatch):

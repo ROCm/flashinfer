@@ -1,10 +1,14 @@
-# ROCm attention testlist for benchmarks/flashinfer_benchmark.py (gfx942 / gfx950).
+# ROCm testlist for benchmarks/flashinfer_benchmark.py (gfx942 / gfx950).
 #
 #   cd benchmarks
 #   python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
 #       --output_path run-$(date +%F).csv
 #
-# Every line requests `fa2` and `auto`. `fa2` is the in-tree HIP kernel and, being
+# The attention sections below request `fa2` and `auto`; the norm, rope and
+# sampling sections at the end run a single `cuda` backend and have their own
+# notes. Everything from here to those sections is about attention.
+#
+# Every attention line requests `fa2` and `auto`. `fa2` is the in-tree HIP kernel and, being
 # listed first, is also the reference that --refcheck compares against; `auto` is
 # whatever the library would pick in production. Read backend_resolved to see
 # which one `auto` became and backend_fallback_reason for why it declined AITER.
@@ -91,8 +95,9 @@
 --routine gemma_fused_add_rmsnorm --batch_size 989 --hidden_size 3072 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Gemma-7B"
 
 ## RoPE -- bf16
-# head_dim 128 throughout: it is what every model in the attention sections uses,
-# and the fp8 variants below quantize to E4M3FNUZ, the only fp8 encoding CDNA has.
+# head_dim 128 throughout: it is what every model in the attention sections uses.
+# The fp8 variants quantize to E4M3FNUZ -- the ROCm quantize kernels accept only
+# the fnuz encodings (is_float8_tensor), on both architectures.
 --routine apply_rope --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
 --routine apply_rope --batch_size 4 --seq_len 4096 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
 --routine apply_rope_pos_ids --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"

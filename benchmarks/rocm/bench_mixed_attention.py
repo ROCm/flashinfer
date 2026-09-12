@@ -214,7 +214,12 @@ def _sweep(
             except Exception as exc:  # noqa: BLE001 - a refusal is a result
                 rec["err"] = f"{type(exc).__name__}: {exc}"[:160]
             finally:
-                torch.cuda.synchronize()
+                # A hard fault surfaces here, outside the try above, and would
+                # otherwise discard every row measured so far.
+                try:
+                    torch.cuda.synchronize()
+                except Exception as exc:  # noqa: BLE001
+                    rec.setdefault("err", f"{type(exc).__name__}: {exc}"[:160])
                 torch.cuda.empty_cache()
             p, s = rec.get("pod_us"), rec.get("split_us")
             rec["speedup"] = round(s / p, 4) if p and s else None
@@ -232,8 +237,9 @@ def _sweep(
 def _accuracy(causal: bool, decode_backend: str) -> None:
     """POD's two outputs against the separate wrappers', per mix.
 
-    The split arm is the reference: both call the same HIP kernels, so a
-    mismatch is POD's scheduling, not the attention maths.
+    Only a reference at --decode-backend fa2, where both arms call the same HIP
+    kernels and a mismatch is POD's scheduling. Under auto the split decode may
+    run AITER, so the difference is cross-backend and says nothing about POD.
     """
     for prefill_len in _PREFILL_LENS:
         for decode_bs in _DECODE_BATCHES:
@@ -259,8 +265,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run-iters", type=int, default=25)
     ap.add_argument("--repeat-iters", type=int, default=100)
-    ap.add_argument("--causal", action="store_true", default=True)
-    ap.add_argument("--no-causal", dest="causal", action="store_false")
+    # Causal by default: a prefill in a serving step is. --no-causal is the
+    # off switch; there is deliberately no --causal, which could never do anything.
+    ap.add_argument("--no-causal", dest="causal", action="store_false", default=True)
     ap.add_argument(
         "--decode-backend",
         choices=["fa2", "auto"],
@@ -277,6 +284,10 @@ def main() -> None:
         print(f"# {key}: {value}")
 
     if args.accuracy:
+        if args.decode_backend != "fa2":
+            print(
+                "# NOTE --accuracy compares across backends unless --decode-backend fa2"
+            )
         _accuracy(args.causal, args.decode_backend)
         return
 

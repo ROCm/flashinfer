@@ -271,7 +271,7 @@ def testRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.rmsnorm(
                 input_tensor, weight, eps=eps, enable_pdl=enable_pdl
             )
@@ -420,7 +420,7 @@ def testFusedAddRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, residual_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.fused_add_rmsnorm(
                 input_tensor,
                 residual_tensor,
@@ -580,7 +580,7 @@ def testGemmaRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.gemma_rmsnorm(
                 input_tensor, weight, eps=eps, enable_pdl=enable_pdl
             )
@@ -723,7 +723,7 @@ def testGemmaFusedAddRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, residual_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.gemma_fused_add_rmsnorm(
                 input_tensor,
                 residual_tensor,
@@ -910,7 +910,7 @@ def testRmsnormQuant(args):
         print(f"[VVERBOSE] {scale = }")
 
     def run_backend(backend, out_tensor, input_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.norm.rmsnorm_quant(
                 out_tensor,
                 input_tensor,
@@ -1291,7 +1291,7 @@ def testFusedAddRmsnormQuant(args):
         print(f"[VVERBOSE] {scale = }")
 
     def run_backend(backend, out_tensor, input_tensor, residual_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.norm.fused_add_rmsnorm_quant(
                 out_tensor,
                 input_tensor,
@@ -1533,7 +1533,7 @@ def testRmsnormFp4quant(args):
         )
 
     def run_backend(backend, input_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.rmsnorm_fp4quant(
                 input_tensor,
                 weight,
@@ -1719,7 +1719,7 @@ def testAddRmsnormFp4quant(args):
         print("[WARNING] --refcheck is not supported for add_rmsnorm_fp4quant. ")
 
     def run_backend(backend, input_tensor, residual_tensor, weight):
-        if backend in ("cute-dsl", "cuda"):
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.add_rmsnorm_fp4quant(
                 input_tensor,
                 residual_tensor,

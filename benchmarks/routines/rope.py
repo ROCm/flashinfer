@@ -22,6 +22,7 @@ import torch
 import flashinfer
 from flashinfer.testing.utils import bench_gpu_time
 
+from .rocm import hip_quant_dtype
 from .flashinfer_benchmark_utils import (
     dtype_str_to_torch_dtype,
     get_device,
@@ -1019,7 +1020,7 @@ def testMlaRopeQuantizeFp8(args):
         return res
 
     input_dtype = dtype_str_to_torch_dtype(args.input_dtype)
-    quant_dtype = dtype_str_to_torch_dtype(args.quant_dtype)
+    quant_dtype = hip_quant_dtype(dtype_str_to_torch_dtype(args.quant_dtype))
 
     ## Prepare input tensors (pre-split for this API)
     total_tokens = batch_size * seq_len
@@ -1226,7 +1227,7 @@ def testRopeQuantizeFp8(args):
         return res
 
     input_dtype = dtype_str_to_torch_dtype(args.input_dtype)
-    quant_dtype = dtype_str_to_torch_dtype(args.quant_dtype)
+    quant_dtype = hip_quant_dtype(dtype_str_to_torch_dtype(args.quant_dtype))
 
     ## Prepare input tensors (pre-split for this API)
     total_tokens = batch_size * seq_len
@@ -1445,7 +1446,7 @@ def testRopeQuantizeFp8AppendPagedKvCache(args):
         return res
 
     input_dtype = dtype_str_to_torch_dtype(args.input_dtype)
-    quant_dtype = dtype_str_to_torch_dtype(args.quant_dtype)
+    quant_dtype = hip_quant_dtype(dtype_str_to_torch_dtype(args.quant_dtype))
 
     ## Prepare input tensors (pre-split for this API)
     total_tokens = batch_size * seq_len

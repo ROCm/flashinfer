@@ -279,16 +279,16 @@ requesting any of them reports "not supported" rather than failing at import.
   when `amd-aiter` is installed and the call satisfies its constraints, otherwise fa2.
   `backend_resolved` records which one ran.
 - **cuda** — upstream's name for the library's own kernel, kept because it is
-  what those CLIs accept. On ROCm it means the HIP kernel the op resolves to at
-  its own default, which for norm and rope may itself be AITER; the routines
-  take no backend argument, so use
+  what those CLIs accept. On ROCm it is the in-tree HIP kernel: `auto` stays
+  native for norm and rope, so no row here can reach AITER. Those ops do take
+  `backend="aiter"`, but these routines never pass one — use
   [`rocm/bench_norm.py`](rocm/bench_norm.py) and [`rocm/bench_rope.py`](rocm/bench_rope.py)
-  for the native-vs-AITER comparison.
+  for that comparison.
 
 `--backends aiter` is deliberately not offered. AITER is reached through `auto`,
 which reports what it resolved to, so an explicit name would add no coverage.
 
-Three routines in these groups are deliberately unregistered:
+Four routines in these groups are deliberately unregistered:
 `apply_rope_with_cos_sin_cache` builds its cache in `--input_dtype` while the op
 requires float32 (it fails on CUDA too), and `top_k`,
 `top_k_page_table_transform` and `top_k_ragged_transform` call
