@@ -47,7 +47,8 @@ void batch_prefill_with_paged_kv_cache_aiter(
     at::Tensor o, std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code, int64_t window_left,
     double logits_soft_cap, double sm_scale, int64_t page_size, int64_t max_q_len,
     int64_t max_kv_len, std::optional<at::Tensor> aiter_flat_gather_idx,
-    std::optional<at::Tensor> aiter_flat_kv_indptr) {
+    std::optional<at::Tensor> aiter_flat_kv_indptr, std::optional<at::Tensor> maybe_q_descale,
+    std::optional<at::Tensor> maybe_k_descale, std::optional<at::Tensor> maybe_v_descale) {
   const auto device = q.device();
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
 
@@ -55,14 +56,41 @@ void batch_prefill_with_paged_kv_cache_aiter(
   TORCH_CHECK(mask_mode != MaskMode::kCustom, "AITER backend does not support custom mask");
 
   const auto q_dtype = q.scalar_type();
-  TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
-              "AITER backend supports fp16/bf16 only; got dtype=", q_dtype);
+  const bool is_fp8 = (q_dtype == at::kFloat8_e4m3fnuz || q_dtype == at::kFloat8_e4m3fn);
+  TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16 || is_fp8,
+              "AITER backend supports fp16/bf16/fp8 only; got dtype=", q_dtype);
   TORCH_CHECK(paged_k_cache.scalar_type() == q_dtype && paged_v_cache.scalar_type() == q_dtype,
               "q, k, v must share dtype");
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
-  TORCH_CHECK(o.scalar_type() == q_dtype,
-              "AITER backend requires output dtype to match input dtype; got o=", o.scalar_type(),
-              " q=", q_dtype);
+  // fp8 in, bf16 out: AITER ships no fp8-output prefill kernel.
+  TORCH_CHECK(o.scalar_type() == (is_fp8 ? at::kBFloat16 : q_dtype),
+              "AITER backend requires output dtype ", (is_fp8 ? at::kBFloat16 : q_dtype),
+              "; got o=", o.scalar_type(), " q=", q_dtype);
+
+  const float* q_descale_ptr = nullptr;
+  const float* k_descale_ptr = nullptr;
+  const float* v_descale_ptr = nullptr;
+  if (is_fp8) {
+    TORCH_CHECK(maybe_q_descale && maybe_k_descale && maybe_v_descale,
+                "fp8 prefill requires q/k/v descales: AITER's fp8 kernels have no no-scale "
+                "instance, so an unscaled call resolves to no kernel at all.");
+    // Per-tensor only. AITER reads element 0 and ignores the rest, so a per-head
+    // descale would silently apply head 0's scale to every head.
+    auto check_descale = [](const at::Tensor& t, const char* name) {
+      TORCH_CHECK(t.scalar_type() == at::kFloat && t.numel() == 1, "fp8 ", name,
+                  "_descale must be a single float32 (per-tensor); got dtype=", t.scalar_type(),
+                  " numel=", t.numel());
+    };
+    check_descale(*maybe_q_descale, "q");
+    check_descale(*maybe_k_descale, "k");
+    check_descale(*maybe_v_descale, "v");
+    q_descale_ptr = static_cast<const float*>(maybe_q_descale->data_ptr());
+    k_descale_ptr = static_cast<const float*>(maybe_k_descale->data_ptr());
+    v_descale_ptr = static_cast<const float*>(maybe_v_descale->data_ptr());
+  } else {
+    TORCH_CHECK(!maybe_q_descale && !maybe_k_descale && !maybe_v_descale,
+                "q/k/v descales are only meaningful for an fp8 query; got dtype=", q_dtype);
+  }
   TORCH_CHECK(static_cast<int>(HEAD_DIM_QK) == static_cast<int>(HEAD_DIM_VO),
               "AITER backend requires equal head dims; got HEAD_DIM_QK=", HEAD_DIM_QK,
               " HEAD_DIM_VO=", HEAD_DIM_VO);
@@ -75,9 +103,10 @@ void batch_prefill_with_paged_kv_cache_aiter(
   const hipStream_t stream = c10::hip::getCurrentHIPStream();
   const bool causal = (mask_mode == MaskMode::kCausal);
 
-  const char* dtype_str = (q_dtype == at::kHalf) ? "fp16" : "bf16";
-  const auto dtype_enum = (q_dtype == at::kHalf) ? flashinfer::aiter::VariantKey::Dtype::kFp16
-                                                 : flashinfer::aiter::VariantKey::Dtype::kBf16;
+  const char* dtype_str = is_fp8 ? "fp8bf16" : ((q_dtype == at::kHalf) ? "fp16" : "bf16");
+  const auto dtype_enum = is_fp8                   ? flashinfer::aiter::VariantKey::Dtype::kFp8Bf16
+                          : (q_dtype == at::kHalf) ? flashinfer::aiter::VariantKey::Dtype::kFp16
+                                                   : flashinfer::aiter::VariantKey::Dtype::kBf16;
 
   const int32_t batch = static_cast<int32_t>(qo_indptr.size(0) - 1);
   const int32_t total_qo = static_cast<int32_t>(q.size(0));
@@ -153,7 +182,8 @@ void batch_prefill_with_paged_kv_cache_aiter(
         static_cast<int32_t>(paged_v_cache.stride(2)),  // v_stride_h
         static_cast<int32_t>(paged_v_cache.stride(0)),  // v_batch_stride
         static_cast<float>(sm_scale), static_cast<float>(logits_soft_cap),
-        static_cast<int32_t>(window_left), causal, dtype_enum, stream);
+        static_cast<int32_t>(window_left), causal, dtype_enum, q_descale_ptr, k_descale_ptr,
+        v_descale_ptr, stream);
   }
 
   TORCH_CHECK(status == hipSuccess,

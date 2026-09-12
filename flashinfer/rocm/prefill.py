@@ -908,6 +908,9 @@ def get_batch_prefill_module(backend, *args):
             sinks: Optional[torch.Tensor] = None,
             aiter_flat_gather_idx: Optional[torch.Tensor] = None,
             aiter_flat_kv_indptr: Optional[torch.Tensor] = None,
+            q_descale: Optional[torch.Tensor] = None,
+            k_descale: Optional[torch.Tensor] = None,
+            v_descale: Optional[torch.Tensor] = None,
         ) -> None:
             _c_paged_run(
                 q,
@@ -928,6 +931,9 @@ def get_batch_prefill_module(backend, *args):
                 max_kv_len,
                 aiter_flat_gather_idx,
                 aiter_flat_kv_indptr,
+                q_descale,
+                k_descale,
+                v_descale,
             )
 
         def aiter_ragged_run(

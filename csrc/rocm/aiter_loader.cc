@@ -41,23 +41,37 @@ std::string get_jit_dir() {
 }
 
 // Build a variant .so filename from a key.
-// Segments: {prefix}{dtype}[_{logits}]_{bias}_{mask}_{lse}{suffix}
+// Segments: {prefix}{dtype}[_{logits}]_{bias}_{mask}_{lse}{infix}{qscale}{suffix}
 // mha_varlen_fwd:    prefix="mha_varlen_fwd_",   include_logits=true,
-//                    suffix="_ndropout_nskip_nqscale.so"
+//                    infix="_ndropout_nskip_", suffix=".so"
 // mha_fwd:           prefix="mha_fwd_",          include_logits=false,
-//                    suffix="_ndropout_nqscale.so"
+//                    infix="_ndropout_", suffix=".so"
 // mha_batch_prefill: prefix="mha_batch_prefill_", include_logits=true,
-//                    suffix="_ndropout_nqscale_nsink.so"
-std::string build_so_name(VariantKey const& key, std::string_view prefix, std::string_view suffix,
-                          bool include_logits) {
+//                    infix="_ndropout_", suffix="_nsink.so"
+// The qscale token sits mid-name, so it is a builder segment rather than part
+// of a fixed suffix: fp8 spells it "pertensor" where bf16/fp16 spell "nqscale".
+std::string build_so_name(VariantKey const& key, std::string_view prefix, std::string_view infix,
+                          std::string_view suffix, bool include_logits) {
   std::string name(prefix);
-  name += (key.dtype == VariantKey::Dtype::kFp16) ? "fp16" : "bf16";
+  switch (key.dtype) {
+    case VariantKey::Dtype::kFp16:
+      name += "fp16";
+      break;
+    case VariantKey::Dtype::kFp8Bf16:
+      name += "fp8bf16";
+      break;
+    default:
+      name += "bf16";
+      break;
+  }
   if (include_logits) {
     name += key.has_logits_cap ? "_logits" : "_nlogits";
   }
   name += key.has_alibi ? "_alibi" : "_nbias";
   name += key.needs_mask ? "_mask" : "_nmask";
   name += key.has_lse ? "_lse" : "_nlse";
+  name += infix;
+  name += key.has_qscale ? "pertensor" : "nqscale";
   name += suffix;
   return name;
 }
@@ -108,7 +122,7 @@ constexpr const char* kMhaFwdSymbol =
 // ----- mha_fwd (non-varlen, batch-mode CK) cache -----
 
 std::string mha_fwd_variant_so_name(VariantKey const& key) {
-  return build_so_name(key, "mha_fwd_", "_ndropout_nqscale.so", /*include_logits=*/false);
+  return build_so_name(key, "mha_fwd_", "_ndropout_", ".so", /*include_logits=*/false);
 }
 
 std::shared_mutex s_mf_mu;
@@ -117,7 +131,7 @@ std::unordered_map<VariantKey, void*, VariantKeyHash> s_mf_cache;
 // ----- mha_varlen_fwd (varlen, group-mode CK) cache -----
 
 std::string mha_varlen_fwd_variant_so_name(VariantKey const& key) {
-  return build_so_name(key, "mha_varlen_fwd_", "_ndropout_nskip_nqscale.so",
+  return build_so_name(key, "mha_varlen_fwd_", "_ndropout_nskip_", ".so",
                        /*include_logits=*/true);
 }
 
@@ -130,7 +144,7 @@ std::string batch_prefill_variant_so_name(BatchPrefillVariantKey const& key) {
   // 0.1.20 appended a sink axis to this family only -- mha_fwd and
   // mha_varlen_fwd keep their names. Without it every lookup misses and the
   // paged path degrades to flat-gather instead of using native paging.
-  return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale_nsink.so",
+  return build_so_name(key, "mha_batch_prefill_", "_ndropout_", "_nsink.so",
                        /*include_logits=*/true);
 }
 
