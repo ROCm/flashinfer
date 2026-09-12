@@ -869,14 +869,45 @@ class TestCopilotReviewRegressions:
         from flashinfer.rocm import prebuild_aiter_variants as drv
         from flashinfer.rocm import prefill as _prefill
 
-        monkeypatch.setattr(_prefill, "_aiter_ops_importable", lambda: True)
-        seen = []
-        monkeypatch.setattr(torch.cuda, "set_device", lambda i: seen.append(i))
+        order = []
+        monkeypatch.setattr(
+            torch.cuda, "set_device", lambda i: order.append(f"set_device({i})")
+        )
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            _prefill,
+            "_aiter_ops_importable",
+            lambda: order.append("probe") or True,
+        )
 
         def store_dir(arch=None):
-            raise RuntimeError("stop here: the device must already be selected")
+            order.append("variant_store_dir")
+            raise RuntimeError("stop here")
 
         monkeypatch.setattr(drv, "variant_store_dir", store_dir)
         with pytest.raises(RuntimeError, match="stop here"):
             drv.prebuild([], device_idx=3)
-        assert seen == [3]
+        # Order, not just occurrence: the probe reaches the lru_cached
+        # resolve_aiter_build_arch(), so selecting the device after it is a no-op.
+        assert order == ["set_device(3)", "probe", "variant_store_dir"], order
+
+    def test_main_selects_the_device_before_the_arch_check(self, monkeypatch):
+        """main() resolves the arch for --arch validation and again for the store
+        lookup, both before prebuild() is ever entered."""
+        import torch
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        order = []
+        monkeypatch.setattr(
+            torch.cuda, "set_device", lambda i: order.append(f"set_device({i})")
+        )
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            drv,
+            "resolve_aiter_build_arch",
+            lambda: order.append("resolve_arch") or "gfx942",
+        )
+        with pytest.raises(SystemExit):
+            drv.main(["--arch", "gfx950", "--device", "2", "--list"])
+        assert order[0] == "set_device(2)", order

@@ -50,6 +50,23 @@ from ..jit.rocm.aiter_variants import (
 )
 
 
+def _select_device(device_idx: int) -> None:
+    """Make ``--device`` current before anything resolves the architecture.
+
+    ``resolve_aiter_build_arch()`` is ``lru_cache``d and reads
+    ``torch.cuda.current_device()``, so the first caller decides the store tag
+    and ``GPU_ARCHS`` for the whole process. No-op without a GPU, so ``--list``
+    still works on a build box.
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.set_device(device_idx)
+    except Exception:
+        pass
+
+
 def _dtype(name: str):
     import torch
 
@@ -171,6 +188,11 @@ def prebuild(
     """
     from . import prefill as _prefill
 
+    # First, ahead of the probe below: it reaches _ensure_aiter_gpu_archs() and
+    # so the cached resolve_aiter_build_arch(), which would freeze the *current*
+    # device's arch and leave --device naming the store for the wrong card.
+    _select_device(device_idx)
+
     # The varlen bootstraps reach torch.ops.aiter.mha_varlen_fwd, which is not
     # registered until aiter.ops is imported. plan() always passes through this
     # probe first; the driver does not, so call it explicitly rather than rely
@@ -180,13 +202,6 @@ def prebuild(
             "aiter.ops is not importable, or amd-aiter is below the supported "
             "floor; nothing can be prebuilt."
         )
-
-    # Before anything resolves the architecture: both the store tag and
-    # _aiter_env_scope read the *current* device, so without this --device 1
-    # would build on device 1 while naming the store for device 0.
-    import torch
-
-    torch.cuda.set_device(device_idx)
 
     store = variant_store_dir(arch)
     store.mkdir(parents=True, exist_ok=True)
@@ -393,6 +408,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("--yes", action="store_true", help="with --prune, delete them")
     args = parser.parse_args(argv)
+
+    # Before the --arch check and the store lookup below, both of which resolve
+    # the architecture -- and resolve_aiter_build_arch is lru_cached, so whoever
+    # calls it first freezes it for the process.
+    _select_device(args.device)
 
     if args.arch:
         resolved = resolve_aiter_build_arch()
