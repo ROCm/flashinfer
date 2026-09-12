@@ -362,10 +362,17 @@ above the threshold: the Gemma variant has no `backend=` argument, and
 
 ### Batch prefill: page size and the flat-gather path
 
-AITER's CK FMHA kernels natively serve page sizes `{128, 256, 1024}` at
-every release at or above the supported floor. Other sizes still work but go
-through an extra GPU gather that flattens the paged KV cache before the
-AITER call — inside the timed region, which matters when benchmarking.
+AITER's CK FMHA kernels natively serve page sizes `{1, 16, 1024}` — the same
+set for fp16, bf16 and fp8, measured by sweeping the kernel itself. Other sizes
+still work but go through an extra GPU gather that flattens the paged KV cache
+before the AITER call — inside the timed region, which matters when
+benchmarking.
+
+**Being able to serve a page size natively is not a reason to.** For fp16 and
+bf16 the gather measured equal to or faster than the native kernel at every
+batch size, so `auto` keeps them on it and reaches for native paging only at
+page size 1024. fp8 is the exception: its flat-gather route would be
+`mha_varlen_fwd`, which has no fp8 kernel, so fp8 always takes native paging.
 
 That list is a starting point, not a guarantee. `plan()` confirms it by
 building the kernel, and a page size the installed AITER cannot actually
@@ -496,7 +503,24 @@ partial case — its own kernels are HIP, but what it calls is not:
   `float8_e4m3fnuz` and `float8_e5m2fnuz`, alongside LLaMA and LLaMA 3.1
   scaling.
 
-fp8 on the AITER attention paths is work in progress.
+### fp8 on the AITER path: paged prefill only
+
+`BatchPrefillWithPagedKVCacheWrapper` serves an fp8 query and KV cache, at
+**1.22-1.66x** over bf16 through the wrapper (gfx942, page size 16, GQA 32/8,
+causal). Four constraints, all of them AITER's:
+
+* **Output is bf16**, whatever the query dtype — there is no fp8-output kernel.
+  `plan()` defaults `o_data_type` accordingly and rejects anything else.
+* **Descales are required and must be per-tensor** — a single float32 each for
+  `scale_q`, `scale_k`, `scale_v`, passed to `run()`. AITER reads element 0 of
+  whatever it is given, so a per-head tensor would silently apply head 0's scale
+  to every head; the shim rejects it instead.
+* **`return_lse` is unavailable.** AITER builds no LSE instance of the fp8
+  kernel at any page size, so it raises rather than degrading.
+* Every other prefill route — single, ragged, and the paged flat-gather path —
+  reaches `mha_fwd`/`mha_varlen_fwd`, which have no fp8 kernel. Those raise
+  `NotImplementedError` naming fp8; the in-tree fa2 kernel rejects 8-bit types
+  in a `static_assert`, which would otherwise surface as a compiler log.
 
 ## Tests
 

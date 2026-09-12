@@ -10,7 +10,7 @@ import flashinfer
 from flashinfer.jit.core import logger
 from flashinfer.rocm.aiter_utils import is_aiter_supported
 from flashinfer.rocm.prefill import (
-    _aiter_native_page_sizes,
+    _aiter_paged_route_page_sizes,
     _aiter_native_paging_available,
     _aiter_ops_importable,
 )
@@ -853,7 +853,7 @@ def test_batch_prefill_aiter_flat_gather_bf16(page_size, causal, return_lse):
     torch.testing.assert_close(o, o_ref, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.parametrize("page_size", [128, 256])
+@pytest.mark.parametrize("page_size", [1024])
 def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     page_size, monkeypatch
 ):
@@ -867,8 +867,8 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    if page_size not in _aiter_native_page_sizes():
-        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+    if page_size not in _aiter_paged_route_page_sizes(torch.float16):
+        pytest.skip(f"page_size={page_size} is not routed natively on this build")
     # Ends in an assert_close against fa2 with causal=True, so it is a numerics
     # test despite being named for the fallback.
     _skip_if_prefill_gated(device)
@@ -1010,9 +1010,9 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
     monkeypatch.setattr(
         "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: True
     )
-    page_size = 128
-    if page_size not in _aiter_native_page_sizes():
-        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+    page_size = 1024
+    if page_size not in _aiter_paged_route_page_sizes(torch.bfloat16):
+        pytest.skip(f"page_size={page_size} is not routed natively on this build")
 
     def _reject(*args, **kwargs):
         raise RuntimeError(
@@ -1053,9 +1053,9 @@ def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    page_size = 128
-    if page_size not in _aiter_native_page_sizes():
-        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+    page_size = 1024
+    if page_size not in _aiter_paged_route_page_sizes(torch.bfloat16):
+        pytest.skip(f"page_size={page_size} is not routed natively on this build")
 
     def _reject(*args, **kwargs):
         raise RuntimeError("no matching kernel found. page_size=128")
@@ -1249,13 +1249,12 @@ def test_paged_softcap_guard_tracks_the_paging_route(monkeypatch):
     monkeypatch.setattr(
         "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: True
     )
-    kv_len, qo_len, num_heads, head_dim, soft_cap = 512, 37, 4, 128, 8.0
+    kv_len, qo_len, num_heads, head_dim, soft_cap = 1024, 37, 4, 128, 8.0
     # Only page sizes that divide kv_len: a partial trailing page would need a
     # kv_last_page_len this test does not model, and one larger than kv_len
     # floor-divides to zero pages.
-    native = sorted(
-        p for p in _aiter_native_page_sizes() if p <= kv_len and kv_len % p == 0
-    )
+    routed = _aiter_paged_route_page_sizes(torch.float16)
+    native = sorted(p for p in routed if p <= kv_len and kv_len % p == 0)
     if not native:
         pytest.skip(f"no native AITER page size divides kv_len={kv_len}")
 
@@ -1290,9 +1289,7 @@ def test_paged_softcap_guard_tracks_the_paging_route(monkeypatch):
 
     plan(native[0])
 
-    non_native = next(
-        (p for p in (16, 32, 64, 8) if p not in _aiter_native_page_sizes()), None
-    )
+    non_native = next((p for p in (16, 32, 64, 8) if p not in routed), None)
     if non_native is not None:
         with pytest.raises(ValueError, match="logits_soft_cap"):
             plan(non_native)
