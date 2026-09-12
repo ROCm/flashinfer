@@ -205,6 +205,23 @@ with `AITER_SYMBOL_VISIBLE=1` and caches it under
 `~/.cache/flashinfer/aiter_libs/`. The `module_rmsnorm_quant` build is large
 and can take many minutes the first time.
 
+### Not all of AITER is Composable Kernel
+
+Worth knowing before comparing backends: the modules linked where `auto` picks
+the in-tree kernel are AITER's own hand-written HIP, not CK.
+
+| AITER module | backing | used for |
+| :--- | :--- | :--- |
+| `module_rmsnorm_quant`, `module_activation`, `module_rope_*` | AITER HIP (no `ck_tile` references) | norm, activation, rope |
+| `module_norm` | CK-tile | `layernorm2d` only — it exports no rmsnorm |
+| `mha_fwd`, `mha_varlen_fwd`, `mha_batch_prefill` | CK-tile | prefill |
+
+So an "AITER lost to the in-tree kernel" result for norm, activation or rope is
+a HIP-vs-HIP comparison and says nothing about CK. CK-tile `layernorm2d` was
+measured for `layernorm` and rejected on contract, not speed: it derives one
+dtype from the input and reads this API's fp32 `gamma`/`beta` as bf16, which
+returns silent garbage rather than an error (see *Not ported yet*).
+
 ### `mha_fwd` ships no prebuilt kernels at all
 
 AITER ships prebuilt `mha_varlen_fwd_*.so` files and no `mha_fwd*` — only
