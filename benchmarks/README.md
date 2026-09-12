@@ -261,23 +261,38 @@ off the GPU architecture instead and derives the backend list from
 [`flashinfer/rocm/arch_caps.py`](../flashinfer/rocm/arch_caps.py), so it tracks the
 arch-support matrix rather than restating it.
 
-Only the attention routines are available. `gemm` and `moe` are not built on
-ROCm, and `BatchMLAPagedAttentionWrapper` is not wired up yet; requesting any of
-them reports "not supported" rather than failing at import.
+The attention, norm, rope and sampling routines are available. `gemm` and `moe`
+are not built on ROCm, and `BatchMLAPagedAttentionWrapper` is not wired up yet;
+requesting any of them reports "not supported" rather than failing at import.
 
-| Routine | gfx942 | gfx950 |
+| Routines | gfx942 | gfx950 |
 |---|---|---|
 | **BatchDecodeWithPagedKVCacheWrapper** | fa2, auto | fa2, auto |
 | **BatchPrefillWithPagedKVCacheWrapper** | fa2, auto | fa2, auto |
 | **BatchPrefillWithRaggedKVCacheWrapper** | fa2, auto | fa2, auto |
+| **norm** — `rmsnorm`, `fused_add_rmsnorm`, `gemma_rmsnorm`, `gemma_fused_add_rmsnorm` | cuda | cuda |
+| **rope** — `apply_rope`, `apply_rope_pos_ids`, `apply_llama31_rope`, `apply_llama31_rope_pos_ids`, `rope_quantize_fp8`, `mla_rope_quantize_fp8`, `rope_quantize_fp8_append_paged_kv_cache` | cuda | cuda |
+| **sampling** — `softmax`, `sampling_from_probs`, `sampling_from_logits`, `top_k_sampling_from_probs`, `top_p_sampling_from_probs`, `top_k_top_p_sampling_from_probs`, `top_k_top_p_sampling_from_logits`, `min_p_sampling_from_probs`, `top_k_renorm_probs`, `top_p_renorm_probs`, `top_k_mask_logits`, `chain_speculative_sampling` | cuda | cuda |
 
 - **fa2** — the in-tree HIP kernel.
 - **auto** — what the library picks in production: [AITER](https://github.com/ROCm/aiter)
   when `amd-aiter` is installed and the call satisfies its constraints, otherwise fa2.
   `backend_resolved` records which one ran.
+- **cuda** — upstream's name for the library's own kernel, kept because it is
+  what those CLIs accept. On ROCm it means the HIP kernel the op resolves to at
+  its own default, which for norm and rope may itself be AITER; the routines
+  take no backend argument, so use
+  [`rocm/bench_norm.py`](rocm/bench_norm.py) and [`rocm/bench_rope.py`](rocm/bench_rope.py)
+  for the native-vs-AITER comparison.
 
 `--backends aiter` is deliberately not offered. AITER is reached through `auto`,
 which reports what it resolved to, so an explicit name would add no coverage.
+
+Three routines in these groups are deliberately unregistered:
+`apply_rope_with_cos_sin_cache` builds its cache in `--input_dtype` while the op
+requires float32 (it fails on CUDA too), and `top_k`,
+`top_k_page_table_transform` and `top_k_ragged_transform` call
+`flashinfer.topk`, which has no ROCm kernel.
 
 ### Running
 
@@ -318,6 +333,18 @@ This runner answers "did anything regress" across model-shaped configs. For
 "why is this kernel slow", use [`rocm_profiler`](../profiler/rocm/rocm_profiler.py)
 and the per-op drivers in [`rocm/`](rocm/), which collect
 `rocprofv3` hardware counters and plot a roofline.
+
+Some drivers in [`rocm/`](rocm/) instead answer "which of these two arms should I
+use", and print a ratio rather than a roofline:
+[`bench_block_sparse_attention.py`](rocm/bench_block_sparse_attention.py) sweeps
+block density against dense prefill, and
+[`bench_mixed_attention.py`](rocm/bench_mixed_attention.py) sweeps the
+prefill/decode mix for POD attention against running the two separately.
+
+Several upstream benchmarks in the parent directory also run unmodified on ROCm:
+`bench_append_paged_kv_cache.py`, `bench_append_paged_mla_kv_cache.py`,
+`bench_fused_add_rmsnorm.py`, `bench_renorm.py`, `bench_sampling.py` and
+`bench_sliding_window.py`.
 
 ### Comparing numbers
 
